@@ -4,6 +4,7 @@
 // 用法：node scripts/test-pta-tools.mjs
 import { JSDOM } from 'jsdom';
 import {
+  CHECK_READY_SCRIPT,
   CLOSE_DIALOGS_SCRIPT,
   READ_EDITOR_SCRIPT,
   READ_JUDGE_SCRIPT,
@@ -177,7 +178,7 @@ check('类名对不上时按小标题定位到题面容器', examProblem.include
 check('题面正文读到了', examProblem.includes('请算出它是星期几'));
 check('导航与侧栏文案被滤掉', !examProblem.includes('Toggle Sidebar') && !examProblem.includes('上一题') && !examProblem.includes('图例'));
 check('抠出了样例输入', examProblem.includes('样例 1 输入') && examProblem.includes('3 4'));
-check('抠出了样例输出', examProblem.includes('样例 1 输出') && /样例 1 输出：[\s\S]*7/.test(examProblem));
+check('抠出了样例输出', examProblem.includes('样例 1 输出：' + '```' + '\n7\n' + '```'));
 check('样例里的「复制」按钮文字被滤掉', !examProblem.includes('复制'));
 
 const longProblem = await runScript(problemPage, READ_PROBLEM_SCRIPT, { maxChars: 5 });
@@ -204,6 +205,24 @@ check('前面有只读样例框时，读到的是真正的作答区', sampleRead
 const sampleWrite = await runScript(samplePage, WRITE_EDITOR_SCRIPT, { code: 'int main(void) { return 0; }' });
 check('写代码也跳过只读样例框，写进作答区', samplePage.__doc() === 'int main(void) { return 0; }' && sampleWrite.includes('整段覆写'));
 check('写完之后光标停在文末（后面用真实按键戳一下不会插进代码中间）', samplePage.__lastSelection?.anchor === samplePage.__doc().length);
+
+// samplesOnly：给写入后自动检查用的结构化样例
+// 真实链路里 injectScript 会把返回值 JSON 化，这里直接拿到对象，两种都兼容
+const sampleRaw = await runScript(examPage, READ_PROBLEM_SCRIPT, { samplesOnly: true });
+const parsedSamples = typeof sampleRaw === 'string' ? JSON.parse(sampleRaw) : sampleRaw;
+check('samplesOnly 返回结构化样例', Array.isArray(parsedSamples.samples) && parsedSamples.samples[0].input === '3 4' && parsedSamples.samples[0].output === '7');
+
+// 提交按钮可用性
+const readyPage = new JSDOM(
+  `<!doctype html><html><body><button id="s">提交本题作答</button></body></html>`,
+  { url: 'https://pintia.cn/problem-sets/1/problems/1', runScripts: 'outside-only' },
+).window;
+installInnerText(readyPage);
+check('check_ready 报告提交按钮可用', (await runScript(readyPage, CHECK_READY_SCRIPT, {})).includes('当前可用'));
+readyPage.document.querySelector('#s').disabled = true;
+check('按钮禁用时如实报告', (await runScript(readyPage, CHECK_READY_SCRIPT, {})).includes('当前是禁用的'));
+const noButtonPage = createPage({ withView: false });
+check('找不到按钮时列出页面上的按钮便于排查', (await runScript(noButtonPage, CHECK_READY_SCRIPT, {})).includes('没找到提交按钮'));
 
 // 只有只读样例框时要明确说清，而不是含糊报「编辑器是只读的」
 const onlyReadOnly = createPage({ withView: false, sampleBoxes: 2 });

@@ -8,9 +8,10 @@ import {
   truncate,
 } from '../shared/tools';
 import type { ApiMessage } from '../shared/types';
-import { compileAndRun } from './compile';
+import { compileAndRun, compareOutput, formatCompileResult } from './compile';
 import { createDebuggerIo, detach, pokeEditor, pressKey } from './debugger-input';
 import {
+  CHECK_READY_SCRIPT,
   CLOSE_DIALOGS_SCRIPT,
   READ_EDITOR_SCRIPT,
   READ_JUDGE_SCRIPT,
@@ -104,6 +105,7 @@ export async function runAgent(options: RunAgentOptions): Promise<void> {
 }
 
 const PTA_SCRIPTS: Record<string, string> = {
+  check_ready: CHECK_READY_SCRIPT,
   read_problem: READ_PROBLEM_SCRIPT,
   read_editor_code: READ_EDITOR_SCRIPT,
   write_editor_code: WRITE_EDITOR_SCRIPT,
@@ -141,13 +143,13 @@ async function runTool(
     if (!code.trim()) return { output: '缺少 code 参数', isError: true };
     const stdin = typeof args.stdin === 'string' ? args.stdin : '';
     try {
-      const report = await compileAndRun({
+      const result = await compileAndRun({
         code,
         stdin,
         serviceURL: settings.compileServiceURL,
         languageId: settings.compileLanguageId,
       });
-      return { output: report, isError: false };
+      return { output: formatCompileResult(result), isError: false };
     } catch (error) {
       return { output: error instanceof Error ? error.message : String(error), isError: true };
     }
@@ -160,23 +162,31 @@ async function runTool(
     const timeout = name === 'submit_answer' ? (waitSeconds + 20) * 1000 : undefined;
     const result = await injectScript(tabId, PTA_SCRIPTS[name], args, timeout);
 
-    if (name === 'write_editor_code' && result.ok && settings.useDebuggerInput) {
-      // 整段写入走的是编辑器状态，PTA 可能没标成「改过」；用真实按键戳一下补上
+    if (name !== 'write_editor_code' || !result.ok) {
+      return { output: result.output, isError: !result.ok };
+    }
+
+    // 写入之后的自动检查：先戳一下（触发页面的修改标记），再回读页面的就绪状态与样例
+    const notes: string[] = [];
+    if (settings.useDebuggerInput) {
+      // 整段写入走的是编辑器状态，PTA 可能没标成「改过」
       try {
         await pokeEditor(tabId);
-        return { output: `${result.output}；已用真实按键敲了一个字符再删掉，触发页面的修改标记`, isError: false };
+        notes.push('已用真实按键敲了一个字符再删掉（触发页面的修改标记）');
       } catch (error) {
         const reason = error instanceof Error ? error.message : String(error);
-        return {
-          output: `${result.output}；真实按键不可用（${reason}）。如果提交按钮是灰的或提示未作答，让用户手动在作答区敲一个字符再删掉`,
-          isError: false,
-        };
+        notes.push(`真实按键不可用（${reason}），如果提交按钮是灰的，让用户手动在作答区敲一个字符再删掉`);
       } finally {
         await detach(tabId);
       }
     }
 
-    return { output: result.output, isError: !result.ok };
+    if (args.verify === false) {
+      return { output: [result.output, ...notes].join('；'), isError: false };
+    }
+
+    notes.push(await verifyWrittenCode(injectScript, tabId, args.code, settings));
+    return { output: [result.output, ...notes].join('；'), isError: false };
   }
 
   if (name === 'simulate_keyboard_input' && settings.useDebuggerInput) {
@@ -236,6 +246,67 @@ async function typeWithDebugger(
     // 横幅只在真正输入的这一小会儿出现
     await detach(tabId);
   }
+}
+
+/**
+ * 写入后的自动检查：拿页面上的样例把刚写的代码编译一遍并对输出，
+ * 再看提交按钮现在可用不可用（确认页面认了这次修改）。
+ */
+async function verifyWrittenCode(
+  inject: typeof injectScript,
+  tabId: number,
+  code: unknown,
+  settings: Settings,
+): Promise<string> {
+  const source = typeof code === 'string' ? code : '';
+  const checks: string[] = [];
+
+  // 1) 样例编译并比对输出（用第一组样例，避免每次都打一串请求）
+  if (settings.compileServiceURL) {
+    try {
+      const samplesRaw = await inject(tabId, READ_PROBLEM_SCRIPT, { samplesOnly: true });
+      const parsed = JSON.parse(samplesRaw.output) as {
+        samples?: { input: string; output: string }[];
+      };
+      const sample = parsed.samples?.[0];
+      if (!sample) {
+        checks.push('自动检查：题面里没识别出样例，跳过编译比对');
+      } else {
+        const compiled = await compileAndRun({
+          code: source,
+          stdin: sample.input,
+          serviceURL: settings.compileServiceURL,
+          languageId: settings.compileLanguageId,
+        });
+        if (compiled.compileOutput) {
+          checks.push(`自动检查：编译失败——${compiled.compileOutput.split('\n')[0]}`);
+        } else if (!compiled.ok) {
+          checks.push(`自动检查：编译服务返回 ${compiled.statusText}`);
+        } else {
+          const diff = compareOutput(sample.output, compiled.stdout);
+          checks.push(
+            diff.same
+              ? `自动检查：样例 1（输入 ${JSON.stringify(sample.input.trim())}）输出一致`
+              : `自动检查：样例 1 输出不一致——${diff.detail}`,
+          );
+        }
+      }
+    } catch (error) {
+      const reason = error instanceof Error ? error.message : String(error);
+      checks.push(`自动检查：编译比对没做成（${reason}）`);
+    }
+  }
+
+  // 2) 提交按钮可用性
+  try {
+    const ready = await inject(tabId, CHECK_READY_SCRIPT);
+    checks.push(`页面状态：${ready.output}`);
+  } catch (error) {
+    const reason = error instanceof Error ? error.message : String(error);
+    checks.push(`页面状态没读到（${reason}）`);
+  }
+
+  return checks.join('；');
 }
 
 function perCharDelay(args: Record<string, unknown>): number {

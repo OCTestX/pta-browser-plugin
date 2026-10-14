@@ -301,7 +301,8 @@ const lines = raw.split('\\n').map((line) => line.replace(/[ \\t]+$/, '')).filte
   if (!text) return true;
   if (NOISE.indexOf(text) >= 0) return false;
   if (/^当前\\d+\\s*-\\s*\\d+项/.test(text)) return false;
-  if (/^\\d+$/.test(text)) return false;
+  // 注意：这里绝不能按「纯数字行」过滤 —— 样例输出经常就是一行数字（比如 "7"），
+  // 会连带把样例答案删掉。侧栏题号在按容器/小标题定位时本来就被排除在外了。
   return true;
 });
 let text = lines.join('\\n').replace(/\\n{3,}/g, '\\n\\n').trim();
@@ -340,6 +341,10 @@ for (const block of blocks) {
 
 const title = (document.title || textOf(document.querySelector('h1')) || '').trim();
 const idMatch = location.pathname.match(/\\/(\\d{6,})/);
+// 只取样例：给 write_editor_code 的自动检查用，返回结构化数据
+if (__args.samplesOnly === true) {
+  return { title, url: location.href, samples: pairs };
+}
 const out = ['题目：' + (title || '（没取到标题）'), '地址：' + location.href];
 if (idMatch) out.push('题目 ID：' + idMatch[1]);
 if (pairs.length > 0) {
@@ -458,4 +463,25 @@ return (now.status ? '判题结论：' + now.status + '\\n' : '还没出结论�
 export const CLOSE_DIALOGS_SCRIPT = `${HELPERS}
 const closed = dismissOverlays();
 return closed > 0 ? '已关掉 ' + closed + ' 层弹窗' : '没找到需要关的弹窗';
+`;
+
+/** 看提交按钮现在能不能点（写入之后确认页面有没有认这次修改） */
+export const CHECK_READY_SCRIPT = `${HELPERS}
+const isDisabled = (node) => node.disabled === true
+  || node.getAttribute('aria-disabled') === 'true'
+  || /disabled/i.test(String(node.className || ''))
+  || /disabled/i.test(String(node.getAttribute('class') || ''));
+
+const found = findSubmitButton();
+const picked = pickEditorView();
+const lines = picked.best ? picked.best.view.state.doc.lines : null;
+const parts = [];
+if (!found) {
+  const labels = Array.from(document.querySelectorAll('button')).map((b) => buttonLabel(b)).filter(Boolean).slice(0, 15);
+  parts.push('没找到提交按钮（页面上的按钮：' + labels.join(' / ') + '）');
+} else {
+  parts.push('提交按钮：' + found.how + '，' + (isDisabled(found.node) ? '当前是禁用的' : '当前可用'));
+}
+if (lines !== null) parts.push('作答区：' + lines + ' 行');
+return parts.join('；');
 `;

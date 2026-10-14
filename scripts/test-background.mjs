@@ -35,6 +35,8 @@ const state = {
   attachFails: false,
   /** 发给编译服务的请求体 */
   compileCalls: [],
+  /** 编译服务返回的 stdout */
+  compileStdout: '7\n',
 };
 
 const encoder = new TextEncoder();
@@ -91,6 +93,13 @@ globalThis.chrome = {
       state.worlds.push(options.world);
       // PTA 那几个脚本要在真实 DOM 里跑，这里用桩结果代替（它们在 test-pta-tools.mjs 里另测）
       const source = String((options.args && options.args[0]) || '');
+      if (source.includes('samplesOnly')) {
+        // 读题面的取样例模式：自动检查要用的结构化样例
+        return [{ result: { ok: true, output: JSON.stringify({ samples: [{ input: '3 4', output: '7' }] }) } }];
+      }
+      if (source.includes('isDisabled')) {
+        return [{ result: { ok: true, output: '提交按钮：精确匹配 提交本题作答，当前可用；作答区：3 行' } }];
+      }
       if (source.includes('pickEditorView')) {
         return [{ result: { ok: true, output: state.pageTool.result } }];
       }
@@ -112,7 +121,7 @@ globalThis.fetch = async (url, init) => {
   if (String(url).includes('judge0')) {
     state.compileCalls.push(JSON.parse(init.body));
     return new Response(
-      JSON.stringify({ stdout: '7\n', time: '0.001', memory: 700, status: { id: 3, description: 'Accepted' } }),
+      JSON.stringify({ stdout: state.compileStdout, time: '0.001', memory: 700, status: { id: 3, description: 'Accepted' } }),
       { status: 200 },
     );
   }
@@ -355,6 +364,29 @@ check(
 );
 check('工具结果里说明了戳过一下', state.modelCalls[1].messages.at(-1).content.includes('修改标记'));
 check('戳完把调试器断开了', state.debuggerCalls.some((call) => call[0] === 'detach'));
+
+// 写入后的自动检查：拿题面样例编译并比对 + 报告提交按钮状态
+const verifyResult = state.modelCalls[1].messages.at(-1).content;
+check('自动检查会用题面样例去打编译服务', state.compileCalls[0]?.stdin === '3 4');
+check('自动检查报告样例输出一致', verifyResult.includes('样例 1') && verifyResult.includes('输出一致'));
+check('自动检查报告提交按钮可用', verifyResult.includes('当前可用'));
+
+// 样例对不上要如实报出来（这正是自动检查的意义）
+state.compileStdout = '8\n';
+state.sse = [toolCallsSse('call_w3', 'write_editor_code', ['{"code":"int main(){}"}']), textSse('好')];
+await chat();
+check(
+  '样例输出不一致时明确指出期望与实际',
+  state.modelCalls[1].messages.at(-1).content.includes('不一致') &&
+    state.modelCalls[1].messages.at(-1).content.includes('7') &&
+    state.modelCalls[1].messages.at(-1).content.includes('8'),
+);
+
+// verify:false 时不打编译服务
+state.compileStdout = '7\n';
+state.sse = [toolCallsSse('call_w4', 'write_editor_code', ['{"code":"int main(){}","verify":false}']), textSse('好')];
+await chat();
+check('verify:false 时跳过编译比对', state.compileCalls.length === 0 && !state.pageToolCalls.some((call) => call.args.samplesOnly));
 
 // 关掉开关就不该碰调试器
 await respond({ type: 'settings/save', patch: { useDebuggerInput: false } });

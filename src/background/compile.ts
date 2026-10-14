@@ -44,7 +44,19 @@ interface Judge0Response {
   status?: { id?: number; description?: string } | null;
 }
 
-export async function compileAndRun(options: CompileOptions): Promise<string> {
+export interface CompileResult {
+  /** 编译并运行成功（Judge0 status 3） */
+  ok: boolean;
+  statusText: string;
+  stdout: string;
+  stderr: string;
+  compileOutput: string;
+  message: string;
+  time: string;
+  memory: number | null;
+}
+
+export async function compileAndRun(options: CompileOptions): Promise<CompileResult> {
   const { code, stdin, serviceURL, languageId, signal } = options;
 
   let response: Response;
@@ -72,42 +84,76 @@ export async function compileAndRun(options: CompileOptions): Promise<string> {
     throw new Error(`编译服务返回的不是 JSON（前 200 字）：${raw.slice(0, 200)}`);
   }
 
-  return formatResult(parsed);
+  return toResult(parsed);
 }
 
-function formatResult(result: Judge0Response): string {
+function toResult(result: Judge0Response): CompileResult {
   const statusId = result.status?.id ?? 0;
-  const statusText = STATUS[statusId as keyof typeof STATUS] ?? result.status?.description ?? '未知状态';
+  return {
+    ok: statusId === 3,
+    statusText: STATUS[statusId as keyof typeof STATUS] ?? result.status?.description ?? '未知状态',
+    stdout: result.stdout ?? '',
+    stderr: (result.stderr ?? '').trim(),
+    compileOutput: (result.compile_output ?? '').trim(),
+    message: (result.message ?? '').trim(),
+    time: result.time ?? '',
+    memory: typeof result.memory === 'number' ? result.memory : null,
+  };
+}
 
+export function formatCompileResult(result: CompileResult): string {
   const parts: string[] = [];
   const cost = [
     result.time ? `耗时 ${result.time}s` : '',
-    typeof result.memory === 'number' ? `内存 ${Math.round(result.memory / 1024)}KB` : '',
+    result.memory === null ? '' : `内存 ${Math.round(result.memory / 1024)}KB`,
   ]
     .filter(Boolean)
     .join('，');
-  parts.push(`编译服务返回：${statusText}${cost ? `（${cost}）` : ''}`);
+  parts.push(`编译服务返回：${result.statusText}${cost ? `（${cost}）` : ''}`);
 
   if (result.message) parts.push(`服务消息：${result.message}`);
 
-  const compileOutput = (result.compile_output ?? '').trim();
-  if (compileOutput) {
-    parts.push('', '编译错误：', '```', truncate(compileOutput, 2000), '```');
+  if (result.compileOutput) {
+    parts.push('', '编译错误：', '```', truncate(result.compileOutput, 2000), '```');
     return parts.join('\n');
   }
 
-  const stdout = result.stdout ?? '';
-  const stderr = (result.stderr ?? '').trim();
-  if (stdout) {
-    parts.push('', '运行输出：', '```', truncate(stdout, 4000), '```');
+  if (result.stdout) {
+    parts.push('', '运行输出：', '```', truncate(result.stdout, 4000), '```');
   }
-  if (stderr) {
-    parts.push('', '标准错误：', '```', truncate(stderr, 2000), '```');
+  if (result.stderr) {
+    parts.push('', '标准错误：', '```', truncate(result.stderr, 2000), '```');
   }
-  if (!stdout && !stderr && statusId === 3) {
+  if (!result.stdout && !result.stderr && result.ok) {
     parts.push('', '程序没有产生任何输出。');
   }
   return parts.join('\n');
+}
+
+/** 比对样例输出：尾部空白和末尾空行不算差异 */
+export function compareOutput(expected: string, actual: string): { same: boolean; detail: string } {
+  const normalize = (value: string): string[] => {
+    const lines = value
+      .replace(/\r\n/g, '\n')
+      .split('\n')
+      .map((line) => line.replace(/[ \t]+$/, ''));
+    while (lines.length > 0 && lines.at(-1) === '') lines.pop();
+    return lines;
+  };
+
+  const want = normalize(expected);
+  const got = normalize(actual);
+  const mismatch = want.findIndex((line, index) => line !== (got[index] ?? '\u0000'));
+
+  if (mismatch === -1 && want.length === got.length) return { same: true, detail: '' };
+
+  const at = mismatch === -1 ? Math.min(want.length, got.length) : mismatch;
+  const brief = (line: string | undefined) =>
+    line === undefined ? '（没有这一行）' : line.length > 60 ? `${line.slice(0, 60)}…` : line;
+  return {
+    same: false,
+    detail: `第 ${at + 1} 行不同：期望「${brief(want[at])}」，实际「${brief(got[at])}」`,
+  };
 }
 
 function describeHttpError(status: number, detail: string): string {

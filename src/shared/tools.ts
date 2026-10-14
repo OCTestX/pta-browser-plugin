@@ -45,7 +45,7 @@ export const SYSTEM_PROMPT = [
   '在 PTA 页面上做这些事，都有专用工具，优先用它们：',
   '- read_problem：拿到当前这道题的题面。要解题、要写代码之前，先调它。',
   '- read_editor_code：读出作答区里用户现在的代码。',
-  '- write_editor_code：把代码写进作答区（默认整段覆写），写完会回读比对。改用户的代码就用它。',
+  '- write_editor_code：把代码写进作答区（默认整段覆写）。写完会自动回读比对、拿题面第一组样例编译比对输出、并看提交按钮能不能点——这三项结论都在返回值里；有「不一致/编译失败/按钮禁用」就先按结论修，别急着交付。',
   '',
   '- compile_and_run_c：把 C 代码送到在线编译服务编译并运行，可以给标准输入。写完代码要先用它跑一遍题目样例，确认输出对得上。',
   '- submit_answer：把当前代码提交到 PTA 并等判题结论；read_judge_result 读当前结论；close_dialogs 关掉挡着的弹窗（拿到结论之后再关）。',
@@ -110,7 +110,7 @@ export const TOOL_SCHEMAS: ToolSchema[] = [
     function: {
       name: 'write_editor_code',
       description:
-        '把代码写进作答区（默认整段覆写）。优先用编辑器实例的 dispatch 原子写入，绕开自动闭合与自动缩进；写完会回读比对并在结果里说明是否一致。要改用户的代码就用它，不要用 js_inject 去改 DOM 或模拟粘贴。',
+        '把代码写进作答区（默认整段覆写）。优先用编辑器实例的 dispatch 原子写入，绕开自动闭合与自动缩进；写完会自动检查：回读逐行比对、拿题面第一组样例编译并比对输出、看提交按钮是否可用，结果里都会写明。要改用户的代码就用它，不要用 js_inject 去改 DOM 或模拟粘贴。',
       parameters: {
         type: 'object',
         properties: {
@@ -118,6 +118,10 @@ export const TOOL_SCHEMAS: ToolSchema[] = [
           clear: {
             type: 'boolean',
             description: '是否整段覆写，默认 true；填 false 表示追加到已有内容之后',
+          },
+          verify: {
+            type: 'boolean',
+            description: '写入后是否自动做检查（样例编译比对 + 提交按钮状态），默认 true',
           },
         },
         required: ['code'],

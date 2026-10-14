@@ -1,7 +1,7 @@
 // 编译并运行 C：用假 fetch 覆盖请求形状与各种返回（成功/编译错误/运行错误/超时/限流/非 JSON/截断）。
 // 加 --live 会真的打一次默认编译服务，验证整条链路。
 // 用法：node scripts/test-compile.mjs [--live]
-import { compileAndRun } from '../src/background/compile.ts';
+import { compareOutput, compileAndRun, formatCompileResult } from '../src/background/compile.ts';
 
 const check = (label, ok) => {
   if (!ok) throw new Error(`✗ ${label}`);
@@ -20,7 +20,7 @@ function stubFetch(body, status = 200) {
   };
 }
 
-const run = (options = {}) =>
+const runRaw = (options = {}) =>
   compileAndRun({
     code: '#include <stdio.h>\nint main(void){return 0;}',
     stdin: '3 4',
@@ -28,6 +28,8 @@ const run = (options = {}) =>
     languageId: 50,
     ...options,
   });
+
+const run = async (options = {}) => formatCompileResult(await runRaw(options));
 
 /* ---------- 成功 ---------- */
 
@@ -87,6 +89,16 @@ try {
 stubFetch({ stdout: 'a'.repeat(9000), status: { id: 3 } });
 const longOutput = await run();
 check('输出过长会截断并说明', longOutput.includes('已截断'));
+
+/* ---------- 结构化结果与样例比对 ---------- */
+
+stubFetch({ stdout: '7\n', status: { id: 3 } });
+const structured = await runRaw();
+check('结构化结果里带 stdout 与 ok', structured.ok === true && structured.stdout === '7\n');
+
+check('样例输出一致（忽略尾部空白与末尾空行）', compareOutput('7\n', '7').same === true);
+const diff = compareOutput('7\n3\n', '7\n4');
+check('样例输出不一致时指出第几行、期望与实际', diff.same === false && diff.detail.includes('第 2 行') && diff.detail.includes('4'));
 
 /* ---------- 可选：真打一次 ---------- */
 
