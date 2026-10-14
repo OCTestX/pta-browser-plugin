@@ -85,13 +85,11 @@ export async function runAgent(options: RunAgentOptions): Promise<void> {
         name: call.function.name,
         args: call.function.arguments,
       });
-      const outcome = await runTool(
-        call.function.name,
-        call.function.arguments,
+      const outcome = await runTool(call.function.name, call.function.arguments, {
         tabId,
-        events,
         settings,
-      );
+        runPageTool: events.runPageTool,
+      });
       events.onToolEnd(call.id, outcome.output, outcome.isError);
       conversation.push({
         role: 'tool',
@@ -114,13 +112,19 @@ const PTA_SCRIPTS: Record<string, string> = {
   close_dialogs: CLOSE_DIALOGS_SCRIPT,
 };
 
-async function runTool(
+export interface ToolContext {
+  tabId: number;
+  settings: Settings;
+  runPageTool: (name: string, args: Record<string, unknown>) => Promise<ToolOutcome>;
+}
+
+/** 单次执行一个工具（agent loop 用它，设置页的模拟输入测试也用它，保证两条路完全一致） */
+export async function runTool(
   name: string,
   rawArguments: string,
-  tabId: number,
-  events: AgentEvents,
-  settings: Settings,
+  context: ToolContext,
 ): Promise<ToolOutcome> {
+  const { tabId, settings, runPageTool } = context;
   if (!isToolName(name)) {
     return { output: `没有名为 ${name} 的工具，可用工具：${TOOL_NAMES.join('、')}`, isError: true };
   }
@@ -190,11 +194,11 @@ async function runTool(
   }
 
   if (name === 'simulate_keyboard_input' && settings.useDebuggerInput) {
-    return typeWithDebugger(args, tabId, events);
+    return typeWithDebugger(args, tabId, runPageTool);
   }
 
   // 其余工具需要页面上下文
-  return events.runPageTool(name, args);
+  return runPageTool(name, args);
 }
 
 /**
@@ -205,12 +209,12 @@ async function runTool(
 async function typeWithDebugger(
   args: Record<string, unknown>,
   tabId: number,
-  events: AgentEvents,
+  runPageTool: ToolContext['runPageTool'],
 ): Promise<ToolOutcome> {
   const text = typeof args.text === 'string' ? args.text : '';
   const press = typeof args.press === 'string' ? args.press.trim() : '';
 
-  const focused = await events.runPageTool('simulate_keyboard_input', { ...args, focusOnly: true });
+  const focused = await runPageTool('simulate_keyboard_input', { ...args, focusOnly: true });
   if (focused.isError) return focused;
 
   const steps = [focused.output];
@@ -227,7 +231,7 @@ async function typeWithDebugger(
 
     // 按键是异步生效的，不回读确认就是假成功
     if (text) {
-      const readBack = await events.runPageTool('simulate_keyboard_input', {
+      const readBack = await runPageTool('simulate_keyboard_input', {
         selector: args.selector,
         readOnly: true,
       });
@@ -237,7 +241,7 @@ async function typeWithDebugger(
     return { output: steps.join('；'), isError: false };
   } catch (error) {
     const reason = error instanceof Error ? error.message : String(error);
-    const fallback = await events.runPageTool('simulate_keyboard_input', args);
+    const fallback = await runPageTool('simulate_keyboard_input', args);
     return {
       output: `调试器输入失败（${reason}），已退回模拟事件：${fallback.output}`,
       isError: fallback.isError,

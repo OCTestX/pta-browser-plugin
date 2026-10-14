@@ -640,3 +640,28 @@
 .tool__result {
   padding-top: 26px;
 }
+
+/* ---------- 设置页的模拟输入测试 ---------- */
+
+.field__input--area {
+  min-height: 72px;
+  font-family: 'SFMono-Regular', Consolas, Menlo, monospace;
+  font-size: 12px;
+  line-height: 1.5;
+  resize: vertical;
+}
+
+.settings__result {
+  max-height: 200px;
+  margin: 10px 0 0;
+  padding: 8px 10px;
+  overflow: auto;
+  border: 1px solid var(--pta-border);
+  border-radius: 8px;
+  background: var(--pta-surface-alt);
+  font-family: 'SFMono-Regular', Consolas, Menlo, monospace;
+  font-size: 12px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  word-break: break-word;
+}

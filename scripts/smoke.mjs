@@ -118,6 +118,8 @@ function boot({ hasApiKey }) {
               : { ok: false, message: '尚未配置 API Key，点右上角齿轮填入后即可开始对话' };
           case 'chat/stop':
             return { ok: true };
+          case 'tool/test-input':
+            return { ok: true, result: '已逐字敲入 3 行（12 个字符）；回读比对：3 行与目标一致' };
           default:
             return undefined;
         }
@@ -272,6 +274,23 @@ await tick();
 const saved = withKey.requests.find((r) => r.type === 'settings/save');
 check('保存设置会把 Key 交给 background', saved?.patch?.apiKey === 'sk-test-key');
 check('保存后 Key 输入框被清空', withKey.find('.field__input[type="password"]').value === '');
+
+// 设置页的「模拟输入测试」：把测试文本按工具同一条链路打到作答区
+const testArea = [...withKey.shadow().querySelectorAll('.field__input--area')][0];
+check('设置页有模拟输入测试的文本框', Boolean(testArea));
+check('测试文本默认是助手的系统提示词', testArea.value.startsWith('你是「PTA 助手」'));
+const testButton = [...withKey.shadow().querySelectorAll('.button')].find(
+  (el) => el.textContent === '模拟输入到作答区',
+);
+check('设置页有模拟输入按钮', Boolean(testButton));
+testButton.click();
+await tick();
+const testRequest = withKey.requests.find((r) => r.type === 'tool/test-input');
+check('点按钮会把测试文本发给后台', testRequest?.text === testArea.value);
+check(
+  '测试结果回显在设置页（含回读比对）',
+  withKey.find('.settings__result')?.textContent.includes('回读比对'),
+);
 
 withKey.find('.panel__back').click();
 await tick();

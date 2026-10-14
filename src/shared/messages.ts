@@ -44,7 +44,9 @@ export type ContentRequest =
   | { type: 'chat/start'; requestId: string; messages: ApiMessage[] }
   | { type: 'chat/stop'; requestId: string }
   | { type: 'settings/get' }
-  | { type: 'settings/save'; patch: Partial<Settings> };
+  | { type: 'settings/save'; patch: Partial<Settings> }
+  /** 设置页的「模拟输入测试」：用和工具完全相同的链路跑一次 simulate_keyboard_input */
+  | { type: 'tool/test-input'; text: string };
 
 export function isContentRequest(message: unknown): message is ContentRequest {
   return (
@@ -52,7 +54,8 @@ export function isContentRequest(message: unknown): message is ContentRequest {
     (message.type === 'chat/start' ||
       message.type === 'chat/stop' ||
       message.type === 'settings/get' ||
-      message.type === 'settings/save')
+      message.type === 'settings/save' ||
+      message.type === 'tool/test-input')
   );
 }
 
@@ -65,6 +68,11 @@ export function isRunToolRequest(message: unknown): message is RunToolRequest {
 export interface StartChatResponse {
   ok: boolean;
   message?: string;
+}
+
+export interface TestInputResponse {
+  ok: boolean;
+  result: string;
 }
 
 export interface ToolRunResponse {

@@ -475,6 +475,17 @@ await chat();
 check('一直调工具时会停在轮数上限', state.tabEvents.some((e) => e.type === 'chat/notice'));
 check('上限轮数就是 MAX_TOOL_ROUNDS', state.modelCalls.length === 80);
 
+/* ---------- 设置页的模拟输入测试 ---------- */
+
+state.pageTool = { ok: true, result: '已逐字敲入 1 行（5 个字符）；回读比对：1 行与目标一致' };
+const testResponse = await respond(
+  { type: 'tool/test-input', text: 'hello' },
+  { tab: { id: 7 } },
+);
+check('模拟输入测试走的是同一条工具链路（同样的参数）', state.pageToolCalls[0]?.args.text === 'hello' && state.pageToolCalls[0].args.clear === true);
+check('测试结果原样回给设置页', testResponse.ok === true && testResponse.result.includes('回读比对'));
+check('没有标签页时说明不支持', (await respond({ type: 'tool/test-input', text: 'x' }, {})).ok === false);
+
 /* ---------- 没有 Key 时不发请求 ---------- */
 
 await respond({ type: 'settings/save', patch: { apiKey: '' } });

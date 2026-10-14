@@ -4,10 +4,11 @@ import type {
   BackgroundEvent,
   RunToolRequest,
   StartChatResponse,
+  TestInputResponse,
   ToolRunResponse,
 } from '../shared/messages';
 import type { ApiMessage } from '../shared/types';
-import { runAgent, type ToolOutcome } from './agent';
+import { runAgent, runTool, type ToolOutcome } from './agent';
 import { loadSettings, saveSettings, toSettingsView } from './settings';
 
 const TOGGLE_PANEL: BackgroundEvent = { type: 'toggle-panel' };
@@ -59,6 +60,21 @@ ext.runtime.onMessage.addListener((message: unknown, sender, sendResponse) => {
       case 'chat/stop': {
         runningRequests.get(message.requestId)?.abort();
         sendResponse({ ok: true } satisfies StartChatResponse);
+        return;
+      }
+      case 'tool/test-input': {
+        // 设置页的测试按钮：走和模型完全相同的工具链路，方便单独验证输入通道
+        if (tabId === undefined) {
+          sendResponse({ ok: false, result: '当前页面不支持（请刷新页面后重试）' } satisfies TestInputResponse);
+          return;
+        }
+        const settings = await loadSettings();
+        const outcome = await runTool(
+          'simulate_keyboard_input',
+          JSON.stringify({ text: message.text, clear: true }),
+          { tabId, settings, runPageTool: (name, args) => runToolInTab(tabId, name, args) },
+        );
+        sendResponse({ ok: !outcome.isError, result: outcome.output } satisfies TestInputResponse);
         return;
       }
     }
