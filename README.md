@@ -23,15 +23,19 @@
 manifest/manifest.json   手写的清单文件（Chrome 用），Firefox 版本在构建时按差异打补丁
 vite.config.ts           构建配置：一次构建一个入口（background / content），target 决定产物目录
 src/
-  background/index.ts    background（service worker / event page）：点击图标 -> 通知当前标签页
+  background/index.ts    background：图标点击、消息路由、维护进行中的请求
+  background/settings.ts 设置读写（chrome.storage.local），API Key 只留在这里
+  background/deepseek.ts 调用 /chat/completions 并解析 SSE 流
   content/index.tsx      content script：注入 Shadow DOM 宿主节点并挂载 React
-  content/App.tsx        悬浮窗主体（开关状态、消息列表、输入框）
-  content/components/    消息列表、输入区
+  content/App.tsx        悬浮窗主体（对话 / 设置两个视图）
+  content/hooks/         useChat（消息与流式增量）、useSettings（设置读写）
+  content/components/    消息列表、输入区、设置页
   content/styles.css     悬浮窗样式（跟随 content.js 一起注入，不污染页面）
-  shared/                browser API 入口、消息协议、消息类型
+  shared/                browser API 入口、消息协议、设置与消息类型
 scripts/
   gen-icons.py           生成 public/icons 下的图标
-  smoke.mjs              jsdom 冒烟测试：验证悬浮窗挂载、开关、收发消息
+  test-deepseek.mjs      假的 fetch 跑 SSE 解析与错误映射
+  smoke.mjs              jsdom 冒烟测试：清单完整性、悬浮窗、流式对话、设置页
 ```
 
 ## 开发与调试
@@ -39,9 +43,11 @@ scripts/
 ```bash
 npm install
 npm run build      # 类型检查 + 产出 dist/chrome、dist/firefox
-npm run smoke      # 冒烟测试（需要先 build）
+npm run test       # SSE 解析校验 + 冒烟测试（冒烟测试需要先 build）
 npm run icons      # 重新生成图标（需要 python3 + Pillow）
 ```
+
+需要 Node 22.18+（`scripts/test-deepseek.mjs` 直接跑 TS 用的类型擦除）。
 
 加载方式：
 
@@ -52,12 +58,30 @@ npm run icons      # 重新生成图标（需要 python3 + Pillow）
 
 改代码后需要重新 build，再在扩展管理页点刷新按钮。
 
+点图标打不开悬浮窗时的排查顺序：
+
+1. 页面是在插件安装/重载之前打开的 —— 正常情况下点图标会自动补注入（`scripting.executeScript`），实在不行刷新页面
+2. `chrome://` 开头的内部页面不允许注入，属于预期
+3. 打开 `chrome://extensions` 点「错误」看 background 有没有报错
+
 ## v0.1 已完成
 
 - 构建环境：Vite + React + TypeScript，一份代码产出 Chrome（service worker）和 Firefox（event page）两个版本
 - 点击工具栏图标即可打开 / 关闭悬浮窗，悬浮窗固定在页面右上角，样式隔离在 Shadow DOM 内
 - 悬浮窗上半部分是聊天区（用户 / 助手 / 提示三类气泡），下半部分是输入框（Enter 发送、Shift + Enter 换行，兼容中文输入法）
 - 此时还没有接入 AI，发送后是一条占位回复
+
+## v0.2 已完成
+
+- 接入 DeepSeek 的 OpenAI 兼容接口，单轮流式对话：助手气泡逐字追加，生成中可以点「停止」打断
+- 设置页（右上角齿轮）：API Key、接口地址、模型名；默认 `https://api.deepseek.com` + `deepseek-v4.1-flash`
+- API Key 存在 `chrome.storage.local`，只有 background 能读到，content script 拿到的视图里没有 Key，页面上也拿不到明文
+- 请求由 background 发出（不是 content script 直连）：既避开页面自身的 CSP，也不让 Key 进入页面上下文
+- 错误会转成中文提示直接显示在对话里：未配置 Key、Key 无效、余额不足、限流、地址或模型名不对、连不上
+
+对话上下文取自面板里可见的消息（系统提示和报错气泡不发），刷新页面即清空；上下文记忆与 markdown 渲染在 v0.3 处理。
+
+已知限制：自定义接口地址时，需要把该域名加进 `manifest/manifest.json` 的 `host_permissions`，否则浏览器会拦掉请求。
 
 开发计划
 v0.1

@@ -5,6 +5,12 @@ interface MessageListProps {
   messages: ChatMessage[];
 }
 
+const ROLE_LABEL: Record<ChatMessage['role'], string> = {
+  user: '我',
+  assistant: '助手',
+  system: '提示',
+};
+
 export function MessageList({ messages }: MessageListProps) {
   const scrollRef = useRef<HTMLDivElement>(null);
 
@@ -16,11 +22,15 @@ export function MessageList({ messages }: MessageListProps) {
   return (
     <div className="messages" ref={scrollRef}>
       {messages.map((message) => (
-        <div key={message.id} className={`bubble bubble--${message.role}`}>
-          <div className="bubble__role">
-            {message.role === 'user' ? '我' : message.role === 'assistant' ? '助手' : '提示'}
+        <div
+          key={message.id}
+          className={`bubble bubble--${message.role}${message.error ? ' bubble--error' : ''}`}
+        >
+          <div className="bubble__role">{ROLE_LABEL[message.role]}</div>
+          <div className="bubble__content">
+            {message.content}
+            {message.streaming && <span className="bubble__cursor" />}
           </div>
-          <div className="bubble__content">{message.content}</div>
         </div>
       ))}
     </div>

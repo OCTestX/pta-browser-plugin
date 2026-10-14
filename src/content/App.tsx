@@ -1,61 +1,96 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useState, useSyncExternalStore } from 'react';
 import { Composer } from './components/Composer';
 import { MessageList } from './components/MessageList';
-import { ext } from '../shared/browser';
-import { isTogglePanelMessage } from '../shared/messages';
-import type { ChatMessage } from '../shared/types';
+import { SettingsPanel } from './components/SettingsPanel';
+import { useChat } from './hooks/useChat';
+import { useSettings } from './hooks/useSettings';
+import { isPanelOpen, setPanelOpen, subscribePanel } from './panelStore';
 
-const PLACEHOLDER_REPLY = '收到。AI 能力将在 v0.2 接入，当前版本只做界面演示。';
-
-let seq = 0;
-function createId(): string {
-  seq += 1;
-  return `${Date.now()}-${seq}`;
-}
-
-function createMessage(role: ChatMessage['role'], content: string): ChatMessage {
-  return { id: createId(), role, content, createdAt: Date.now() };
-}
+type View = 'chat' | 'settings';
 
 export function App() {
-  const [open, setOpen] = useState(false);
+  const open = useSyncExternalStore(subscribePanel, isPanelOpen, isPanelOpen);
+  const [view, setView] = useState<View>('chat');
   const [draft, setDraft] = useState('');
-  const [messages, setMessages] = useState<ChatMessage[]>([
-    createMessage('system', '点击浏览器工具栏的插件图标可以打开 / 关闭这个悬浮窗。'),
-  ]);
-
-  useEffect(() => {
-    const listener = (message: unknown) => {
-      if (isTogglePanelMessage(message)) setOpen((prev) => !prev);
-    };
-    ext.runtime.onMessage.addListener(listener);
-    return () => ext.runtime.onMessage.removeListener(listener);
-  }, []);
-
-  const send = useCallback(() => {
-    const text = draft.trim();
-    if (!text) return;
-    setMessages((prev) => [
-      ...prev,
-      createMessage('user', text),
-      createMessage('assistant', PLACEHOLDER_REPLY),
-    ]);
-    setDraft('');
-  }, [draft]);
+  const settings = useSettings();
+  const chat = useChat(settings.hasApiKey);
 
   if (!open) return null;
+
+  const send = () => {
+    void chat.send(draft);
+    setDraft('');
+  };
 
   return (
     <div className="panel">
       <header className="panel__header">
-        <span className="panel__title">PTA 助手</span>
-        <span className="panel__badge">v0.1</span>
-        <button type="button" className="panel__close" onClick={() => setOpen(false)} title="关闭">
-          ×
-        </button>
+        {view === 'settings' ? (
+          <>
+            <button type="button" className="panel__back" onClick={() => setView('chat')}>
+              ‹
+            </button>
+            <span className="panel__title">设置</span>
+          </>
+        ) : (
+          <>
+            <span className="panel__title">PTA 助手</span>
+            <span className="panel__badge">v0.2</span>
+          </>
+        )}
+        <div className="panel__actions">
+          {view === 'chat' && (
+            <button
+              type="button"
+              className="panel__close"
+              title="设置"
+              onClick={() => setView('settings')}
+            >
+              ⚙
+            </button>
+          )}
+          <button
+            type="button"
+            className="panel__close"
+            title="关闭"
+            onClick={() => setPanelOpen(false)}
+          >
+            ×
+          </button>
+        </div>
       </header>
-      <MessageList messages={messages} />
-      <Composer value={draft} onChange={setDraft} onSend={send} />
+
+      {view === 'settings' ? (
+        <SettingsPanel view={settings.view} onSave={settings.save} onBack={() => setView('chat')} />
+      ) : (
+        <>
+          <MessageList messages={chat.messages} />
+          {chat.notice && (
+            <div className="notice">
+              <span className="notice__text">{chat.notice.text}</span>
+              {chat.notice.needsApiKey && (
+                <button
+                  type="button"
+                  className="notice__action"
+                  onClick={() => {
+                    chat.dismissNotice();
+                    setView('settings');
+                  }}
+                >
+                  去设置
+                </button>
+              )}
+            </div>
+          )}
+          <Composer
+            value={draft}
+            onChange={setDraft}
+            onSend={send}
+            onStop={chat.stop}
+            streaming={chat.streaming}
+          />
+        </>
+      )}
     </div>
   );
 }
