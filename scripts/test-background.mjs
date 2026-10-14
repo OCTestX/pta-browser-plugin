@@ -33,6 +33,8 @@ const state = {
   debuggerCalls: [],
   attachedTabs: new Set(),
   attachFails: false,
+  /** 发给编译服务的请求体 */
+  compileCalls: [],
 };
 
 const encoder = new TextEncoder();
@@ -100,7 +102,15 @@ globalThis.chrome = {
   },
 };
 
-globalThis.fetch = async (_url, init) => {
+globalThis.fetch = async (url, init) => {
+  // 编译服务用同一套 fetch 桩，按地址分流
+  if (String(url).includes('judge0')) {
+    state.compileCalls.push(JSON.parse(init.body));
+    return new Response(
+      JSON.stringify({ stdout: '7\n', time: '0.001', memory: 700, status: { id: 3, description: 'Accepted' } }),
+      { status: 200 },
+    );
+  }
   state.modelCalls.push(JSON.parse(init.body));
   const sse = state.sse[Math.min(state.modelCalls.length - 1, state.sse.length - 1)] ?? '';
   return new Response(
@@ -140,6 +150,7 @@ async function chat(text = '帮我看下这道题') {
   state.pageToolCalls = [];
   state.debuggerCalls = [];
   state.attachedTabs.clear();
+  state.compileCalls = [];
   const response = await respond(
     { type: 'chat/start', requestId: 'r1', messages: [{ role: 'user', content: text }] },
     { tab: { id: 7 } },
@@ -199,7 +210,7 @@ state.sse = [
 const started = await chat('页面标题是什么');
 check('chat/start 立刻返回 ok，循环在后台跑', started.ok === true);
 check('模型被调用了两轮（工具 → 回答）', state.modelCalls.length === 2);
-check('第一轮带上了全部工具定义', state.modelCalls[0].tools?.length === 8);
+check('第一轮带上了全部工具定义', state.modelCalls[0].tools?.length === 9);
 check(
   '工具定义里有 PTA 三件套与键盘工具',
   ['read_problem', 'read_editor_code', 'write_editor_code', 'simulate_keyboard_input'].every((name) =>
@@ -293,6 +304,26 @@ check(
   '不存在的工具会把可用工具告诉模型',
   state.modelCalls[1].messages.at(-1).content.includes('可用工具'),
 );
+
+/* ---------- 编译并运行 C ---------- */
+
+const compileArgs = JSON.stringify({
+  code: 'int main(){int a,b;scanf("%d %d",&a,&b);printf("%d",a+b);}',
+  stdin: '3 4',
+});
+state.sse = [toolCallsSse('call_c1', 'compile_and_run_c', [compileArgs]), textSse('样例过了。')];
+await chat();
+check(
+  'compile_and_run_c 把源码、stdin、语言 ID 送到编译服务',
+  state.compileCalls[0]?.source_code.includes('int main') &&
+    state.compileCalls[0].stdin === '3 4' &&
+    state.compileCalls[0].language_id === 50,
+);
+check('编译运行结果回灌给模型', state.modelCalls[1].messages.at(-1).content.includes('7'));
+
+state.sse = [toolCallsSse('call_c2', 'compile_and_run_c', ['{}']), textSse('好')];
+await chat();
+check('缺 code 时直接返回错误，不发请求', state.modelCalls[1].messages.at(-1).content.includes('缺少 code 参数'));
 
 /* ---------- 真实按键开关 ---------- */
 

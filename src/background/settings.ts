@@ -1,5 +1,11 @@
 import { ext } from '../shared/browser';
-import { DEFAULT_SETTINGS, normalizeBaseURL, type Settings, type SettingsView } from '../shared/settings';
+import {
+  DEFAULT_SETTINGS,
+  normalizeBaseURL,
+  normalizeLanguageId,
+  type Settings,
+  type SettingsView,
+} from '../shared/settings';
 
 const STORAGE_KEY = 'pta-assistant-settings';
 
@@ -15,6 +21,9 @@ export async function saveSettings(patch: Partial<Settings>): Promise<Settings> 
   next.apiKey = next.apiKey.trim();
   next.baseURL = normalizeBaseURL(next.baseURL) || DEFAULT_SETTINGS.baseURL;
   next.model = next.model.trim() || DEFAULT_SETTINGS.model;
+  next.compileServiceURL = normalizeBaseURL(next.compileServiceURL) || DEFAULT_SETTINGS.compileServiceURL;
+  next.compileLanguageId = normalizeLanguageId(Number(next.compileLanguageId));
+  next.useDebuggerInput = next.useDebuggerInput === true;
   await ext.storage.local.set({ [STORAGE_KEY]: next });
   return next;
 }
@@ -25,5 +34,7 @@ export function toSettingsView(settings: Settings): SettingsView {
     model: settings.model,
     hasApiKey: settings.apiKey.length > 0,
     useDebuggerInput: settings.useDebuggerInput,
+    compileServiceURL: settings.compileServiceURL,
+    compileLanguageId: settings.compileLanguageId,
   };
 }

@@ -19,7 +19,7 @@
     }
   },
   "permissions": ["storage", "activeTab", "scripting", "debugger"],
-  "host_permissions": ["https://api.deepseek.com/*"],
+  "host_permissions": ["https://api.deepseek.com/*", "https://ce.judge0.com/*"],
   "background": {
     "service_worker": "background.js"
   },

@@ -14,6 +14,12 @@ export function SettingsPanel({ view, onSave, onBack }: SettingsPanelProps) {
   const [useDebuggerInput, setUseDebuggerInput] = useState(
     view?.useDebuggerInput ?? DEFAULT_SETTINGS.useDebuggerInput,
   );
+  const [compileServiceURL, setCompileServiceURL] = useState(
+    view?.compileServiceURL ?? DEFAULT_SETTINGS.compileServiceURL,
+  );
+  const [compileLanguageId, setCompileLanguageId] = useState(
+    String(view?.compileLanguageId ?? DEFAULT_SETTINGS.compileLanguageId),
+  );
   const [status, setStatus] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
 
@@ -23,6 +29,8 @@ export function SettingsPanel({ view, onSave, onBack }: SettingsPanelProps) {
     setBaseURL(view.baseURL);
     setModel(view.model);
     setUseDebuggerInput(view.useDebuggerInput);
+    setCompileServiceURL(view.compileServiceURL);
+    setCompileLanguageId(String(view.compileLanguageId));
   }, [view]);
 
   const save = async (patch: Partial<Settings>, done: string) => {
@@ -40,7 +48,13 @@ export function SettingsPanel({ view, onSave, onBack }: SettingsPanelProps) {
 
   // 输入框留空表示不修改已保存的 Key
   const saveCurrent = () => {
-    const patch: Partial<Settings> = { baseURL, model, useDebuggerInput };
+    const patch: Partial<Settings> = {
+      baseURL,
+      model,
+      useDebuggerInput,
+      compileServiceURL,
+      compileLanguageId: Number.parseInt(compileLanguageId, 10) || DEFAULT_SETTINGS.compileLanguageId,
+    };
     if (apiKey.trim()) patch.apiKey = apiKey.trim();
     return save(patch, '已保存');
   };
@@ -79,6 +93,30 @@ export function SettingsPanel({ view, onSave, onBack }: SettingsPanelProps) {
           value={model}
           onChange={(event) => setModel(event.target.value)}
         />
+      </label>
+
+      <label className="field">
+        <span className="field__label">编译服务地址</span>
+        <input
+          className="field__input"
+          type="text"
+          value={compileServiceURL}
+          onChange={(event) => setCompileServiceURL(event.target.value)}
+        />
+        <span className="field__hint">
+          按 Judge0 协议（POST /submissions?wait=true）。默认是公共实例，介意代码外发就换成自建的；换域名要同时加进 manifest 的 host_permissions。
+        </span>
+      </label>
+
+      <label className="field">
+        <span className="field__label">编译语言 ID</span>
+        <input
+          className="field__input"
+          type="text"
+          value={compileLanguageId}
+          onChange={(event) => setCompileLanguageId(event.target.value)}
+        />
+        <span className="field__hint">Judge0 的语言编号：50 = C (GCC)，54 = C++ (GCC)。</span>
       </label>
 
       <label className="field field--switch">

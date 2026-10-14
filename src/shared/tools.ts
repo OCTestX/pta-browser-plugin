@@ -3,6 +3,7 @@ export type ToolName =
   | 'read_problem'
   | 'read_editor_code'
   | 'write_editor_code'
+  | 'compile_and_run_c'
   | 'js_inject'
   | 'date'
   | 'url'
@@ -13,6 +14,7 @@ export const TOOL_NAMES: ToolName[] = [
   'read_problem',
   'read_editor_code',
   'write_editor_code',
+  'compile_and_run_c',
   'js_inject',
   'date',
   'url',
@@ -39,6 +41,8 @@ export const SYSTEM_PROMPT = [
   '- read_editor_code：读出作答区里用户现在的代码。',
   '- write_editor_code：把代码写进作答区（默认整段覆写），写完会回读比对。改用户的代码就用它。',
   '',
+  '- compile_and_run_c：把 C 代码送到在线编译服务编译并运行，可以给标准输入。写完代码要先用它跑一遍题目样例，确认输出对得上。',
+  '',
   '其它工具：',
   '- js_inject：在用户当前页面里执行 JavaScript 并把返回值带回来。用来**读**页面（看结构、找选择器、读文本）和做上面几个工具做不到的事。',
   '- simulate_keyboard_input：非 PTA 编辑器、或需要**真按键**（Enter/Tab/方向键）时才用。',
@@ -51,6 +55,7 @@ export const SYSTEM_PROMPT = [
   '   **不要**用 js_inject 去 dispatch 编辑器、改 input.value、也不要想办法模拟粘贴——都要用上面的专用工具。',
   '2. 往非 PTA 的输入框里写内容才用 simulate_keyboard_input；它不填 selector 会自动定位最大的可编辑区域，输入后会回读比对，结果里写明是否一致——不一致就别继续往下推，先查原因。',
   '3. 需要页面上的信息时先看再答，不要凭空猜测页面内容。js_inject 里用 return 返回结果，异步代码可以直接 await。',
+  '   写完 C 代码后，用 compile_and_run_c 拿题面的样例输入跑一遍：输出对不上就自己改，别把没验证的代码交给用户。',
   '4. simulate_keyboard_input 的按键是模拟的，浏览器默认行为（在输入框里换行、提交表单）不会发生，只对页面自己写的按键监听有效；要触发提交就找页面的按钮点它。',
 ].join('\n');
 
@@ -106,6 +111,22 @@ export const TOOL_SCHEMAS: ToolSchema[] = [
             type: 'boolean',
             description: '是否整段覆写，默认 true；填 false 表示追加到已有内容之后',
           },
+        },
+        required: ['code'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'compile_and_run_c',
+      description:
+        '把一段 C 代码交给在线编译服务编译并运行，指定标准输入后拿回运行输出与编译错误。写完代码应该先用它跑一遍题目给的样例输入，确认输出对得上再交给用户。',
+      parameters: {
+        type: 'object',
+        properties: {
+          code: { type: 'string', description: '完整的 C 源代码' },
+          stdin: { type: 'string', description: '标准输入内容，按题目的样例输入原样填，没有就留空' },
         },
         required: ['code'],
       },

@@ -8,6 +8,7 @@ import {
   truncate,
 } from '../shared/tools';
 import type { ApiMessage } from '../shared/types';
+import { compileAndRun } from './compile';
 import { createDebuggerIo, detach, pressKey } from './debugger-input';
 import {
   READ_EDITOR_SCRIPT,
@@ -121,6 +122,23 @@ async function runTool(
     if (!code.trim()) return { output: '缺少 code 参数', isError: true };
     const result = await injectScript(tabId, code);
     return { output: result.output, isError: !result.ok };
+  }
+
+  if (name === 'compile_and_run_c') {
+    const code = typeof args.code === 'string' ? args.code : '';
+    if (!code.trim()) return { output: '缺少 code 参数', isError: true };
+    const stdin = typeof args.stdin === 'string' ? args.stdin : '';
+    try {
+      const report = await compileAndRun({
+        code,
+        stdin,
+        serviceURL: settings.compileServiceURL,
+        languageId: settings.compileLanguageId,
+      });
+      return { output: report, isError: false };
+    } catch (error) {
+      return { output: error instanceof Error ? error.message : String(error), isError: true };
+    }
   }
 
   // PTA 三件套：都在页面主世界跑（编辑器实例挂在页面自己的 JS 对象上）
