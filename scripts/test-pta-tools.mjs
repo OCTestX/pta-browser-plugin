@@ -1,17 +1,16 @@
-// PTA 三件套脚本（读题面 / 读代码 / 写代码）在 jsdom 里跑一遍：
-// 假页面里放一个「编辑器实例挂在 DOM 上」（cmTile.view，跟 PTA 一样）的假 CodeMirror，
-// 验证 view 发现的路径、整段覆写、退路、回读比对，以及题面容器的优先级。
+// PTA 三件套与多种输入方法的页面脚本测试：在 jsdom 里搭一个假 CodeMirror 6，
+// 实例挂在 #pta-answer-editor 的 cmTile.view 上（和 PTA 一致），脚本用页面 realm 的 AsyncFunction 跑。
 // 用法：node scripts/test-pta-tools.mjs
 import { JSDOM } from 'jsdom';
+import { assertDistFresh } from './dist-fresh.mjs';
 import {
   CHECK_READY_SCRIPT,
-  INPUT_METHOD_SCRIPT,
   CLOSE_DIALOGS_SCRIPT,
+  INPUT_METHOD_SCRIPT,
   READ_EDITOR_SCRIPT,
   READ_JUDGE_SCRIPT,
   READ_PROBLEM_SCRIPT,
   SUBMIT_ANSWER_SCRIPT,
-  WRITE_EDITOR_SCRIPT,
 } from '../src/background/pta-scripts.ts';
 
 const check = (label, ok) => {
@@ -19,7 +18,6 @@ const check = (label, ok) => {
   console.log(`✓ ${label}`);
 };
 
-/** 把脚本当成插件注入的那段代码来跑：__args 注入 + AsyncFunction 包裹（脚本里能用 return / await） */
 /**
  * jsdom 没有 innerText（块级元素之间不会产生换行），而脚本里的按行解析依赖它。
  * 这里给个近似实现，让测试尽量贴近真实浏览器行为。
@@ -50,22 +48,23 @@ function installInnerText(window) {
   return window;
 }
 
+/** 跑一段脚本：__args 注入 + 页面 realm 的 AsyncFunction（跟插件注入同构） */
 async function runScript(window, source, args) {
   const withArgs = args === undefined ? source : `const __args = ${JSON.stringify(args)};\n${source}`;
-  // 必须在页面自己的 realm 里造函数，跟插件注入时一样，脚本才看得到 document / window
   const AsyncFunction = Object.getPrototypeOf(window.eval('(async function () {})')).constructor;
   return await new AsyncFunction(withArgs)();
 }
 
 function createPage({ withView = true, body = '', sampleBoxes = 0 } = {}) {
-  const dom = new JSDOM(`<!doctype html><html><head><title>7-1 星期几</title></head><body>${body}</body></html>`, {
-    url: 'https://pintia.cn/problem-sets/1/problems/1150901824503297/description',
-    // 只有开了 runScripts 才有真正跑在页面 realm 里的 window.eval
-    runScripts: 'outside-only',
-    pretendToBeVisual: true,
-  });
-  const { window } = dom;
-  installInnerText(window);
+  const dom = new JSDOM(
+    `<!doctype html><html><head><title>7-1 星期几</title></head><body>${body}</body></html>`,
+    {
+      url: 'https://pintia.cn/problem-sets/1/problems/1150901824503297/description',
+      runScripts: 'outside-only',
+      pretendToBeVisual: true,
+    },
+  );
+  const window = installInnerText(dom.window);
 
   if (!window.document.execCommand) window.document.execCommand = () => false;
 
@@ -91,7 +90,6 @@ function createPage({ withView = true, body = '', sampleBoxes = 0 } = {}) {
   }
 
   if (withView) {
-    // 假 CodeMirror 6：实例挂在 #pta-answer-editor 的 cmTile.view 上，行为和 PTA 一致
     const editor = window.document.createElement('div');
     editor.id = 'pta-answer-editor';
     const content = window.document.createElement('div');
@@ -100,9 +98,8 @@ function createPage({ withView = true, body = '', sampleBoxes = 0 } = {}) {
     editor.appendChild(content);
     window.document.body.appendChild(editor);
 
-    window.__focusCalls = 0;
     let doc = '#include <stdio.h>\nint main(void) {\n  return 0;\n}';
-    const listeners = [];
+    window.__focusCalls = 0;
     editor.cmTile = {
       view: {
         state: {
@@ -117,7 +114,6 @@ function createPage({ withView = true, body = '', sampleBoxes = 0 } = {}) {
         },
         dispatch: (transaction) => {
           if (transaction.userEvent) window.__lastUserEvent = transaction.userEvent;
-          // 真实 CM6 的 dispatch 既能改文档，也能只挪光标；两种都要接住
           if (transaction.changes && typeof transaction.changes.from === 'number') {
             const from = transaction.changes.from;
             // 真实 CM6 里 {from, insert} 不写 to 就等于「在 from 处插入」，to 默认取 from
@@ -126,26 +122,23 @@ function createPage({ withView = true, body = '', sampleBoxes = 0 } = {}) {
           }
           if (transaction.selection) window.__lastSelection = transaction.selection;
         },
-        on: (fn) => listeners.push(fn),
+        on: () => {},
       },
     };
-    content.textContent = doc.split('\n').join('\n'); // 让 DOM 里也有内容（退路/长度判断用）
     window.__doc = () => doc;
   }
 
   return window;
 }
 
-async function pressableJsdom(window) {
-  // 等 React/异步 setTimeout(200) 之类跑完
-  await new Promise((resolve) => setTimeout(resolve, 30));
-  return window;
-}
+/* ---------- 清单完整性（沿用 smoke 的思路） ---------- */
 
-/* ---------- 读题面 ---------- */
+const manifest = JSON.parse((await import('node:fs')).readFileSync('dist/chrome/manifest.json', 'utf8'));
+console.log('✓ manifest 可解析（manifest_version ' + manifest.manifest_version + '）');
+
+/* ---------- 题面 ---------- */
 
 const problemPage = createPage({
-  withView: false,
   body: `
     <div class="problem-statement">太短</div>
     <div class="problem-content">给定一个年份，先判断这一年是不是闰年，再算出这一天是星期几，按题目要求输出对应的中文星期名称，注意闰年二月有二十九天。</div>
@@ -156,6 +149,8 @@ check('题面按容器优先级取到最合适的那一个', problem.includes('�
 check('题面结果里带上来源选择器', problem.includes('.problem-content'));
 check('题面结果里带上标题与题目 ID', problem.includes('7-1 星期几') && problem.includes('1150901824503297'));
 check('没有题目容器时退到整页正文且不报错', (await runScript(createPage({ withView: false, body: '<p>整页正文兜底</p>' }), READ_PROBLEM_SCRIPT, {})).includes('整页正文兜底'));
+const longProblem = await runScript(problemPage, READ_PROBLEM_SCRIPT, { maxChars: 5 });
+check('题面过长会截断并说明', longProblem.includes('已截断'));
 
 // 复刻 PTA 考试页：题面不在任何已知类名里，外围全是导航/侧栏文案
 const examPage = new JSDOM(
@@ -187,11 +182,13 @@ check('类名对不上时按小标题定位到题面容器', examProblem.include
 check('题面正文读到了', examProblem.includes('请算出它是星期几'));
 check('导航与侧栏文案被滤掉', !examProblem.includes('Toggle Sidebar') && !examProblem.includes('上一题') && !examProblem.includes('图例'));
 check('抠出了样例输入', examProblem.includes('样例 1 输入') && examProblem.includes('3 4'));
-check('抠出了样例输出', examProblem.includes('样例 1 输出：' + '```' + '\n7\n' + '```'));
+check('抠出了样例输出', examProblem.includes('样例 1 输出：' + String.fromCharCode(96).repeat(3) + '\n7\n' + String.fromCharCode(96).repeat(3)));
 check('样例里的「复制」按钮文字被滤掉', !examProblem.includes('复制'));
 
-const longProblem = await runScript(problemPage, READ_PROBLEM_SCRIPT, { maxChars: 5 });
-check('题面过长会截断并说明', longProblem.includes('已截断'));
+// samplesOnly：给写入后自动检查用的结构化样例
+const sampleRaw = await runScript(examPage, READ_PROBLEM_SCRIPT, { samplesOnly: true });
+const parsedSamples = typeof sampleRaw === 'string' ? JSON.parse(sampleRaw) : sampleRaw;
+check('samplesOnly 返回结构化样例', Array.isArray(parsedSamples.samples) && parsedSamples.samples[0].input === '3 4' && parsedSamples.samples[0].output === '7');
 
 /* ---------- 读代码 ---------- */
 
@@ -207,100 +204,80 @@ check('拿不到实例时退回 DOM 读，并说明只读到渲染出来的行',
 
 check('页面上没有作答区时如实告知', (await runScript(createPage({ withView: false }), READ_EDITOR_SCRIPT, {})).includes('没找到作答区'));
 
-// 题面样例框也是 CM 实例且挂在前面：必须跳过只读的，选真正的作答区
-const samplePage = createPage({ sampleBoxes: 2 });
-const sampleRead = await runScript(samplePage, READ_EDITOR_SCRIPT, {});
-check('前面有只读样例框时，读到的是真正的作答区', sampleRead.includes('int main(void)') && !sampleRead.includes('3 4'));
-const sampleWrite = await runScript(samplePage, WRITE_EDITOR_SCRIPT, { code: 'int main(void) { return 0; }' });
-check('写代码也跳过只读样例框，写进作答区', samplePage.__doc() === 'int main(void) { return 0; }' && sampleWrite.includes('整段覆写'));
-check('写完之后光标停在文末（后面用真实按键戳一下不会插进代码中间）', samplePage.__lastSelection?.anchor === samplePage.__doc().length);
+/* ---------- 多种输入方法（设置页一个方法一个按钮，只保留实测可用的 4 种） ---------- */
 
-// samplesOnly：给写入后自动检查用的结构化样例
-// 真实链路里 injectScript 会把返回值 JSON 化，这里直接拿到对象，两种都兼容
-const sampleRaw = await runScript(examPage, READ_PROBLEM_SCRIPT, { samplesOnly: true });
-const parsedSamples = typeof sampleRaw === 'string' ? JSON.parse(sampleRaw) : sampleRaw;
-check('samplesOnly 返回结构化样例', Array.isArray(parsedSamples.samples) && parsedSamples.samples[0].input === '3 4' && parsedSamples.samples[0].output === '7');
+const methodText = 'int main(void) {\n  return 0;\n}';
+const runMethod = (window, method) => runScript(window, INPUT_METHOD_SCRIPT, { method, text: methodText });
 
-// 提交按钮可用性
-const readyPage = new JSDOM(
-  `<!doctype html><html><body><button id="s">提交本题作答</button></body></html>`,
-  { url: 'https://pintia.cn/problem-sets/1/problems/1', runScripts: 'outside-only' },
-).window;
-installInnerText(readyPage);
-check('check_ready 报告提交按钮可用', (await runScript(readyPage, CHECK_READY_SCRIPT, {})).includes('当前可用'));
-readyPage.document.querySelector('#s').disabled = true;
-check('按钮禁用时如实报告', (await runScript(readyPage, CHECK_READY_SCRIPT, {})).includes('当前是禁用的'));
-const noButtonPage = createPage({ withView: false });
-check('找不到按钮时列出页面上的按钮便于排查', (await runScript(noButtonPage, CHECK_READY_SCRIPT, {})).includes('没找到提交按钮'));
+// A. 编辑器状态（CM6 API）三种写法都要能写进去
+for (const method of ['dispatch', 'dispatchFocus', 'replaceSelection']) {
+  const page = createPage();
+  const result = await runMethod(page, method);
+  check(`方法 ${method}：写进去了且回读一致`, page.__doc() === methodText && result.includes('与目标一致'));
+}
+const focusedPage = createPage();
+await runMethod(focusedPage, 'dispatchFocus');
+check('方法 dispatchFocus：确实调了 view.focus()', focusedPage.__focusCalls > 0);
 
-// 只有只读样例框时要明确说清，而不是含糊报「编辑器是只读的」
-const onlyReadOnly = createPage({ withView: false, sampleBoxes: 2 });
-const onlyReadOnlyResult = await runScript(onlyReadOnly, WRITE_EDITOR_SCRIPT, { code: 'x' });
-check('只有只读样例框时说清是样例框、没有作答区', onlyReadOnlyResult.includes('只读编辑器') && onlyReadOnlyResult.includes('样例框'));
+// B. 页面侧辅助模式（写入链路依赖它们）
+const modePage = createPage();
+const jsonResult = await runScript(modePage, INPUT_METHOD_SCRIPT, { method: 'dispatch', text: 'int main(){}', json: true });
+check('模式 json：返回结构化的回读比对', jsonResult.ok === true && jsonResult.detail.includes('与目标一致'));
 
-/* ---------- 写代码 ---------- */
+const docResult = await runScript(modePage, INPUT_METHOD_SCRIPT, { method: 'readDoc', text: '' });
+check('模式 readDoc：用编辑器实例读到写入后的全文', docResult === 'int main(){}');
 
-const writePage = createPage();
-const code = '#include <stdio.h>\nint main(void) {\n  long long n = 0;\n  return 0;\n}\n';
-const written = await runScript(writePage, WRITE_EDITOR_SCRIPT, { code });
-check('通过编辑器实例整段覆写成功', writePage.__doc() === code);
-check('写代码结果里说明走了实例与回读一致', written.includes('cmTile.view') && written.includes('与目标一致'));
+const clearResult = await runScript(modePage, INPUT_METHOD_SCRIPT, { method: 'clear', text: '', json: true });
+check('模式 clear：通过编辑器实例清空作答区', modePage.__doc() === '' && clearResult.ok === true && clearResult.detail === '已清空');
 
-const appended = await runScript(writePage, WRITE_EDITOR_SCRIPT, { code: '// 追加一行', clear: false });
-check('clear=false 时追加而不是覆写', writePage.__doc().startsWith(code) && writePage.__doc().includes('// 追加一行'));
-
-check('缺 code 参数时返回提示', (await runScript(writePage, WRITE_EDITOR_SCRIPT, {})).includes('没有给 code 参数'));
-
-// 只读编辑器要拦住
-const readOnlyPage = createPage();
-readOnlyPage.document.querySelector('#pta-answer-editor').cmTile.view.state.readOnly = true;
-check('只读编辑器会拒绝写入', (await runScript(readOnlyPage, WRITE_EDITOR_SCRIPT, { code })).includes('只读'));
-
-// 没有实例时的退路：聚焦 + 全选 + execCommand 整段插入
-const fallbackPage = createPage({ withView: false });
-let inserted = null;
-const area = fallbackPage.document.createElement('div');
-area.className = 'cm-content';
-area.setAttribute('contenteditable', 'true');
-fallbackPage.document.body.appendChild(area);
-fallbackPage.document.execCommand = (command, _ui, value) => {
-  inserted = value;
-  // 用 DOM API 拼，别走 innerHTML（代码里的 <stdio.h> 会被当成标签解析掉）
-  area.innerHTML = '';
-  for (const line of value.split('\n')) {
-    const node = fallbackPage.document.createElement('div');
-    node.className = 'cm-line';
-    node.textContent = line;
-    area.appendChild(node);
-  }
-  return true;
-};
-const fallback = await runScript(fallbackPage, WRITE_EDITOR_SCRIPT, { code });
-check('没有实例时退到整段插入', inserted === code);
-check('退路的结果里说明了走的是退路且回读一致', fallback.includes('没拿到编辑器实例') && fallback.includes('与目标一致'));
-
-// 回读不一致要如实报出来
+// 回读不一致要如实报出来：dispatch 被桩成空操作，编辑器内容保持原样，读回必然与目标不符
 const mismatchPage = createPage();
 mismatchPage.document.querySelector('#pta-answer-editor').cmTile.view.dispatch = () => {};
-const mismatch = await runScript(mismatchPage, WRITE_EDITOR_SCRIPT, { code });
+const mismatch = await runScript(mismatchPage, INPUT_METHOD_SCRIPT, {
+  method: 'dispatch',
+  text: '#include <stdio.h>\nint main(void) {\n  long long n = 0;\n  return 0;\n}',
+});
 check(
   '写进去的内容与目标不符时会报出第几行不一致',
   mismatch.includes('不一致') && /第 \d+ 行/.test(mismatch) && mismatch.includes('long long n = 0;'),
 );
 
+// 作答区坐标（给 CDP 真实点击用）
+const rectPage = createPage();
+Object.defineProperty(rectPage.document.querySelector('.cm-content'), 'getBoundingClientRect', {
+  value: () => ({ left: 10, top: 20, width: 100, height: 40 }),
+  configurable: true,
+});
+const rectRaw = await runMethod(rectPage, 'rect');
+const rect = typeof rectRaw === 'string' ? JSON.parse(rectRaw) : rectRaw;
+check('rect：报告作答区中心坐标', rect.x === 60 && rect.y === 40);
+
+// 页面提示要能读出来
+const noticePage = createPage();
+const toast = noticePage.document.createElement('div');
+toast.className = 'el-message';
+toast.textContent = '禁止粘贴';
+noticePage.document.body.appendChild(toast);
+check(
+  '页面出现「禁止粘贴」提示时会写进结果',
+  (await runMethod(noticePage, 'dispatch')).includes('页面上出现了提示'),
+);
+
+check('未知方法如实报告', (await runMethod(createPage(), '???')).includes('没有实现的方法'));
+check('空文本直接报错', (await runScript(createPage(), INPUT_METHOD_SCRIPT, { method: 'dispatch', text: '' })).includes('没有给 text'));
+
 /* ---------- 提交与判题 ---------- */
 
-function createJudgePage({ judgeTextAfter, label = '提交本题作答' } = {}) {
+function createJudgePage() {
   const dom = new JSDOM(
     `<!doctype html><html><body>
       <button class="tab">提交</button>
-      <button id="real-submit">${label}</button>
+      <button id="real-submit">提交本题作答</button>
       <div class="judge-panel">评测中</div>
     </body></html>`,
     { url: 'https://pintia.cn/problem-sets/1/problems/1', runScripts: 'outside-only' },
   );
-  const { window } = dom;
-  installInnerText(window);
+  const window = installInnerText(dom.window);
   const clicks = [];
   window.document.querySelector('#real-submit').addEventListener('click', () => clicks.push('real'));
   window.document.querySelector('.tab').addEventListener('click', () => clicks.push('tab'));
@@ -308,29 +285,20 @@ function createJudgePage({ judgeTextAfter, label = '提交本题作答' } = {}) 
   window.__setJudgeText = (text) => {
     window.document.querySelector('.judge-panel').textContent = text;
   };
-  window.__judgeTextAfter = judgeTextAfter;
   return window;
 }
 
-// 按钮选择：同名标签页在前也不能点错
 const judgePage = createJudgePage();
-const submitted = await runScript(judgePage, SUBMIT_ANSWER_SCRIPT, { waitSeconds: 5, pollMs: 10 });
+await runScript(judgePage, SUBMIT_ANSWER_SCRIPT, { waitSeconds: 5, pollMs: 10 });
 check('提交时点的是同名按钮里精确匹配的那个（不是标签页）', judgePage.__clicks.join(',') === 'real');
-check('没出结论时如实说还没出结论而不是瞎报', submitted.includes('还没出结论'));
 
-// 结论要同时满足「非空 ∧ 与提交前不同 ∧ 能归一化成状态码」
-judgePage.__setJudgeText('评测中');
 const stillPending = await runScript(judgePage, SUBMIT_ANSWER_SCRIPT, { waitSeconds: 5, pollMs: 10 });
 check('只有「评测中」时不算结论', stillPending.includes('还没出结论'));
 
-const acPage = createJudgePage();
-const acRun = await runScript(acPage, SUBMIT_ANSWER_SCRIPT, { waitSeconds: 5, pollMs: 10 });
-check('判题面板文字变了之后拿到结论', acRun.includes('还没出结论') || acRun.includes('判题结论'));
-acPage.__setJudgeText('答案正确');
-const ac = await runScript(acPage, READ_JUDGE_SCRIPT, {});
+judgePage.__setJudgeText('答案正确');
+const ac = await runScript(judgePage, READ_JUDGE_SCRIPT, {});
 check('read_judge_result 归一化出 AC', ac.includes('AC'));
 
-// 归一化的顺序：具体状态优先于泛化词，否定词优先于肯定词
 const compileError = createJudgePage();
 compileError.__setJudgeText('编译错误');
 check('编译错误归成 CE 而不是 WA', (await runScript(compileError, READ_JUDGE_SCRIPT, {})).includes('CE'));
@@ -341,7 +309,7 @@ check('「未通过」不会被当成通过', (await runScript(notPassed, READ_J
 
 check('页面上没有判题文字时如实告知', (await runScript(createPage({ withView: false }), READ_JUDGE_SCRIPT, {})).includes('没读到判题文字'));
 
-// 等结论时会轮询直到文字变化
+// 轮询到结论后立刻返回
 const slowPage = createJudgePage();
 setTimeout(() => slowPage.__setJudgeText('运行超时'), 30);
 const slow = await runScript(slowPage, SUBMIT_ANSWER_SCRIPT, { waitSeconds: 5, pollMs: 10 });
@@ -361,151 +329,18 @@ installInnerText(dialogWindow);
 dialogWindow.document.querySelector('.pc-close').addEventListener('click', () => {
   dialogWindow.document.querySelector('.pc-modal').remove();
 });
-const closed = await runScript(dialogWindow, CLOSE_DIALOGS_SCRIPT, {});
-check('关闭控件在弹窗内部才会被点到', closed.includes('已关掉 1 层弹窗'));
+check('close_dialogs：关闭控件在弹窗内部才会被点到', (await runScript(dialogWindow, CLOSE_DIALOGS_SCRIPT, {})).includes('已关掉 1 层弹窗'));
 check('弹窗确实被关掉了', !dialogWindow.document.querySelector('.pc-modal'));
 check('没有弹窗时如实告知', (await runScript(createPage({ withView: false }), CLOSE_DIALOGS_SCRIPT, {})).includes('没找到需要关的弹窗'));
 
-/* ---------- 多种输入方法（设置页一个方法一个按钮） ---------- */
+/* ---------- 提交按钮可用性 ---------- */
 
-const methodText = 'int main(void) {\n  return 0;\n}';
-const runMethod = (window, method) => runScript(window, INPUT_METHOD_SCRIPT, { method, text: methodText });
+const readyPage = createPage();
+readyPage.document.body.innerHTML = `<button id="s">提交本题作答</button>`;
+check('check_ready 报告提交按钮可用', (await runScript(readyPage, CHECK_READY_SCRIPT, {})).includes('当前可用'));
+readyPage.document.querySelector('#s').disabled = true;
+check('按钮禁用时如实报告', (await runScript(readyPage, CHECK_READY_SCRIPT, {})).includes('当前是禁用的'));
+const noButtonPage = createPage({ withView: false });
+check('找不到按钮时列出页面上的按钮便于排查', (await runScript(noButtonPage, CHECK_READY_SCRIPT, {})).includes('没找到提交按钮'));
 
-// A. 编辑器状态（CM6 API）五种写法都要能写进去
-for (const method of ['dispatch', 'dispatchFocus', 'dispatchUserEvent', 'replaceSelection', 'dispatchTyped']) {
-  const page = createPage();
-  const result = await runMethod(page, method);
-  check(`方法 ${method}：写进去了且回读一致`, page.__doc() === methodText && result.includes('与目标一致'));
-}
-const focusedPage = createPage();
-await runMethod(focusedPage, 'dispatchFocus');
-check('方法 dispatchFocus：确实调了 view.focus()', focusedPage.__focusCalls > 0);
-const userEventPage = createPage();
-check('方法 dispatchUserEvent：事务里带了 userEvent', userEventPage.__lastUserEvent !== undefined || true);
-
-// B. 剪贴板
-const clipPage = createPage();
-Object.defineProperty(clipPage.navigator, 'clipboard', {
-  value: { writeText: async () => {} },
-  configurable: true,
-});
-const clipResult = await runMethod(clipPage, 'clipboardPaste');
-check('方法 clipboardPaste：写进剪贴板并让 background 发 Ctrl+V', clipResult.includes('MARK_CLIPBOARD_READY'));
-const noClipPage = createPage();
-delete noClipPage.navigator.clipboard;
-check('方法 clipboardPaste：环境不支持时如实报告', (await runMethod(noClipPage, 'clipboardPaste')).includes('写剪贴板失败'));
-const execPastePage = createPage();
-Object.defineProperty(execPastePage.navigator, 'clipboard', {
-  value: { writeText: async () => {} },
-  configurable: true,
-});
-execPastePage.document.execCommand = () => true;
-check('方法 execCommandPaste：走 execCommand("paste")', (await runMethod(execPastePage, 'execCommandPaste')).includes('execCommand'));
-
-// C. DOM 与事件
-const execPage = createPage({ withView: false });
-const execArea = execPage.document.createElement('div');
-execArea.className = 'cm-content';
-execArea.setAttribute('contenteditable', 'true');
-execPage.document.body.appendChild(execArea);
-let execText = null;
-execPage.document.execCommand = (command, _ui, value) => {
-  execText = value;
-  execArea.innerHTML = '';
-  for (const line of value.split('\n')) {
-    const node = execPage.document.createElement('div');
-    node.className = 'cm-line';
-    node.textContent = line;
-    execArea.appendChild(node);
-  }
-  return true;
-};
-check('方法 execCommand：整段插入且回读一致', (await runMethod(execPage, 'execCommand')).includes('execCommand') && execText === methodText);
-
-const eventsPage = createPage({ withView: false });
-const eventsArea = eventsPage.document.createElement('div');
-eventsArea.className = 'cm-content';
-eventsArea.setAttribute('contenteditable', 'true');
-eventsPage.document.body.appendChild(eventsArea);
-const fired = [];
-eventsArea.addEventListener('input', () => fired.push('input'));
-check(
-  '方法 inputEvents：事件派发了但内容没变（如实报不一致）',
-  (await runMethod(eventsPage, 'inputEvents')).includes('不一致') && fired.includes('input'),
-);
-
-const mutationPage = createPage({ withView: false });
-const mutationArea = mutationPage.document.createElement('div');
-mutationArea.className = 'cm-content';
-mutationArea.setAttribute('contenteditable', 'true');
-mutationPage.document.body.appendChild(mutationArea);
-const mutationResult = await runMethod(mutationPage, 'domMutation');
-check('方法 domMutation：DOM 改了、内容也读回来一致', mutationArea.textContent === methodText && mutationResult.includes('与目标一致'));
-
-const compositionPage = createPage({ withView: false });
-const compositionArea = compositionPage.document.createElement('div');
-compositionArea.className = 'cm-content';
-compositionArea.setAttribute('contenteditable', 'true');
-compositionPage.document.body.appendChild(compositionArea);
-const compositionEvents = [];
-for (const type of ['compositionstart', 'compositionupdate', 'compositionend', 'beforeinput', 'input']) {
-  compositionArea.addEventListener(type, () => compositionEvents.push(type));
-}
-check(
-  '方法 composition：整条输入法事件链都派发了',
-  (await runMethod(compositionPage, 'composition')).includes('输入法') &&
-    ['compositionstart', 'compositionupdate', 'compositionend', 'beforeinput', 'input'].every((type) =>
-      compositionEvents.includes(type),
-    ),
-);
-
-const pastePage = createPage({ withView: false });
-const pasteArea = pastePage.document.createElement('div');
-pasteArea.className = 'cm-content';
-pasteArea.setAttribute('contenteditable', 'true');
-pastePage.document.body.appendChild(pasteArea);
-check(
-  '方法 pasteEvent：能构造并派发 paste 事件（或如实说不支持）',
-  /paste|不支持/.test(await runMethod(pastePage, 'pasteEvent')),
-);
-
-const valuePage = createPage({ withView: false });
-const valueInput = valuePage.document.createElement('input');
-valuePage.document.body.appendChild(valueInput);
-valuePage.document.body.appendChild(
-  Object.assign(valuePage.document.createElement('div'), { className: 'cm-content' }),
-);
-const valueResult = await runMethod(valuePage, 'valueSetter');
-check('方法 valueSetter：普通 input 上生效', valueInput.value === '' || valueResult.includes('value setter'));
-check(
-  '方法 valueSetter：CodeMirror 上如实说用不上',
-  (await runMethod(createPage(), 'valueSetter')).includes('用不上'),
-);
-
-// 作答区坐标（给 CDP 真实点击用）
-const rectPage = createPage();
-Object.defineProperty(rectPage.document.querySelector('.cm-content'), 'getBoundingClientRect', {
-  value: () => ({ left: 10, top: 20, width: 100, height: 40 }),
-  configurable: true,
-});
-// 真实链路里 injectScript 会把对象 JSON 化，这里直接拿到对象，两种都兼容
-const rectRaw = await runMethod(rectPage, 'rect');
-const rect = typeof rectRaw === 'string' ? JSON.parse(rectRaw) : rectRaw;
-check('rect：报告作答区中心坐标', rect.x === 60 && rect.y === 40);
-
-// 页面提示要能读出来
-const noticePage = createPage();
-const toast = noticePage.document.createElement('div');
-toast.className = 'el-message';
-toast.textContent = '禁止粘贴';
-noticePage.document.body.appendChild(toast);
-check(
-  '页面出现「禁止粘贴」提示时会写进结果',
-  (await runMethod(noticePage, 'dispatch')).includes('页面上出现了提示'),
-);
-
-check('未知方法如实报告', (await runMethod(createPage(), '???')).includes('未知方法'));
-check('空文本直接报错', (await runScript(createPage(), INPUT_METHOD_SCRIPT, { method: 'dispatch', text: '' })).includes('没有给 text'));
-
-await pressableJsdom(problemPage);
 console.log('\nPTA 三件套校验通过');

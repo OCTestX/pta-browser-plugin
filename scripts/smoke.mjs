@@ -47,7 +47,7 @@ console.log('✓ 脚本里没有会让 Chrome 拒绝加载的 Unicode 非字符'
 
 const code = readFileSync(`${outDir}/content.js`, 'utf8');
 // 和 src/shared/input-methods.ts 保持同步的按钮数量（改了那边这里也要改）
-const INPUT_METHODS_COUNT = 17;
+const INPUT_METHODS_COUNT = 4;
 
 // React 的渲染是异步的，固定 sleep 在机器忙的时候会偶发失败。
 // 这里改成等 DOM 安静下来：有新改动就重新计时，直到安静 quietMs。
@@ -311,16 +311,15 @@ check(
   withKey.storageWrites.some((patch) => patch['pta-assistant-input-method-ok'] === 'dispatch'),
 );
 
-// 另一种方法：被页面拦住的不该被记成「可用」
-withKey.setTestInputResult('【execCommand 整段插入】方法：聚焦全选后 execCommand(insertText)；回读比对：与目标一致；页面上出现了提示：禁止粘贴');
-const execButton = methodButtons.find((el) => el.textContent.startsWith('execCommand'));
-const writesBefore = withKey.storageWrites.length;
-execButton.click();
+// 另一种方法：成功的话同样会记成「可用」并覆盖旧记录
+withKey.setTestInputResult('【replaceSelection】方法：view.state.replaceSelection 后 dispatch；回读比对：与目标一致');
+const replaceButton = methodButtons.find((el) => el.textContent.startsWith('replaceSelection'));
+replaceButton.click();
 await tick();
 check(
-  '被「禁止粘贴」拦住的那次不会记成可用方法',
-  withKey.storageWrites.length === writesBefore &&
-    !execButton.textContent.includes('✅'),
+  '换一种方法成功后会更新可用方法记录',
+  withKey.storageWrites.some((patch) => patch['pta-assistant-input-method-ok'] === 'replaceSelection') &&
+    replaceButton.textContent.includes('✅'),
 );
 
 withKey.find('.panel__back').click();

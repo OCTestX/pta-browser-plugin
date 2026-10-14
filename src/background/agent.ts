@@ -9,7 +9,8 @@ import {
 } from '../shared/tools';
 import type { ApiMessage } from '../shared/types';
 import { compileAndRun, compareOutput, formatCompileResult } from './compile';
-import { createDebuggerIo, detach, pokeEditor, pressKey } from './debugger-input';
+import { pokeEditor as poke, writeEditorCode } from './input-methods';
+import { createDebuggerIo, detach, pressKey } from './debugger-input';
 import {
   CHECK_READY_SCRIPT,
   CLOSE_DIALOGS_SCRIPT,
@@ -17,7 +18,6 @@ import {
   READ_JUDGE_SCRIPT,
   READ_PROBLEM_SCRIPT,
   SUBMIT_ANSWER_SCRIPT,
-  WRITE_EDITOR_SCRIPT,
 } from './pta-scripts';
 import { describeTypist, runTypist } from './typist';
 
@@ -106,7 +106,6 @@ const PTA_SCRIPTS: Record<string, string> = {
   check_ready: CHECK_READY_SCRIPT,
   read_problem: READ_PROBLEM_SCRIPT,
   read_editor_code: READ_EDITOR_SCRIPT,
-  write_editor_code: WRITE_EDITOR_SCRIPT,
   submit_answer: SUBMIT_ANSWER_SCRIPT,
   read_judge_result: READ_JUDGE_SCRIPT,
   close_dialogs: CLOSE_DIALOGS_SCRIPT,
@@ -159,38 +158,40 @@ export async function runTool(
     }
   }
 
+  if (name === 'write_editor_code') {
+    // 写入走完整链路：默认实现 → 清空 → 备用实现依次重试
+    const outcome = await writeEditorCode({
+      tabId,
+      code: typeof args.code === 'string' ? args.code : '',
+    });
+    const notes: string[] = [];
+
+    // 整段写入走的是编辑器状态，PTA 可能没标成「改过」；无条件尝试用真实按键戳一下
+    try {
+      notes.push(await poke(tabId));
+    } catch (error) {
+      const reason = error instanceof Error ? error.message : String(error);
+      notes.push(`真实按键不可用（${reason}），如果提交按钮是灰的，让用户手动在作答区敲一个字符再删掉`);
+    } finally {
+      await detach(tabId);
+    }
+
+    // 自动检查：回读比对已在链路里做过，这里补样例编译比对与提交按钮状态
+    if (args.verify !== false) {
+      notes.push(await verifyWrittenCode(injectScript, tabId, args.code, settings));
+    }
+
+    return { output: [outcome.output, ...notes].join('；'), isError: outcome.isError };
+  }
+
   // PTA 相关动作都在页面主世界跑（编辑器实例、判题弹窗都是页面自己的东西）
   if (PTA_SCRIPTS[name]) {
     const waitSeconds = Math.min(Math.max(Number(args.waitSeconds) || 20, 5), 120);
     // 等判题的脚本要在页面里跑很久，给它留够时间
     const timeout = name === 'submit_answer' ? (waitSeconds + 20) * 1000 : undefined;
     const result = await injectScript(tabId, PTA_SCRIPTS[name], args, timeout);
-
-    if (name !== 'write_editor_code' || !result.ok) {
-      return { output: result.output, isError: !result.ok };
-    }
-
-    // 写入之后的自动检查：先戳一下（触发页面的修改标记），再回读页面的就绪状态与样例
-    const notes: string[] = [];
-    if (settings.useDebuggerInput) {
-      // 整段写入走的是编辑器状态，PTA 可能没标成「改过」
-      try {
-        await pokeEditor(tabId);
-        notes.push('已用真实按键敲了一个字符再删掉（触发页面的修改标记）');
-      } catch (error) {
-        const reason = error instanceof Error ? error.message : String(error);
-        notes.push(`真实按键不可用（${reason}），如果提交按钮是灰的，让用户手动在作答区敲一个字符再删掉`);
-      } finally {
-        await detach(tabId);
-      }
-    }
-
-    if (args.verify === false) {
-      return { output: [result.output, ...notes].join('；'), isError: false };
-    }
-
-    notes.push(await verifyWrittenCode(injectScript, tabId, args.code, settings));
-    return { output: [result.output, ...notes].join('；'), isError: false };
+    if (!result.ok) return { output: result.output, isError: true };
+    return { output: result.output, isError: false };
   }
 
   if (name === 'simulate_keyboard_input' && settings.useDebuggerInput) {

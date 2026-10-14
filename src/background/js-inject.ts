@@ -75,9 +75,25 @@ export async function injectScript(
         func: runInPage,
         args: [withArgs, timeout],
       });
-      const result = results[0]?.result;
-      if (!result) return { ok: false, output: '页面没有返回结果', world };
-      return { ok: result.ok, output: result.output, world };
+      const value = results[0]?.result;
+      if (value === undefined || value === null) {
+        return { ok: false, output: '页面没有返回结果', world };
+      }
+      // js_inject 的包装返回 {ok, output}；PTA 脚本直接返回字符串或对象（describe 会 JSON 化）
+      if (
+        typeof value === 'object' &&
+        !Array.isArray(value) &&
+        typeof (value as { ok?: unknown }).ok === 'boolean' &&
+        typeof (value as { output?: unknown }).output === 'string'
+      ) {
+        const shaped = value as { ok: boolean; output: string };
+        return { ok: shaped.ok, output: shaped.output, world };
+      }
+      return {
+        ok: true,
+        output: typeof value === 'string' ? value : JSON.stringify(value),
+        world,
+      };
     } catch (error) {
       lastError = error instanceof Error ? error.message : String(error);
     }

@@ -71,13 +71,10 @@ ext.runtime.onMessage.addListener((message: unknown, sender, sendResponse) => {
           return;
         }
         const method = findInputMethod(message.method ?? DEFAULT_INPUT_METHOD);
-        const settings = await loadSettings();
         const outcome = await runInputMethod({
           methodId: method.id,
           text: message.text,
           tabId,
-          settings,
-          runPageTool: (name, args) => runToolInTab(tabId, name, args),
         });
         sendResponse({
           ok: !outcome.isError,

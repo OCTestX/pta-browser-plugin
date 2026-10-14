@@ -1,16 +1,16 @@
 /**
- * PTA 页面上的三个动作脚本，都在**页面主世界**执行（编辑器实例挂在页面自己的 JS 对象上，
- * 隔离世界看不到）。参数通过 __args 注入，脚本里 return 的值会被序列化回 background。
+ * PTA 页面上执行的脚本集合（都在页面主世界跑，通过 background/input-methods 或 injectScript 注入）。
  *
- * 思路取自同行实践（项目里的 other_pta.md）：
- *   · 题面按容器优先级抠，一个都没命中就退到整页正文 —— 宁可读得糙，不能读不到，且不抛异常
- *   · 作答区是 CodeMirror 6，优先走编辑器实例读写（读得到全文，写是原子的），
- *     拿不到实例才退回 DOM（DOM 只能读到渲染出来的行，长文档会缺）
+ * 注意：这些脚本是模板字符串，里面的 `\n` 之类的转义要写成双反斜杠；
+ * 另外模板字符串里写不了裸的三反引号，用 fence 变量拼代码块围栏。
  */
 
 const HELPERS = `
   // 模板字符串里写不了裸的三反引号，用它拼代码块围栏
   const fence = String.fromCharCode(96).repeat(3);
+
+  // jsdom 这类环境没有 innerText，退回 textContent
+  const textOf = (node) => ((node && (node.innerText || node.textContent || '')) + '').trim();
 
   // 题面的「输入样例 / 输出样例」也是 CodeMirror，但是只读的；
   // 只看 contenteditable 不够（它们是 contenteditable="false" + aria-readonly="true"）
@@ -42,7 +42,7 @@ const HELPERS = `
   const describePath = (node, key) => {
     const id = node.id ? '#' + node.id : '';
     const cls = typeof node.className === 'string' && node.className.trim()
-      ? '.' + node.className.trim().split(/\s+/).slice(0, 2).join('.')
+      ? '.' + node.className.trim().split(/\\s+/).slice(0, 2).join('.')
       : '';
     return node.tagName.toLowerCase() + id + cls + ' → ' + key;
   };
@@ -62,7 +62,6 @@ const HELPERS = `
     const consider = (value, node, path) => {
       if (!looksLikeEditorView(value) || seen.has(value)) return;
       seen.add(value);
-      // 找到承载它的可编辑元素（往上下都看一眼）
       let element = node;
       if (!element.classList || !element.classList.contains('cm-content')) {
         element = element.querySelector ? element.querySelector('.cm-content') : null;
@@ -85,7 +84,9 @@ const HELPERS = `
             for (const subKey of likelyKeys) {
               let inner;
               try { inner = value[subKey]; } catch (e) { continue; }
-              if (looksLikeEditorView(inner)) consider(inner, node, describePath(node, key + '.' + subKey));
+              if (looksLikeEditorView(inner)) {
+                consider(inner, node, describePath(node, key + '.' + subKey));
+              }
             }
           }
         }
@@ -100,8 +101,7 @@ const HELPERS = `
     return found;
   };
 
-  // 作答区＝可写的那一个；实在有多个就取内容最长的（作答区通常比样例框长），
-  // 都空就取最后一个（DOM 顺序上作答区在样例框后面）
+  // 作答区＝可写的那一个；实在有多个就取内容最长的，都空就取最后一个
   const pickEditorView = () => {
     const views = collectEditorViews();
     const writable = views.filter((item) => !item.readOnly);
@@ -128,14 +128,16 @@ const HELPERS = `
     return '';
   };
 
+  const shortText = (node) => textOf(node).slice(0, 200);
+  const buttonLabel = (node) => ((node && (node.innerText || node.textContent || node.value || '')) + '').trim();
+
   const normalizeLines = (value) => {
     const lines = String(value).replace(/\\r\\n/g, '\\n').split('\\n').map((l) => l.replace(/[ \\t]+$/, ''));
     while (lines.length > 0 && lines[lines.length - 1] === '') lines.pop();
     return lines;
   };
 
-
-  // ---- 判题与弹窗（提交相关的几条实测经验都写在这里）----
+  // ---- 判题（提交相关的几条实测经验都写在这里）----
 
   // 归一化判题文字：顺序即优先级 —— 具体状态排在泛化词前面，
   // 否则「编译错误」会被当成「错误」报成 WA，模型就会一直改算法而不碰那句语法错误
@@ -161,11 +163,6 @@ const HELPERS = `
     return null;
   };
 
-  // jsdom 这类环境没有 innerText，退回 textContent
-  const textOf = (node) => ((node && (node.innerText || node.textContent || '')) + '').trim();
-  const shortText = (node) => textOf(node).slice(0, 200);
-  const buttonLabel = (node) => ((node && (node.innerText || node.textContent || node.value || '')) + '').trim();
-
   // 判题文字可能挂在弹窗里，也可能直接出现在页面上
   const readJudgeText = () => {
     const containers = ['[class*=judge]', '[class*=result]', '[class*=status]', '[role=alert]', '.el-message', '.ant-message', '[class*=modal]', '[class*=dialog]'];
@@ -181,7 +178,6 @@ const HELPERS = `
     const joined = chunks.join(' \\n ');
     const matched = judgeStatus(joined);
     if (matched) return { text: joined.slice(0, 400), status: matched };
-    // 弹窗里没找到就从整页正文按行捞
     const lines = (document.body.innerText || '').split('\\n').map((line) => line.trim()).filter(Boolean);
     const hit = lines.find((line) => judgeStatus(line));
     return { text: hit || joined.slice(0, 400), status: hit ? judgeStatus(hit) : null };
@@ -213,7 +209,7 @@ const HELPERS = `
     return null;
   };
 
-  // 关弹窗：ESC → 在识别到的弹窗内部找关闭控件 → 点文字按钮 → 点遮罩；最多三轮（关一层常常还压着一层）
+  // 关弹窗：ESC → 在识别到的弹窗内部找关闭控件 → 点文字按钮；最多三轮（关一层常常还压着一层）
   const dismissOverlays = () => {
     let closed = 0;
     const dialogSelectors = ['[class*=modal]', '[class*=dialog]', '[class*=overlay]', '[class*=popup]', '.el-dialog', '.ant-modal'];
@@ -242,15 +238,20 @@ const HELPERS = `
     return closed;
   };
 
-  // 回读比对：尾部空白与末尾空行不算差异
+  // 回读比对：尾部空白与末尾空行不算差异。结构化返回，文本在调用方拼
   const compareText = (expected, actual) => {
     const want = normalizeLines(expected);
     const got = normalizeLines(actual);
     const mismatch = want.findIndex((line, index) => line !== (got[index] === undefined ? '\\u0000' : got[index]));
-    if (mismatch === -1 && want.length === got.length) return '回读比对：' + want.length + ' 行与目标一致';
+    if (mismatch === -1 && want.length === got.length) {
+      return { ok: true, detail: '回读比对：' + want.length + ' 行与目标一致' };
+    }
     const at = mismatch === -1 ? Math.min(want.length, got.length) : mismatch;
     const brief = (line) => line === undefined ? '（没有这一行）' : (line.length > 40 ? line.slice(0, 40) + '…' : line);
-    return '回读比对：与目标不一致（第 ' + (at + 1) + ' 行起），期望「' + brief(want[at]) + '」，实际「' + brief(got[at]) + '」';
+    return {
+      ok: false,
+      detail: '回读比对：与目标不一致（第 ' + (at + 1) + ' 行起），期望「' + brief(want[at]) + '」，实际「' + brief(got[at]) + '」',
+    };
   };
 `;
 
@@ -303,18 +304,17 @@ if (!hit) {
   }
 }
 
-// 三、把纯 UI 文案行滤掉
+// 三、把纯 UI 文案行滤掉。注意不能按「纯数字行」过滤 —— 样例输出经常就是一行数字（比如 "7"），
+// 会连带把样例答案删掉；侧栏题号在按容器/小标题定位时本来就被排除在外了
 const NOISE = [
   '题目总览', '作答', '题数', '编程题', '图例', 'Toggle Sidebar', '上一题', '下一题',
   '全屏浏览', '切换布局', '复制内容', '格式', '全屏', '题目描述', '我的提交', '提交本题作答', '复制',
 ];
 const lines = raw.split('\\n').map((line) => line.replace(/[ \\t]+$/, '')).filter((line) => {
-  const text = line.trim();
-  if (!text) return true;
-  if (NOISE.indexOf(text) >= 0) return false;
-  if (/^当前\\d+\\s*-\\s*\\d+项/.test(text)) return false;
-  // 注意：这里绝不能按「纯数字行」过滤 —— 样例输出经常就是一行数字（比如 "7"），
-  // 会连带把样例答案删掉。侧栏题号在按容器/小标题定位时本来就被排除在外了。
+  const value = line.trim();
+  if (!value) return true;
+  if (NOISE.indexOf(value) >= 0) return false;
+  if (/^当前\\d+\\s*-\\s*\\d+项/.test(value)) return false;
   return true;
 });
 let text = lines.join('\\n').replace(/\\n{3,}/g, '\\n\\n').trim();
@@ -353,10 +353,12 @@ for (const block of blocks) {
 
 const title = (document.title || textOf(document.querySelector('h1')) || '').trim();
 const idMatch = location.pathname.match(/\\/(\\d{6,})/);
+
 // 只取样例：给 write_editor_code 的自动检查用，返回结构化数据
 if (__args.samplesOnly === true) {
   return { title, url: location.href, samples: pairs };
 }
+
 const out = ['题目：' + (title || '（没取到标题）'), '地址：' + location.href];
 if (idMatch) out.push('题目 ID：' + idMatch[1]);
 if (pairs.length > 0) {
@@ -384,51 +386,6 @@ const element = findEditorElement();
 if (!element) return '页面上没找到作答区（既没有编辑器实例，也没有可编辑区域）';
 const code = readFromDom(element);
 return '没拿到编辑器实例，只能按 DOM 读渲染出来的 ' + code.split('\\n').length + ' 行（长文档会缺行）：\\n' + fence + '\\n' + code + '\\n' + fence;
-`;
-
-/** 覆写作答区里的代码 */
-export const WRITE_EDITOR_SCRIPT = `${HELPERS}
-const code = String(__args.code === undefined ? '' : __args.code);
-if (!code.trim()) return '没有给 code 参数';
-const clear = __args.clear !== false;
-
-const picked = pickEditorView();
-if (!picked.best) {
-  if (picked.readOnlyCount > 0) {
-    return '页面上只有 ' + picked.readOnlyCount + ' 个只读编辑器（题面的样例框），没找到可写的作答区，写不进去';
-  }
-} else {
-  const view = picked.best.view;
-  if (view.state.readOnly) return '作答区是只读的，写不进去';
-  const length = view.state.doc.length;
-  const changes = clear || length === 0
-    ? { from: 0, to: length, insert: code }
-    : { from: length, to: length, insert: (view.state.doc.toString().endsWith('\\n') ? '' : '\\n') + code };
-  view.dispatch({ changes });
-  // 把光标放到文末：一是用户接手时位置正常，二是后面用真实按键「戳一下」时不会插到代码中间
-  view.dispatch({ selection: { anchor: view.state.doc.length } });
-  await new Promise((resolve) => setTimeout(resolve, 200));
-  const after = view.state.doc.toString();
-  return '已通过编辑器实例（' + picked.best.path + '）' + (clear ? '整段覆写' : '追加') + ' ' + code.split('\\n').length + ' 行。' + compareText(code, after);
-}
-
-// 退路：拿不到实例就聚焦后整段插入（整段插入不会触发逐字符的自动闭合）
-const element = findEditorElement();
-if (!element) return '页面上没找到作答区，也没拿到编辑器实例';
-element.focus();
-const selection = document.getSelection();
-if (selection) {
-  const range = document.createRange();
-  range.selectNodeContents(element);
-  selection.removeAllRanges();
-  selection.addRange(range);
-}
-let inserted = false;
-try { inserted = document.execCommand('insertText', false, code); } catch (e) { inserted = false; }
-await new Promise((resolve) => setTimeout(resolve, 200));
-const after = readFromDom(element);
-const route = inserted ? '已聚焦后整段插入' : 'execCommand 不可用，未能写入';
-return route + '（没拿到编辑器实例），' + compareText(code, after);
 `;
 
 /** 提交作答并等判题结论 */
@@ -498,169 +455,103 @@ if (lines !== null) parts.push('作答区：' + lines + ' 行');
 return parts.join('；');
 `;
 
-/** 设置页「模拟输入测试」的页面侧方法（一种方法一个按钮） */
+/** 设置页「模拟输入测试」与写入工具共用的页面侧方法（都在页面主世界执行） */
 export const INPUT_METHOD_SCRIPT = `${HELPERS}
 const method = String(__args.method || '');
 const text = String(__args.text === undefined ? '' : __args.text);
-if (!text) return '没有给 text';
+const json = __args.json === true;
+if (method !== 'clear' && method !== 'readDoc' && method !== 'rect' && !text) return '没有给 text';
 
 const picked = pickEditorView();
 const element = findEditorElement();
+
+// 统一的收尾：报告用了什么方法、回读比对结果；json 模式返回结构化数据（给写入链路判断用）
 const finish = (how) => {
   const after = picked.best
     ? picked.best.view.state.doc.toString()
     : (element ? readFromDom(element) : '');
-  const parts = [how, compareText(text, after)];
+  const diff = compareText(text, after);
+  if (json) return { ok: diff.ok, method, detail: diff.detail, length: after.length };
+  const parts = [how, diff.detail];
   const notice = findPageNotice();
   if (notice) parts.push('页面上出现了提示：' + notice);
   return parts.join('；');
 };
 
-const requireView = () => {
-  if (!picked.best) return null;
-  return picked.best.view;
-};
-
-const selectAllInEditor = () => {
-  if (!element) return;
-  element.focus();
-  const selection = document.getSelection();
-  if (!selection) return;
-  const range = document.createRange();
-  range.selectNodeContents(element);
-  selection.removeAllRanges();
-  selection.addRange(range);
-};
+// 回读：优先编辑器实例（view.state.doc 是完整文档，DOM 只能读到渲染出来的行）
+if (method === 'readDoc') {
+  if (picked.best) return picked.best.view.state.doc.toString();
+  return element ? readFromDom(element) : '';
+}
 
 // 只报告作答区位置，给 CDP 真实点击用
 if (method === 'rect') {
   if (!element) return null;
   const rect = element.getBoundingClientRect();
-  return { x: Math.round(rect.left + rect.width / 2), y: Math.round(rect.top + rect.height / 2), width: Math.round(rect.width), height: Math.round(rect.height) };
+  return { x: Math.round(rect.left + rect.width / 2), y: Math.round(rect.top + rect.height / 2) };
 }
 
-// ---------- A. 编辑器状态（CM6 API）----------
-if (method === 'dispatch' || method === 'dispatchFocus' || method === 'dispatchUserEvent' || method === 'replaceSelection' || method === 'dispatchTyped') {
-  const view = requireView();
-  if (!view) return '没拿到可写的编辑器实例';
-  const whole = { from: 0, to: view.state.doc.length };
-
-  if (method === 'dispatch') {
-    view.dispatch({ changes: { ...whole, insert: text } });
-    await new Promise((resolve) => setTimeout(resolve, 150));
-  } else if (method === 'dispatchFocus') {
-    view.focus();
-    view.dispatch({ changes: { ...whole, insert: text } });
-    await new Promise((resolve) => setTimeout(resolve, 150));
-  } else if (method === 'dispatchUserEvent') {
-    view.dispatch({ changes: { ...whole, insert: text }, userEvent: 'input.type' });
-    await new Promise((resolve) => setTimeout(resolve, 150));
-  } else if (method === 'replaceSelection') {
-    view.dispatch(view.state.replaceSelection(text));
-    await new Promise((resolve) => setTimeout(resolve, 150));
-  } else {
-    view.dispatch({ changes: { ...whole, insert: '' } });
-    let position = 0;
-    for (const line of text.split('\\n')) {
-      const chunk = (position === 0 ? '' : '\\n') + line;
-      view.dispatch({ changes: { from: position, insert: chunk }, userEvent: 'input.type' });
-      position += chunk.length;
-    }
-    await new Promise((resolve) => setTimeout(resolve, 150));
+// 清空作答区：写入失败换备用实现之前，先把内容全部删掉
+if (method === 'clear') {
+  if (picked.best) {
+    picked.best.view.dispatch({ changes: { from: 0, to: picked.best.view.state.doc.length, insert: '' } });
+    return { ok: picked.best.view.state.doc.length === 0, method, detail: '已清空', length: 0 };
   }
+  if (!element) return { ok: false, method, detail: '页面上没有可清空的作答区', length: -1 };
+  element.focus();
+  const selection = document.getSelection();
+  if (selection) {
+    const range = document.createRange();
+    range.selectNodeContents(element);
+    selection.removeAllRanges();
+    selection.addRange(range);
+  }
+  let deleted = false;
+  try { deleted = document.execCommand('delete'); } catch (e) { deleted = false; }
+  const empty = readFromDom(element).length === 0;
+  return { ok: deleted && empty, method, detail: empty ? '已清空' : '清空后仍有内容', length: -1 };
+}
 
+// ---------- 可用的四种写法 ----------
+const view = picked.best ? picked.best.view : null;
+if (!view) {
+  // 只找到只读实例时说明白那是题面的样例框，别含糊地说「编辑器是只读的」
+  const message = picked.readOnlyCount > 0
+    ? '页面上只有 ' + picked.readOnlyCount + ' 个只读编辑器（题面的样例框），没找到可写的作答区'
+    : '没拿到可写的编辑器实例';
+  return json ? { ok: false, method, detail: message, length: -1 } : message;
+}
+const whole = { from: 0, to: view.state.doc.length };
+
+const moveCursorToEnd = () => {
+  // 光标放到文末：用户接手时位置正常，后续的「真实按键戳一下」也不会插进代码中间
   view.dispatch({ selection: { anchor: view.state.doc.length } });
-  const labels = {
-    dispatch: '整段 dispatch',
-    dispatchFocus: 'view.focus() 后整段 dispatch',
-    dispatchUserEvent: '整段 dispatch 并标注 userEvent=input.type',
-    replaceSelection: 'view.state.replaceSelection 后 dispatch',
-    dispatchTyped: '逐行 dispatch 并标注 userEvent',
-  };
-  return finish('方法：' + labels[method]);
+};
+
+if (method === 'dispatchFocus') {
+  view.focus();
+  view.dispatch({ changes: { ...whole, insert: text } });
+  await new Promise((resolve) => setTimeout(resolve, 150));
+  moveCursorToEnd();
+  return finish('先 focus 再整段 dispatch');
+}
+if (method === 'dispatch') {
+  view.dispatch({ changes: { ...whole, insert: text } });
+  await new Promise((resolve) => setTimeout(resolve, 150));
+  moveCursorToEnd();
+  return finish('整段 dispatch');
+}
+if (method === 'replaceSelection') {
+  view.dispatch(view.state.replaceSelection(text));
+  await new Promise((resolve) => setTimeout(resolve, 150));
+  moveCursorToEnd();
+  return finish('view.state.replaceSelection 后 dispatch');
+}
+if (method === 'cdpClickTyping') {
+  // 输入由 background 的 CDP 逐字按键完成，这里只负责聚焦
+  view.focus();
+  return { ok: true, method, detail: '已聚焦，等待 CDP 逐字按键', length: view.state.doc.length };
 }
 
-// ---------- B. 剪贴板 ----------
-if (method === 'clipboardPaste' || method === 'execCommandPaste') {
-  let written = false;
-  try {
-    await navigator.clipboard.writeText(text);
-    written = true;
-  } catch (e) {
-    written = false;
-  }
-  if (!written) return '方法：写剪贴板失败（页面可能没给剪贴板权限）';
-  if (method === 'clipboardPaste') {
-    // 真 Ctrl+V 交给 background 发
-    return 'MARK_CLIPBOARD_READY';
-  }
-  selectAllInEditor();
-  let pasted = false;
-  try { pasted = document.execCommand('paste'); } catch (e) { pasted = false; }
-  await new Promise((resolve) => setTimeout(resolve, 200));
-  return finish(pasted ? '方法：写剪贴板后 execCommand("paste")' : '方法：execCommand("paste") 不被允许');
-}
-
-// ---------- C. DOM 与事件 ----------
-if (method === 'valueSetter') {
-  if (element instanceof HTMLInputElement || element instanceof HTMLTextAreaElement) {
-    const prototype = element instanceof HTMLInputElement ? HTMLInputElement.prototype : HTMLTextAreaElement.prototype;
-    const setter = Object.getOwnPropertyDescriptor(prototype, 'value') && Object.getOwnPropertyDescriptor(prototype, 'value').set;
-    if (setter) setter.call(element, text); else element.value = text;
-    element.dispatchEvent(new Event('input', { bubbles: true }));
-    element.dispatchEvent(new Event('change', { bubbles: true }));
-    await new Promise((resolve) => setTimeout(resolve, 200));
-    return finish('方法：原生 value setter + input/change');
-  }
-  return '方法：这个元素不是 <input>/<textarea>，value setter 用不上（CodeMirror 要走别的）';
-}
-
-if (!element) return '页面上没找到可编辑的作答区';
-selectAllInEditor();
-
-if (method === 'execCommand') {
-  let inserted = false;
-  try { inserted = document.execCommand('insertText', false, text); } catch (e) { inserted = false; }
-  await new Promise((resolve) => setTimeout(resolve, 200));
-  return finish(inserted ? '方法：聚焦全选后 execCommand(insertText)' : '方法：execCommand 不可用');
-}
-
-if (method === 'inputEvents') {
-  element.dispatchEvent(new InputEvent('beforeinput', { bubbles: true, cancelable: true, inputType: 'insertText', data: text }));
-  element.dispatchEvent(new InputEvent('input', { bubbles: true, inputType: 'insertText', data: text }));
-  await new Promise((resolve) => setTimeout(resolve, 200));
-  return finish('方法：手工派发 beforeinput + input（isTrusted=false）');
-}
-
-if (method === 'domMutation') {
-  element.textContent = text;
-  element.dispatchEvent(new InputEvent('input', { bubbles: true, inputType: 'insertText', data: text }));
-  await new Promise((resolve) => setTimeout(resolve, 200));
-  return finish('方法：直接改 DOM 文本后再派发 input');
-}
-
-if (method === 'composition') {
-  element.dispatchEvent(new CompositionEvent('compositionstart', { bubbles: true, data: '' }));
-  element.dispatchEvent(new CompositionEvent('compositionupdate', { bubbles: true, data: text }));
-  element.dispatchEvent(new InputEvent('beforeinput', { bubbles: true, cancelable: true, inputType: 'insertCompositionText', data: text }));
-  element.dispatchEvent(new CompositionEvent('compositionend', { bubbles: true, data: text }));
-  element.dispatchEvent(new InputEvent('input', { bubbles: true, inputType: 'insertCompositionText', data: text }));
-  await new Promise((resolve) => setTimeout(resolve, 200));
-  return finish('方法：模拟输入法事件链（composition + insertCompositionText）');
-}
-
-if (method === 'pasteEvent') {
-  let fired = false;
-  try {
-    const data = new DataTransfer();
-    data.setData('text/plain', text);
-    fired = element.dispatchEvent(new ClipboardEvent('paste', { bubbles: true, cancelable: true, clipboardData: data }));
-  } catch (e) {
-    fired = false;
-  }
-  await new Promise((resolve) => setTimeout(resolve, 200));
-  return finish(fired ? '方法：手工派发 paste 事件（isTrusted=false）' : '方法：这个环境不支持构造 paste 事件');
-}
-
-return '未知方法：' + method;
+return json ? { ok: false, method, detail: '没有实现的方法：' + method, length: -1 } : '没有实现的方法：' + method;
 `;
