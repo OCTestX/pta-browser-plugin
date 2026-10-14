@@ -89,6 +89,8 @@ function boot({ hasApiKey }) {
 
   // 打桩的 background：只实现 content script 依赖的那几个消息
   const storageWrites = [];
+  // 测试按钮的返回值可以按需换，用来验证「成功才记进 storage」这类逻辑
+  let testInputResult = '已逐字敲入 3 行（12 个字符）；回读比对：与目标一致';
 
   window.chrome = {
     storage: {
@@ -119,7 +121,7 @@ function boot({ hasApiKey }) {
           case 'chat/stop':
             return { ok: true };
           case 'tool/test-input':
-            return { ok: true, result: '已逐字敲入 3 行（12 个字符）；回读比对：3 行与目标一致' };
+            return { ok: true, result: testInputResult };
           default:
             return undefined;
         }
@@ -139,6 +141,9 @@ function boot({ hasApiKey }) {
     window,
     requests,
     storageWrites,
+    setTestInputResult: (value) => {
+      testInputResult = value;
+    },
     shadow: () => window.document.getElementById('pta-assistant-host')?.shadowRoot,
     toggle: () => listeners.forEach((fn) => fn({ type: 'toggle-panel' })),
     emit: (event) => listeners.forEach((fn) => fn(event)),
@@ -299,6 +304,29 @@ const advanced = [...withKey.shadow().querySelectorAll('.button')].find((el) =>
 check('点完自动换到下一种方法', advanced.textContent.includes('第 2/7 种'));
 check('换种后方法说明也跟着变', withKey.find('.settings').textContent.includes('CDP 整段插入'));
 check('方法进度写进了 storage', withKey.storageWrites.some((patch) => patch['pta-assistant-input-method-index'] === 1));
+check(
+  '测试成功会记下可用方法',
+  withKey.storageWrites.some((patch) => patch['pta-assistant-input-method-ok'] === 'cdp-typing'),
+);
+check(
+  '设置页显示当前可用方法',
+  withKey.find('.settings').textContent.includes('当前可用方法') &&
+    withKey.find('.settings').textContent.includes('第 1 种'),
+);
+
+// 被页面拦住的那次不该被记成「可用」
+withKey.setTestInputResult('【execCommand 整段插入】方法：聚焦全选后 execCommand 整段插入；回读比对：与目标一致；页面上出现了提示：禁止粘贴');
+const blockedButton = [...withKey.shadow().querySelectorAll('.button')].find((el) =>
+  el.textContent.startsWith('模拟输入到作答区'),
+);
+const writesBefore = withKey.storageWrites.length;
+blockedButton.click();
+await tick();
+check(
+  '被「禁止粘贴」拦住的那次不会记成可用方法',
+  withKey.storageWrites.length === writesBefore + 1 && // 只写了「进度」
+    withKey.storageWrites.at(-1)['pta-assistant-input-method-ok'] === undefined,
+);
 const restart = [...withKey.shadow().querySelectorAll('.button')].find((el) => el.textContent === '重来');
 restart.click();
 await tick();

@@ -6,6 +6,12 @@ import { SYSTEM_PROMPT } from '../../shared/tools';
 import type { TestInputResponse } from '../../shared/messages';
 
 const METHOD_INDEX_KEY = 'pta-assistant-input-method-index';
+const METHOD_OK_KEY = 'pta-assistant-input-method-ok';
+
+/** 这次测试算不算「成功」：内容回读一致，而且页面没弹「禁止粘贴」这类提示 */
+export function isMethodTestSuccess(ok: boolean, result: string): boolean {
+  return ok && result.includes('回读比对：与目标一致') && !/禁止粘贴|不允许粘贴|不能粘贴|请勿粘贴/.test(result);
+}
 
 interface SettingsPanelProps {
   view: SettingsView | null;
@@ -34,11 +40,19 @@ export function SettingsPanel({ view, onSave, onBack }: SettingsPanelProps) {
   const [testResult, setTestResult] = useState<string | null>(null);
   // 每点一次按钮换下一种方法，当前是第几种记在 storage 里（关掉面板再打开还能接着试）
   const [methodIndex, setMethodIndex] = useState(0);
+  const [workingMethod, setWorkingMethod] = useState<string | null>(null);
 
   useEffect(() => {
     void (async () => {
-      const stored = await ext.storage.local.get(METHOD_INDEX_KEY);
+      const stored = await ext.storage.local.get([METHOD_INDEX_KEY, METHOD_OK_KEY]);
       const saved = Number(stored[METHOD_INDEX_KEY]);
+      const known = stored[METHOD_OK_KEY];
+      if (typeof known === 'string' && INPUT_METHODS.some((item) => item.id === known)) {
+        setWorkingMethod(known);
+        // 已经知道哪种能用了，就从它开始试，不用从第 1 种再点一遍
+        const knownIndex = INPUT_METHODS.findIndex((item) => item.id === known);
+        if (!Number.isInteger(saved)) setMethodIndex(knownIndex);
+      }
       if (Number.isInteger(saved) && saved >= 0 && saved < INPUT_METHODS.length) setMethodIndex(saved);
     })();
   }, []);
@@ -95,7 +109,13 @@ export function SettingsPanel({ view, onSave, onBack }: SettingsPanelProps) {
         text: testText,
         method: method.id,
       })) as TestInputResponse | undefined;
-      setTestResult(response?.result ?? '后台没有响应');
+      const result = response?.result ?? '后台没有响应';
+      setTestResult(result);
+      // 记下哪种方法在真页面上真的能用，以后就从它开始
+      if (isMethodTestSuccess(response?.ok === true, result)) {
+        setWorkingMethod(method.id);
+        void ext.storage.local.set({ [METHOD_OK_KEY]: method.id });
+      }
     } catch (error) {
       setTestResult(`测试失败：${error instanceof Error ? error.message : String(error)}`);
     } finally {
@@ -207,7 +227,19 @@ export function SettingsPanel({ view, onSave, onBack }: SettingsPanelProps) {
         <span className="field__hint">
           当前方法：<b>{method.label}</b> —— {method.hint}
           <br />
-          每点一次按钮自动换下一种（试完一圈回到第 1 种）；试出哪种能用就告诉我。
+          每点一次按钮自动换下一种（试完一圈回到第 1 种）。成功后会自动记为「可用方法」，
+          下次打开设置就从它开始试。
+          {workingMethod && (
+            <>
+              <br />
+              当前可用方法：
+              <b>
+                第 {INPUT_METHODS.findIndex((item) => item.id === workingMethod) + 1} 种 ·{' '}
+                {INPUT_METHODS.find((item) => item.id === workingMethod)?.label}
+              </b>
+              （`write_editor_code` 工具走的正是这一种）
+            </>
+          )}
         </span>
         {testResult && <pre className="settings__result">{testResult}</pre>}
       </label>
