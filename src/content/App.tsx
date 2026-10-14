@@ -1,8 +1,9 @@
-import { useState, useSyncExternalStore } from 'react';
+import { useRef, useState, useSyncExternalStore } from 'react';
 import { Composer } from './components/Composer';
 import { MessageList } from './components/MessageList';
 import { SettingsPanel } from './components/SettingsPanel';
 import { useChat } from './hooks/useChat';
+import { usePanelPosition } from './hooks/usePanelPosition';
 import { useSettings } from './hooks/useSettings';
 import { isPanelOpen, setPanelOpen, subscribePanel } from './panelStore';
 
@@ -14,6 +15,8 @@ export function App() {
   const [draft, setDraft] = useState('');
   const settings = useSettings();
   const chat = useChat(settings.hasApiKey);
+  const panelRef = useRef<HTMLDivElement>(null);
+  const panel = usePanelPosition(panelRef);
 
   if (!open) return null;
 
@@ -23,8 +26,21 @@ export function App() {
   };
 
   return (
-    <div className="panel">
-      <header className="panel__header">
+    <div
+      className="panel"
+      ref={panelRef}
+      style={
+        panel.position
+          ? { left: panel.position.x, top: panel.position.y, right: 'auto', bottom: 'auto' }
+          : undefined
+      }
+    >
+      <header
+        className="panel__header"
+        onPointerDown={panel.startDrag}
+        onDoubleClick={panel.reset}
+        title="拖动可以移动面板，双击复位"
+      >
         {view === 'settings' ? (
           <>
             <button type="button" className="panel__back" onClick={() => setView('chat')}>
@@ -35,7 +51,7 @@ export function App() {
         ) : (
           <>
             <span className="panel__title">PTA 助手</span>
-            <span className="panel__badge">v0.5</span>
+            <span className="panel__badge">v0.8</span>
           </>
         )}
         <div className="panel__actions">

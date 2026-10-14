@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "PTA 助手",
-  "version": "0.5.0",
+  "version": "0.8.0",
   "description": "帮助学生完成 PTA 题目的 AI 助手插件",
   "icons": {
     "16": "icons/icon-16.png",

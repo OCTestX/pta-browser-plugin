@@ -88,7 +88,16 @@ function boot({ hasApiKey }) {
   let keySet = hasApiKey;
 
   // 打桩的 background：只实现 content script 依赖的那几个消息
+  const storageWrites = [];
+
   window.chrome = {
+    storage: {
+      local: {
+        get: async () => ({}),
+        set: async (patch) => storageWrites.push(patch),
+        remove: async () => {},
+      },
+    },
     runtime: {
       getURL: (filePath) => `chrome-extension://test/${filePath}`,
       onMessage: {
@@ -127,6 +136,7 @@ function boot({ hasApiKey }) {
   return {
     window,
     requests,
+    storageWrites,
     shadow: () => window.document.getElementById('pta-assistant-host')?.shadowRoot,
     toggle: () => listeners.forEach((fn) => fn({ type: 'toggle-panel' })),
     emit: (event) => listeners.forEach((fn) => fn(event)),
@@ -534,5 +544,67 @@ check('目标不是输入元素时如实告知', (await notEditable).result.incl
 
 // write_document 里有个 60 秒后才回收 objectURL 的定时器，不关窗口进程会多挂一分钟
 booted.forEach((window) => window.close());
+
+/* ---------- 场景六：v0.8 界面交互 ---------- */
+
+const ui = boot({ hasApiKey: true });
+await tick();
+ui.toggle();
+await tick();
+const uiHeader = ui.find('.panel__header');
+
+// 拖动：pointerdown 后移动，面板改为按 left/top 定位，并写进 storage
+uiHeader.dispatchEvent(new ui.window.MouseEvent('pointerdown', { bubbles: true, clientX: 100, clientY: 20 }));
+ui.window.dispatchEvent(new ui.window.MouseEvent('pointermove', { bubbles: true, clientX: 300, clientY: 120 }));
+ui.window.dispatchEvent(new ui.window.MouseEvent('pointerup', { bubbles: true }));
+await tick();
+const movedPanel = ui.find('.panel');
+check('拖动后改成了 left/top 定位', Boolean(movedPanel.style.left) && movedPanel.style.right === 'auto');
+check('拖动结束后把位置存进了 storage', ui.storageWrites.some((patch) => patch['pta-assistant-panel-position']));
+check('面板没被拖出视口', Number.parseInt(movedPanel.style.left, 10) >= 0);
+
+// 工具卡片：折叠 / 展开 / 复制
+ui.setValue(ui.find('.composer__input'), '看下页面');
+await tick();
+ui.find('.composer__send').click();
+await tick();
+const uiRequestId = ui.requests.find((r) => r.type === 'chat/start')?.requestId;
+ui.emit({
+  type: 'chat/tool-start',
+  requestId: uiRequestId,
+  callId: 'call_ui',
+  name: 'js_inject',
+  args: '{"code":"return 1"}',
+});
+await tick();
+check('工具卡片默认展示代码', Boolean(ui.find('.tool__code')));
+
+ui.find('.tool__toggle').click();
+await tick();
+check('点折叠后代码收起来', !ui.find('.tool__code'));
+ui.find('.tool__toggle').click();
+await tick();
+check('再点一下又展开', Boolean(ui.find('.tool__code')));
+
+const copied = [];
+ui.window.document.execCommand = (command) => {
+  copied.push(command);
+  return true;
+};
+ui.find('.tool__copy').click();
+await tick();
+check('复制按钮会调用剪贴板复制', copied.includes('copy') && ui.find('.tool__copy').textContent === '已复制');
+
+// 回到底部：用户往上翻的时候不自动跟随，并给出按钮
+const uiMessages = ui.find('.messages');
+Object.defineProperty(uiMessages, 'scrollHeight', { value: 600, configurable: true });
+Object.defineProperty(uiMessages, 'clientHeight', { value: 200, configurable: true });
+uiMessages.scrollTop = 100;
+uiMessages.dispatchEvent(new ui.window.Event('scroll', { bubbles: false }));
+await tick();
+check('往上翻之后出现「回到底部」按钮', Boolean(ui.find('.messages__jump')));
+ui.find('.messages__jump').click();
+await tick();
+check('点回到底部后按钮消失', !ui.find('.messages__jump'));
 
 console.log(`\n${target} 冒烟测试通过`);
