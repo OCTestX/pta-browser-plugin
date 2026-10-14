@@ -24,15 +24,18 @@ manifest/manifest.json   手写的清单文件（Chrome 用），Firefox 版本�
 vite.config.ts           构建配置：一次构建一个入口（background / content），target 决定产物目录
 src/
   background/index.ts    background：图标点击、消息路由、维护进行中的请求
+  background/agent.ts    agent loop：请求模型 → 执行工具 → 回灌结果 → 再来一轮
+  background/deepseek.ts 调用 /chat/completions，解析 SSE 文本增量与 tool_calls 分片
+  background/js-inject.ts 在页面主世界执行模型给的 JS（含超时与隔离世界回退）
   background/settings.ts 设置读写（chrome.storage.local），API Key 只留在这里
-  background/deepseek.ts 调用 /chat/completions 并解析 SSE 流
   content/index.tsx      content script：注入 Shadow DOM 宿主节点并挂载 React
   content/App.tsx        悬浮窗主体（对话 / 设置两个视图）
-  content/hooks/         useChat（消息与流式增量）、useSettings（设置读写）
-  content/components/    消息列表、markdown 渲染、输入区、设置页
+  content/pageTools.ts   页面侧工具：url 取当前地址，write_document 触发下载
+  content/hooks/         useChat（消息、流式增量、工具事件）、useSettings
+  content/components/    消息列表、markdown 渲染、工具卡片、输入区、设置页
   content/katexStyles.ts KaTeX 样式的字库地址改写成扩展地址
   content/styles.css     悬浮窗样式（跟随 content.js 一起注入，不污染页面）
-  shared/                browser API 入口、消息协议、设置与消息类型
+  shared/                browser API 入口、消息协议、工具定义、设置与消息类型
 scripts/
   gen-icons.py           生成 public/icons 下的图标
   test-deepseek.mjs      假的 fetch 跑 SSE 解析与错误映射
@@ -49,6 +52,8 @@ npm run icons      # 重新生成图标（需要 python3 + Pillow）
 ```
 
 需要 Node 22.18+（`scripts/test-deepseek.mjs` 直接跑 TS 用的类型擦除）。
+
+构建脚本刻意不删产物目录本身（只让 Vite 清空目录内容）：目录被删掉重建后，浏览器里已加载的插件还指向旧目录，刷新时会报「File path cannot be resolved / 无法加载清单」。遇到这个报错就把插件「移除」再重新加载一次。
 
 加新依赖时注意：Chrome 会用 `base::IsStringUTF8` 校验脚本，Unicode 非字符（U+FFFE / U+FFFF 之类）会被判成「不是 UTF-8 编码」而拒绝加载整个插件，但 Python / Node 的严格解码都会放行，很容易查半天。构建里已经统一把非字符转义成 `\uXXXX`（必须在压缩之后做），冒烟测试也会检查。
 
@@ -96,8 +101,22 @@ npm run icons      # 重新生成图标（需要 python3 + Pillow）
 - 代码块里的 `$$` 不会被改写，也不参与公式配对
 - KaTeX 用只带 woff2 的字库（20 个文件 296K），构建时复制到 `dist/<target>/katex-fonts/`，CSS 里的相对地址改写成扩展地址，并在 `web_accessible_resources` 里声明
 
+## v0.4 已完成
+
+- agent loop：模型可以连续调用工具，结果回灌后继续下一轮，直到给出最终回答；最多 6 轮（`MAX_TOOL_ROUNDS`）
+- 四个工具：
+  - `js_inject`：在**页面主世界**执行模型写的 JS（所以能拿到 PTA 页面自己的 JS 对象），支持顶层 await，15 秒超时；主世界不可用时自动退回隔离世界（DOM 操作照常，只是拿不到页面对象）
+  - `url`：当前页面地址（在页面侧取，SPA 路由变化也准）
+  - `date`：当前日期时间与星期
+  - `write_document`：用 Blob + `a[download]` 触发下载，文件名会清洗掉路径分隔符，不需要 downloads 权限
+- 工具调用在对话里显示成卡片：工具名、参数（`js_inject` 的代码完整展开）、状态、执行结果
+- 会话重建：工具卡片会还原成 `tool` 消息、调用记录挂在对应的 assistant 消息上，所以下一轮请求的上下文是完整的
+- 执行模型给的 JS 不弹确认（按需求选择），因此**代码会直接显示在卡片里供检查**；同时意味着页面内容有可能诱导模型写出危险代码，请只在可信页面上使用
+
 已知限制：
 
+- `js_inject` 依赖 host 权限：需要先用工具栏图标打开过悬浮窗（这时才拿到该标签页的 activeTab 授权）
+- 页面如果 CSP 很严（不允许动态脚本），`js_inject` 会失败并把原因回灌给模型；PTA 站点没有任何 CSP，正常可用
 - content.js 因为带上了 markdown + KaTeX 涨到 690K（gzip 205K），首次注入会有一点开销
 - 若页面极其严格地限制字体（`font-src`），公式可能退回系统字体显示，结构仍然正确
 - 依赖里 katex@0.16 有一条「原型污染绕过 trust 限制」的低危通告，我们没用 `trust` 选项，且输入来自模型而非攻击者

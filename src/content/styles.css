@@ -11,6 +11,7 @@
   --pta-accent-soft: #eaf0ff;
   --pta-danger: #d64545;
   --pta-danger-soft: #fdeeee;
+  --pta-ok: #1a9e63;
 }
 
 .panel {
@@ -277,6 +278,95 @@
   to {
     visibility: hidden;
   }
+}
+
+/* ---------- 工具调用卡片 ---------- */
+
+.tool {
+  margin-bottom: 12px;
+  border: 1px solid var(--pta-border);
+  border-left: 3px solid var(--pta-text-muted);
+  border-radius: 10px;
+  background: var(--pta-surface-alt);
+  overflow: hidden;
+}
+
+.tool--running {
+  border-left-color: var(--pta-accent);
+}
+
+.tool--ok {
+  border-left-color: var(--pta-ok);
+}
+
+.tool--error {
+  border-left-color: var(--pta-danger);
+}
+
+.tool__header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 7px 10px;
+  font-size: 12px;
+}
+
+.tool__name {
+  font-family: 'SFMono-Regular', Consolas, Menlo, monospace;
+  font-weight: 600;
+}
+
+.tool__args {
+  flex: 1;
+  overflow: hidden;
+  color: var(--pta-text-muted);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.tool__status {
+  flex: none;
+  margin-left: auto;
+  color: var(--pta-text-muted);
+}
+
+.tool--running .tool__status {
+  color: var(--pta-accent);
+}
+
+.tool--ok .tool__status {
+  color: var(--pta-ok);
+}
+
+.tool--error .tool__status {
+  color: var(--pta-danger);
+}
+
+.tool__code,
+.tool__result {
+  max-height: 220px;
+  margin: 0;
+  padding: 8px 10px;
+  overflow: auto;
+  border-top: 1px solid var(--pta-border);
+  font-family: 'SFMono-Regular', Consolas, Menlo, monospace;
+  font-size: 12px;
+  line-height: 1.55;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.tool__code {
+  background: #1f2430;
+  color: #eef1f8;
+}
+
+.tool__result {
+  background: var(--pta-surface);
+}
+
+.tool--error .tool__result {
+  color: var(--pta-danger);
 }
 
 /* ---------- notice ---------- */

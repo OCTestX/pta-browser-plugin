@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { ext } from '../../shared/browser';
-import { isChatEvent, type ChatTurn, type StartChatResponse } from '../../shared/messages';
-import { createId, type ChatMessage } from '../../shared/types';
+import { isChatEvent, type StartChatResponse } from '../../shared/messages';
+import { createId, toApiMessages, type ChatMessage, type ToolCall } from '../../shared/types';
 
 const WELCOME = '你好，我是 PTA 助手。点击浏览器工具栏的插件图标可以开关这个悬浮窗。';
 
@@ -16,57 +16,155 @@ export function useChat(hasApiKey: boolean) {
   ]);
   const [streaming, setStreaming] = useState(false);
   const [notice, setNotice] = useState<ChatNotice | null>(null);
-  // 当前在生成中的请求与对应的助手气泡
-  const active = useRef<{ requestId: string; messageId: string } | null>(null);
-
-  const appendDelta = useCallback((messageId: string, text: string) => {
-    setMessages((prev) =>
-      prev.map((message) =>
-        message.id === messageId ? { ...message, content: message.content + text } : message,
-      ),
-    );
-  }, []);
-
-  const finish = useCallback((messageId: string, patch: Partial<ChatMessage>) => {
-    setMessages((prev) =>
-      prev.map((message) =>
-        message.id === messageId ? { ...message, streaming: false, ...patch } : message,
-      ),
-    );
-  }, []);
+  const requestRef = useRef<string | null>(null);
+  // 当前正在写的 assistant 气泡；为 null 表示下一段文字要新起一个气泡
+  const assistantRef = useRef<string | null>(null);
 
   useEffect(() => {
     const listener = (message: unknown) => {
       if (!isChatEvent(message)) return;
-      const current = active.current;
-      if (!current || current.requestId !== message.requestId) return;
+      if (message.requestId !== requestRef.current) return;
 
-      if (message.type === 'chat/delta') {
-        appendDelta(current.messageId, message.text);
-        return;
-      }
-
-      active.current = null;
-      setStreaming(false);
-
-      if (message.type === 'chat/error') {
-        finish(current.messageId, { error: true, content: message.message });
-        return;
-      }
-      // chat/done：被停止且一个字都没生成时给个提示，否则保留已生成的内容
-      finish(current.messageId, {});
-      if (message.aborted) {
-        setMessages((prev) =>
-          prev.map((m) =>
-            m.id === current.messageId && m.content === '' ? { ...m, content: '（已停止生成）' } : m,
-          ),
-        );
+      switch (message.type) {
+        case 'chat/delta':
+          appendDelta(message.text);
+          return;
+        case 'chat/tool-start':
+          startTool(message.callId, message.name, message.args);
+          return;
+        case 'chat/tool-end':
+          endTool(message.callId, message.result, message.isError);
+          return;
+        case 'chat/notice':
+          appendSystem(message.text);
+          return;
+        case 'chat/error':
+          if (assistantRef.current) {
+            patchMessage(assistantRef.current, { error: true, content: message.message, streaming: false });
+          } else {
+            appendSystem(message.message, true);
+          }
+          finish();
+          return;
+        case 'chat/done':
+          finish();
+          return;
       }
     };
 
     ext.runtime.onMessage.addListener(listener);
     return () => ext.runtime.onMessage.removeListener(listener);
-  }, [appendDelta, finish]);
+  }, []);
+
+  const patchMessage = useCallback((id: string, patch: Partial<ChatMessage>) => {
+    setMessages((prev) =>
+      prev.map((message) => (message.id === id ? { ...message, ...patch } : message)),
+    );
+  }, []);
+
+  const appendDelta = useCallback((text: string) => {
+    setMessages((prev) => {
+      const currentId = assistantRef.current;
+      if (currentId) {
+        return prev.map((message) =>
+          message.id === currentId
+            ? { ...message, content: message.content + text, streaming: true }
+            : message,
+        );
+      }
+      // 上一轮工具调用之后模型又开始说话，新起一个气泡，
+      // 这样「assistant(tool_calls) + tool 结果 + assistant(最终回答)」的结构才是对的
+      const created: ChatMessage = {
+        id: createId(),
+        role: 'assistant',
+        content: text,
+        createdAt: Date.now(),
+        streaming: true,
+      };
+      assistantRef.current = created.id;
+      return [...prev, created];
+    });
+  }, []);
+
+  const startTool = useCallback((callId: string, name: string, rawArgs: string) => {
+    setMessages((prev) => {
+      const call: ToolCall = {
+        id: callId,
+        type: 'function',
+        function: { name, arguments: rawArgs },
+      };
+      const next = [...prev];
+      const currentIndex = assistantRef.current
+        ? next.findIndex((message) => message.id === assistantRef.current)
+        : -1;
+
+      if (currentIndex >= 0) {
+        const current = next[currentIndex];
+        next[currentIndex] = {
+          ...current,
+          streaming: false,
+          toolCalls: [...(current.toolCalls ?? []), call],
+        };
+      } else {
+        // 模型直接调工具、什么都没说：也要留一条 assistant 记录承载 tool_calls
+        next.push({
+          id: createId(),
+          role: 'assistant',
+          content: '',
+          createdAt: Date.now(),
+          toolCalls: [call],
+        });
+      }
+
+      const { code, summary } = summarizeArgs(name, rawArgs);
+      next.push({
+        id: createId(),
+        role: 'tool',
+        content: '',
+        createdAt: Date.now(),
+        toolName: name,
+        toolArgs: summary,
+        toolCode: code,
+        toolCallId: callId,
+        toolStatus: 'running',
+      });
+
+      // 之后的文字另起气泡
+      assistantRef.current = null;
+      return next;
+    });
+  }, []);
+
+  const endTool = useCallback((callId: string, result: string, isError: boolean) => {
+    setMessages((prev) =>
+      prev.map((message) =>
+        message.role === 'tool' && message.toolCallId === callId
+          ? { ...message, content: result, toolStatus: isError ? 'error' : 'ok' }
+          : message,
+      ),
+    );
+  }, []);
+
+  const appendSystem = useCallback((text: string, error = false) => {
+    setMessages((prev) => [
+      ...prev,
+      { id: createId(), role: 'system', content: text, createdAt: Date.now(), error },
+    ]);
+  }, []);
+
+  const finish = useCallback(() => {
+    const currentId = assistantRef.current;
+    if (currentId) {
+      setMessages((prev) =>
+        prev.map((message) =>
+          message.id === currentId ? { ...message, streaming: false } : message,
+        ),
+      );
+    }
+    assistantRef.current = null;
+    requestRef.current = null;
+    setStreaming(false);
+  }, []);
 
   const send = useCallback(
     async (text: string) => {
@@ -86,42 +184,42 @@ export function useChat(hasApiKey: boolean) {
         createdAt: Date.now(),
         streaming: true,
       };
-      const turns = buildTurns(messages, content);
+      // 用面板里的会话重建上下文，工具卡片会变成 tool 消息，工具调用记录挂在 assistant 上
+      const apiMessages = toApiMessages(messages, content);
 
       setMessages((prev) => [...prev, userMessage, assistantMessage]);
       setNotice(null);
       setStreaming(true);
       const requestId = createId();
-      active.current = { requestId, messageId: assistantMessage.id };
+      requestRef.current = requestId;
+      assistantRef.current = assistantMessage.id;
 
       let response: StartChatResponse | undefined;
       try {
         response = (await ext.runtime.sendMessage({
           type: 'chat/start',
           requestId,
-          turns,
+          messages: apiMessages,
         })) as StartChatResponse;
       } catch {
         response = { ok: false, message: '插件后台没有响应，请在扩展管理页重新加载插件' };
       }
 
       if (!response?.ok) {
-        active.current = null;
+        requestRef.current = null;
+        assistantRef.current = null;
         setStreaming(false);
         setMessages((prev) => prev.filter((message) => message.id !== assistantMessage.id));
-        setNotice({
-          text: response?.message ?? '请求失败',
-          needsApiKey: !hasApiKey,
-        });
+        setNotice({ text: response?.message ?? '请求失败', needsApiKey: !hasApiKey });
       }
     },
     [hasApiKey, messages, streaming],
   );
 
   const stop = useCallback(() => {
-    const current = active.current;
-    if (!current) return;
-    void ext.runtime.sendMessage({ type: 'chat/stop', requestId: current.requestId });
+    const requestId = requestRef.current;
+    if (!requestId) return;
+    void ext.runtime.sendMessage({ type: 'chat/stop', requestId });
   }, []);
 
   return {
@@ -134,10 +232,22 @@ export function useChat(hasApiKey: boolean) {
   };
 }
 
-/** 面板里可见的对话就是模型看到的上下文（系统提示与报错气泡不发给模型） */
-function buildTurns(messages: ChatMessage[], input: string): ChatTurn[] {
-  const history = messages
-    .filter((message) => message.role !== 'system' && !message.error && message.content.trim())
-    .map((message) => ({ role: message.role as 'user' | 'assistant', content: message.content }));
-  return [...history, { role: 'user', content: input }];
+/** 工具卡片上要显示什么：js_inject 把代码完整放出来，write_document 只给个摘要 */
+function summarizeArgs(name: string, rawArgs: string): { code?: string; summary?: string } {
+  let parsed: Record<string, unknown> = {};
+  try {
+    const value: unknown = JSON.parse(rawArgs);
+    if (typeof value === 'object' && value !== null) parsed = value as Record<string, unknown>;
+  } catch {
+    return { summary: rawArgs };
+  }
+
+  if (name === 'js_inject' && typeof parsed.code === 'string') return { code: parsed.code };
+  if (name === 'write_document') {
+    const filename = typeof parsed.filename === 'string' ? parsed.filename : '未命名';
+    const length = typeof parsed.content === 'string' ? parsed.content.length : 0;
+    return { summary: `${filename}（${length} 字符）` };
+  }
+  const summary = rawArgs.trim();
+  return { summary: summary === '{}' || summary === '' ? undefined : summary };
 }

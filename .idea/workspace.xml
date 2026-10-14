@@ -5,15 +5,22 @@
   </component>
   <component name="ChangeListManager">
     <list default="true" id="76c86c00-4e2f-4c64-b76e-7a270619abc7" name="更改" comment="">
+      <change beforePath="$PROJECT_DIR$/.idea/workspace.xml" beforeDir="false" afterPath="$PROJECT_DIR$/.idea/workspace.xml" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/README.md" beforeDir="false" afterPath="$PROJECT_DIR$/README.md" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/manifest/manifest.json" beforeDir="false" afterPath="$PROJECT_DIR$/manifest/manifest.json" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/package-lock.json" beforeDir="false" afterPath="$PROJECT_DIR$/package-lock.json" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/package.json" beforeDir="false" afterPath="$PROJECT_DIR$/package.json" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/scripts/smoke.mjs" beforeDir="false" afterPath="$PROJECT_DIR$/scripts/smoke.mjs" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/scripts/test-background.mjs" beforeDir="false" afterPath="$PROJECT_DIR$/scripts/test-background.mjs" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/scripts/test-deepseek.mjs" beforeDir="false" afterPath="$PROJECT_DIR$/scripts/test-deepseek.mjs" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/src/background/deepseek.ts" beforeDir="false" afterPath="$PROJECT_DIR$/src/background/deepseek.ts" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/src/background/index.ts" beforeDir="false" afterPath="$PROJECT_DIR$/src/background/index.ts" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/src/content/App.tsx" beforeDir="false" afterPath="$PROJECT_DIR$/src/content/App.tsx" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/src/content/components/MessageList.tsx" beforeDir="false" afterPath="$PROJECT_DIR$/src/content/components/MessageList.tsx" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/src/content/hooks/useChat.ts" beforeDir="false" afterPath="$PROJECT_DIR$/src/content/hooks/useChat.ts" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/src/content/index.tsx" beforeDir="false" afterPath="$PROJECT_DIR$/src/content/index.tsx" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/src/content/styles.css" beforeDir="false" afterPath="$PROJECT_DIR$/src/content/styles.css" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/src/shared/messages.ts" beforeDir="false" afterPath="$PROJECT_DIR$/src/shared/messages.ts" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/src/shared/types.ts" beforeDir="false" afterPath="$PROJECT_DIR$/src/shared/types.ts" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/vite.config.ts" beforeDir="false" afterPath="$PROJECT_DIR$/vite.config.ts" afterDir="false" />
     </list>
     <option name="SHOW_DIALOG" value="false" />
@@ -57,7 +64,7 @@
     "nodejs_package_manager_path": "npm",
     "settings.editor.selected.configurable": "JavaScript.Libraries",
     "to.speed.mode.migration.done": "true",
-    "ts.external.directory.path": "/home/octest/.local/share/JetBrains/Toolbox/apps/webstorm/plugins/javascript-plugin/jsLanguageServicesImpl/external"
+    "ts.external.directory.path": "/home/Documents/LintAgent/Agents/docker/Project/PTA-BrowserPlugin/node_modules/typescript/lib"
   }
 }]]></component>
   <component name="SharedIndexes">
@@ -74,7 +81,7 @@
       <option name="number" value="Default" />
       <option name="presentableId" value="Default" />
       <updated>1791974303115</updated>
-      <workItem from="1791974303980" duration="4858000" />
+      <workItem from="1791974303980" duration="6587000" />
     </task>
     <servers />
   </component>

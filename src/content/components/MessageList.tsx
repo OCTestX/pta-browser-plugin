@@ -1,5 +1,6 @@
 import { useEffect, useRef } from 'react';
 import { Markdown } from './Markdown';
+import { ToolCard } from './ToolCard';
 import type { ChatMessage } from '../../shared/types';
 
 interface MessageListProps {
@@ -10,6 +11,7 @@ const ROLE_LABEL: Record<ChatMessage['role'], string> = {
   user: '我',
   assistant: '助手',
   system: '提示',
+  tool: '工具',
 };
 
 export function MessageList({ messages }: MessageListProps) {
@@ -23,6 +25,13 @@ export function MessageList({ messages }: MessageListProps) {
   return (
     <div className="messages" ref={scrollRef}>
       {messages.map((message) => {
+        if (message.role === 'tool') return <ToolCard key={message.id} message={message} />;
+
+        // 只承载 tool_calls、没有文字的气泡不用画出来
+        if (message.role === 'assistant' && !message.content.trim() && !message.streaming) {
+          return null;
+        }
+
         // 只有助手的回答渲染 markdown：用户输入和报错提示保持原样，避免踩到语法
         const asMarkdown = message.role === 'assistant' && !message.error;
         return (

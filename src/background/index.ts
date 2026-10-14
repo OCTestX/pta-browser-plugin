@@ -1,7 +1,13 @@
 import { ext } from '../shared/browser';
-import { isContentRequest, type BackgroundEvent, type ChatTurn } from '../shared/messages';
-import type { StartChatResponse } from '../shared/messages';
-import { streamChat } from './deepseek';
+import { isContentRequest } from '../shared/messages';
+import type {
+  BackgroundEvent,
+  RunToolRequest,
+  StartChatResponse,
+  ToolRunResponse,
+} from '../shared/messages';
+import type { ApiMessage } from '../shared/types';
+import { runAgent, type ToolOutcome } from './agent';
 import { loadSettings, saveSettings, toSettingsView } from './settings';
 
 const TOGGLE_PANEL: BackgroundEvent = { type: 'toggle-panel' };
@@ -48,7 +54,7 @@ ext.runtime.onMessage.addListener((message: unknown, sender, sendResponse) => {
         sendResponse(toSettingsView(await saveSettings(message.patch)));
         return;
       case 'chat/start':
-        sendResponse(await startChat(message.requestId, message.turns, tabId));
+        sendResponse(await startChat(message.requestId, message.messages, tabId));
         return;
       case 'chat/stop': {
         runningRequests.get(message.requestId)?.abort();
@@ -65,7 +71,7 @@ ext.runtime.onMessage.addListener((message: unknown, sender, sendResponse) => {
 
 async function startChat(
   requestId: string,
-  turns: ChatTurn[],
+  messages: ApiMessage[],
   tabId: number | undefined,
 ): Promise<StartChatResponse> {
   const settings = await loadSettings();
@@ -84,13 +90,25 @@ async function startChat(
 
   void (async () => {
     try {
-      await streamChat({
-        apiKey: settings.apiKey,
-        baseURL: settings.baseURL,
-        model: settings.model,
-        turns,
+      await runAgent({
+        messages,
+        tabId,
         signal: controller.signal,
-        onDelta: (text) => sendToTab(tabId, { type: 'chat/delta', requestId, text }),
+        events: {
+          onDelta: (text) => sendToTab(tabId, { type: 'chat/delta', requestId, text }),
+          onToolStart: (call) =>
+            sendToTab(tabId, {
+              type: 'chat/tool-start',
+              requestId,
+              callId: call.callId,
+              name: call.name,
+              args: call.args,
+            }),
+          onToolEnd: (callId, result, isError) =>
+            sendToTab(tabId, { type: 'chat/tool-end', requestId, callId, result, isError }),
+          onNotice: (text) => sendToTab(tabId, { type: 'chat/notice', requestId, text }),
+          runPageTool: (name, args) => runToolInTab(tabId, name, args),
+        },
       });
       sendToTab(tabId, { type: 'chat/done', requestId, aborted: false });
     } catch (error) {
@@ -107,6 +125,22 @@ async function startChat(
   return { ok: true };
 }
 
+/** url / write_document 要在页面里执行，转给 content script */
+async function runToolInTab(
+  tabId: number,
+  name: string,
+  args: Record<string, unknown>,
+): Promise<ToolOutcome> {
+  const request: RunToolRequest = { type: 'tool/run', name, args };
+  try {
+    const response = (await ext.tabs.sendMessage(tabId, request)) as ToolRunResponse | undefined;
+    if (!response) return { output: `${name} 没有返回结果`, isError: true };
+    return { output: response.result, isError: !response.ok };
+  } catch (error) {
+    return { output: `页面没有响应 ${name}：${toErrorMessage(error)}`, isError: true };
+  }
+}
+
 function sendToTab(tabId: number, event: BackgroundEvent): void {
   void ext.tabs.sendMessage(tabId, event).catch(() => undefined);
 }
@@ -114,3 +148,4 @@ function sendToTab(tabId: number, event: BackgroundEvent): void {
 function toErrorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
+

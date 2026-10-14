@@ -1,9 +1,5 @@
+import type { ApiMessage } from './types';
 import type { Settings, SettingsView } from './settings';
-
-export interface ChatTurn {
-  role: 'system' | 'user' | 'assistant';
-  content: string;
-}
 
 /* ---------- background -> content ---------- */
 
@@ -14,6 +10,9 @@ export interface TogglePanelMessage {
 export type BackgroundEvent =
   | TogglePanelMessage
   | { type: 'chat/delta'; requestId: string; text: string }
+  | { type: 'chat/tool-start'; requestId: string; callId: string; name: string; args: string }
+  | { type: 'chat/tool-end'; requestId: string; callId: string; result: string; isError: boolean }
+  | { type: 'chat/notice'; requestId: string; text: string }
   | { type: 'chat/done'; requestId: string; aborted: boolean }
   | { type: 'chat/error'; requestId: string; message: string };
 
@@ -27,14 +26,22 @@ export function isChatEvent(
   return (
     isRecord(message) &&
     typeof message.requestId === 'string' &&
-    (message.type === 'chat/delta' || message.type === 'chat/done' || message.type === 'chat/error')
+    typeof message.type === 'string' &&
+    message.type.startsWith('chat/')
   );
 }
 
 /* ---------- content -> background ---------- */
 
+/** 页面侧要执行的工具（需要访问 location / 触发下载），由 background 转给 content script */
+export interface RunToolRequest {
+  type: 'tool/run';
+  name: string;
+  args: Record<string, unknown>;
+}
+
 export type ContentRequest =
-  | { type: 'chat/start'; requestId: string; turns: ChatTurn[] }
+  | { type: 'chat/start'; requestId: string; messages: ApiMessage[] }
   | { type: 'chat/stop'; requestId: string }
   | { type: 'settings/get' }
   | { type: 'settings/save'; patch: Partial<Settings> };
@@ -49,11 +56,20 @@ export function isContentRequest(message: unknown): message is ContentRequest {
   );
 }
 
+export function isRunToolRequest(message: unknown): message is RunToolRequest {
+  return isRecord(message) && message.type === 'tool/run';
+}
+
 /* ---------- responses ---------- */
 
 export interface StartChatResponse {
   ok: boolean;
   message?: string;
+}
+
+export interface ToolRunResponse {
+  ok: boolean;
+  result: string;
 }
 
 export type SettingsResponse = SettingsView;

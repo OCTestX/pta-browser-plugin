@@ -1,17 +1,25 @@
-import type { ChatTurn } from '../shared/messages';
+import type { ToolSchema } from '../shared/tools';
+import type { ApiMessage, ToolCall } from '../shared/types';
+
+export interface StreamChatResult {
+  content: string;
+  toolCalls: ToolCall[];
+}
 
 interface StreamChatOptions {
   apiKey: string;
   baseURL: string;
   model: string;
-  turns: ChatTurn[];
+  messages: ApiMessage[];
+  tools?: ToolSchema[];
   signal: AbortSignal;
   onDelta: (text: string) => void;
 }
 
-/** 调用 OpenAI 兼容的 /chat/completions，按 SSE 增量回调 */
-export async function streamChat(options: StreamChatOptions): Promise<void> {
-  const { apiKey, baseURL, model, turns, signal, onDelta } = options;
+/** 调用 OpenAI 兼容的 /chat/completions，按 SSE 增量回调，并把流式 tool_calls 拼接完整 */
+export async function streamChat(options: StreamChatOptions): Promise<StreamChatResult> {
+  const { apiKey, baseURL, model, messages, tools, signal, onDelta } = options;
+  const state: StreamState = { content: '', calls: new Map() };
 
   let response: Response;
   try {
@@ -21,7 +29,12 @@ export async function streamChat(options: StreamChatOptions): Promise<void> {
         'Content-Type': 'application/json',
         Authorization: `Bearer ${apiKey}`,
       },
-      body: JSON.stringify({ model, messages: turns, stream: true }),
+      body: JSON.stringify({
+        model,
+        messages,
+        stream: true,
+        ...(tools && tools.length > 0 ? { tools } : {}),
+      }),
       signal,
     });
   } catch (error) {
@@ -48,36 +61,91 @@ export async function streamChat(options: StreamChatOptions): Promise<void> {
     // 最后一段可能是半行，留到下次读取再处理
     buffer = lines.pop() ?? '';
     for (const line of lines) {
-      const delta = readDelta(line, model);
-      if (delta === null) return; // 收到 [DONE]
-      if (delta) onDelta(delta);
+      const payload = readPayload(line);
+      if (payload === null) return toResult(state); // 收到 [DONE]
+      if (payload === '') continue;
+      consume(payload, state, model, onDelta);
     }
   }
+
+  return toResult(state);
 }
 
-/** 返回该行的增量文本；空串表示这行没有内容，null 表示流结束 */
-function readDelta(line: string, model: string): string | null {
-  const trimmed = line.trim();
-  if (!trimmed.startsWith('data:')) return '';
-  const payload = trimmed.slice(5).trim();
-  if (!payload) return '';
-  if (payload === '[DONE]') return null;
+interface StreamState {
+  content: string;
+  calls: Map<number, { id: string; name: string; args: string }>;
+}
 
-  let parsed: {
-    choices?: { delta?: { content?: unknown } }[];
-    error?: { message?: unknown };
-  };
+interface ChunkPayload {
+  choices?: {
+    delta?: {
+      content?: unknown;
+      tool_calls?: {
+        index?: unknown;
+        id?: unknown;
+        function?: { name?: unknown; arguments?: unknown };
+      }[];
+    };
+  }[];
+  error?: { message?: unknown };
+}
+
+function consume(
+  payload: string,
+  state: StreamState,
+  model: string,
+  onDelta: (text: string) => void,
+): void {
+  let parsed: ChunkPayload;
   try {
-    parsed = JSON.parse(payload);
+    parsed = JSON.parse(payload) as ChunkPayload;
   } catch {
-    return ''; // 解析不了的行直接跳过
+    return; // 解析不了的行直接跳过
   }
 
   if (typeof parsed.error?.message === 'string') {
     throw new Error(`${model} 返回错误：${parsed.error.message}`);
   }
-  const delta: unknown = parsed.choices?.[0]?.delta?.content;
-  return typeof delta === 'string' ? delta : '';
+
+  const delta = parsed.choices?.[0]?.delta;
+  if (!delta) return;
+
+  if (typeof delta.content === 'string' && delta.content) {
+    state.content += delta.content;
+    onDelta(delta.content);
+  }
+
+  // tool_calls 会被切成多个分片下发，按 index 累积，id / name 通常只在第一片里
+  for (const call of delta.tool_calls ?? []) {
+    const index = typeof call.index === 'number' ? call.index : 0;
+    const current = state.calls.get(index) ?? { id: '', name: '', args: '' };
+    if (typeof call.id === 'string' && call.id) current.id = call.id;
+    if (typeof call.function?.name === 'string' && call.function.name) current.name = call.function.name;
+    if (typeof call.function?.arguments === 'string') current.args += call.function.arguments;
+    state.calls.set(index, current);
+  }
+}
+
+function toResult(state: StreamState): StreamChatResult {
+  const toolCalls: ToolCall[] = [...state.calls.entries()]
+    .sort(([a], [b]) => a - b)
+    .map(([index, call], position): ToolCall => ({
+      id: call.id || `call_${position + 1}_${index}`,
+      type: 'function',
+      function: { name: call.name, arguments: call.args },
+    }))
+    .filter((call) => call.function.name);
+
+  return { content: state.content, toolCalls };
+}
+
+/** 返回该行的 data 内容；空串表示这行没有内容，null 表示流结束 */
+function readPayload(line: string): string | null {
+  const trimmed = line.trim();
+  if (!trimmed.startsWith('data:')) return '';
+  const payload = trimmed.slice(5).trim();
+  if (!payload) return '';
+  return payload === '[DONE]' ? null : payload;
 }
 
 function describeHttpError(status: number, detail: string): string {

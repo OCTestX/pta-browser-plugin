@@ -1,9 +1,10 @@
 import { createRoot } from 'react-dom/client';
 import { App } from './App';
 import { katexStyles } from './katexStyles';
+import { runPageTool } from './pageTools';
 import { togglePanel } from './panelStore';
 import { ext } from '../shared/browser';
-import { isTogglePanelMessage } from '../shared/messages';
+import { isRunToolRequest, isTogglePanelMessage } from '../shared/messages';
 import styles from './styles.css?inline';
 
 const HOST_ID = 'pta-assistant-host';
@@ -42,8 +43,16 @@ function start(): void {
   if (isInjected()) return;
 
   // 在模块顶层注册，保证后台发来的 toggle 一定有人接
-  ext.runtime.onMessage.addListener((message: unknown) => {
-    if (isTogglePanelMessage(message)) togglePanel();
+  ext.runtime.onMessage.addListener((message: unknown, _sender, sendResponse) => {
+    if (isTogglePanelMessage(message)) {
+      togglePanel();
+      return undefined;
+    }
+    if (isRunToolRequest(message)) {
+      sendResponse(runPageTool(message.name, message.args));
+      return undefined;
+    }
+    return undefined;
   });
 
   if (document.readyState === 'loading') {

@@ -44,7 +44,30 @@ console.log('✓ 脚本里没有会让 Chrome 拒绝加载的 Unicode 非字符'
 /* ---------- 测试脚手架 ---------- */
 
 const code = readFileSync(`${outDir}/content.js`, 'utf8');
-const tick = () => new Promise((resolve) => setTimeout(resolve, 100));
+
+// React 的渲染是异步的，固定 sleep 在机器忙的时候会偶发失败。
+// 这里改成等 DOM 安静下来：有新改动就重新计时，直到安静 quietMs。
+const booted = [];
+const settleWindow = (window, { quietMs = 25, timeoutMs = 3000 } = {}) =>
+  new Promise((resolve) => {
+    const root = window.document.getElementById('pta-assistant-host')?.shadowRoot ?? window.document;
+    let timer = setTimeout(done, quietMs);
+    const observer = new window.MutationObserver(() => {
+      clearTimeout(timer);
+      timer = setTimeout(done, quietMs);
+    });
+    function done() {
+      clearTimeout(timer);
+      observer.disconnect();
+      resolve();
+    }
+    observer.observe(root, { subtree: true, childList: true, characterData: true, attributes: true });
+    setTimeout(done, timeoutMs);
+  });
+
+/** 等当前场景那个页面安静下来（脚本按场景顺序执行，只看最后一个 boot 出来的页面） */
+/** 等当前场景那个页面安静下来（脚本按场景顺序执行，只看最后一个 boot 出来的页面） */
+const tick = () => settleWindow(booted.at(-1));
 const check = (label, ok) => {
   if (!ok) throw new Error(`✗ ${label}`);
   console.log(`✓ ${label}`);
@@ -57,6 +80,7 @@ function boot({ hasApiKey }) {
     pretendToBeVisual: true,
   });
   const { window } = dom;
+  booted.push(window);
   const listeners = [];
   const requests = [];
   let keySet = hasApiKey;
@@ -104,6 +128,11 @@ function boot({ hasApiKey }) {
     shadow: () => window.document.getElementById('pta-assistant-host')?.shadowRoot,
     toggle: () => listeners.forEach((fn) => fn({ type: 'toggle-panel' })),
     emit: (event) => listeners.forEach((fn) => fn(event)),
+    /** 模拟 background 用 tabs.sendMessage 发来的消息并等 content script 的响应（tool/run 用它） */
+    request: (message) =>
+      new Promise((resolve) => {
+        listeners.forEach((fn) => fn(message, {}, resolve));
+      }),
     setValue(el, value) {
       const setter = Object.getOwnPropertyDescriptor(
         window.HTMLInputElement.prototype === el.constructor.prototype
@@ -277,5 +306,87 @@ check(
   failing.find('.bubble--error')?.textContent.includes('API Key 无效'),
 );
 check('报错后停止按钮变回发送', failing.find('.composer__send').textContent === '发送');
+
+/* ---------- 场景四：工具调用 ---------- */
+
+const tools = boot({ hasApiKey: true });
+await tick();
+tools.toggle();
+await tick();
+tools.setValue(tools.find('.composer__input'), '看下这个页面');
+await tick();
+tools.find('.composer__send').click();
+await tick();
+const toolRequestId = tools.requests.find((r) => r.type === 'chat/start')?.requestId;
+
+tools.emit({
+  type: 'chat/tool-start',
+  requestId: toolRequestId,
+  callId: 'call_1',
+  name: 'js_inject',
+  args: '{"code":"return document.title"}',
+});
+await tick();
+check('工具卡片出现在对话里', Boolean(tools.find('.tool')));
+check('工具卡片显示执行中', Boolean(tools.find('.tool--running')));
+check('js_inject 的代码完整显示出来', tools.find('.tool__code')?.textContent === 'return document.title');
+check('只承载 tool_calls 的空助手气泡不渲染', tools.find('.bubble--assistant') === null);
+
+tools.emit({ type: 'chat/tool-end', requestId: toolRequestId, callId: 'call_1', result: '题目 - PTA', isError: false });
+await tick();
+check('工具完成后状态变完成', Boolean(tools.find('.tool--ok')));
+check('工具结果展示在卡片里', tools.find('.tool__result')?.textContent === '题目 - PTA');
+
+tools.emit({ type: 'chat/delta', requestId: toolRequestId, text: '标题已经拿到了。' });
+await tick();
+check('工具之后的文字另起一个回答气泡', tools.shadow().querySelectorAll('.bubble--assistant').length === 1);
+tools.emit({ type: 'chat/done', requestId: toolRequestId, aborted: false });
+await tick();
+
+tools.setValue(tools.find('.composer__input'), '继续');
+await tick();
+tools.find('.composer__send').click();
+await tick();
+const rebuilt = tools.requests.filter((r) => r.type === 'chat/start').at(-1).messages;
+const rebuiltAssistant = rebuilt.find((m) => m.tool_calls?.length > 0);
+const rebuiltTool = rebuilt.find((m) => m.role === 'tool');
+check('下一轮请求带上了 assistant 的 tool_calls', rebuiltAssistant?.tool_calls[0].id === 'call_1');
+check(
+  '下一轮请求带上了工具执行结果',
+  rebuiltTool?.tool_call_id === 'call_1' && rebuiltTool.content === '题目 - PTA',
+);
+check(
+  '下一轮请求也带上了工具之后的回答',
+  rebuilt.some((m) => m.role === 'assistant' && m.content === '标题已经拿到了。'),
+);
+
+// 页面侧工具：url 与 write_document 由 background 通过 tool/run 交给页面执行
+const urlResponse = await tools.request({ type: 'tool/run', name: 'url', args: {} });
+check(
+  'url 工具返回当前页面地址',
+  urlResponse.ok && urlResponse.result === 'https://pintia.cn/problem-sets/1/problems/1',
+);
+
+// jsdom 没实现这两个（真实浏览器都有）
+tools.window.URL.createObjectURL = () => 'blob:test';
+tools.window.URL.revokeObjectURL = () => {};
+const downloads = [];
+const originalClick = tools.window.HTMLAnchorElement.prototype.click;
+tools.window.HTMLAnchorElement.prototype.click = function click() {
+  downloads.push(this.download);
+};
+const writeResponse = await tools.request({
+  type: 'tool/run',
+  name: 'write_document',
+  args: { filename: '题解/1.md', content: '# 题解' },
+});
+tools.window.HTMLAnchorElement.prototype.click = originalClick;
+check('write_document 会触发下载并清洗文件名', downloads[0] === '题解_1.md');
+check('write_document 的结果里带上文件名与字数', writeResponse.result.includes('题解_1.md（4 字符）'));
+check('write_document 缺 content 时返回失败', (await tools.request({ type: 'tool/run', name: 'write_document', args: { filename: 'a.md' } })).ok === false);
+check('未知工具返回失败', (await tools.request({ type: 'tool/run', name: 'nope', args: {} })).ok === false);
+
+// write_document 里有个 60 秒后才回收 objectURL 的定时器，不关窗口进程会多挂一分钟
+booted.forEach((window) => window.close());
 
 console.log(`\n${target} 冒烟测试通过`);

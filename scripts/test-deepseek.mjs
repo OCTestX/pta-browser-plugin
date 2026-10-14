@@ -18,19 +18,27 @@ function sseResponse(chunks, status = 200) {
   return new Response(stream, { status, headers: { 'Content-Type': 'text/event-stream' } });
 }
 
-const collect = async (chunks, status) => {
-  global.fetch = async () => sseResponse(chunks, status);
+let lastBody = null;
+
+const runStream = async (chunks, status, options = {}) => {
+  global.fetch = async (_url, init) => {
+    lastBody = JSON.parse(init.body);
+    return sseResponse(chunks, status);
+  };
   const deltas = [];
-  await streamChat({
+  const result = await streamChat({
     apiKey: 'sk-x',
     baseURL: 'https://api.deepseek.com',
     model: 'deepseek-v4.1-flash',
-    turns: [{ role: 'user', content: 'hi' }],
+    messages: [{ role: 'user', content: 'hi' }],
     signal: new AbortController().signal,
     onDelta: (t) => deltas.push(t),
+    ...options,
   });
-  return deltas.join('');
+  return { text: deltas.join(''), result };
 };
+
+const collect = async (chunks, status) => (await runStream(chunks, status)).text;
 
 // 1. 正常流：事件被切成任意边界（含 \r\n、半行）
 const raw =
@@ -52,7 +60,7 @@ const expectError = async (chunks, status, keyword) => {
       apiKey: 'sk-x',
       baseURL: 'https://api.deepseek.com',
       model: 'm',
-      turns: [],
+      messages: [],
       signal: new AbortController().signal,
       onDelta: () => {},
     });
@@ -83,7 +91,7 @@ try {
     apiKey: 'sk-x',
     baseURL: 'https://api.deepseek.com',
     model: 'm',
-    turns: [],
+    messages: [],
     signal: new AbortController().signal,
     onDelta: () => {},
   });
@@ -92,7 +100,24 @@ try {
   check('网络错误转成中文提示', error.message.includes('无法连接'));
 }
 
-// 5. 中途停止
+// 5. 工具调用：分片拼接、并行调用、tools 参数
+const toolChunk = (delta) => `data: ${JSON.stringify({ choices: [{ delta }] })}\n\n`;
+const toolSse = [
+  toolChunk({ tool_calls: [{ index: 0, id: 'call_a', function: { name: 'js_inject', arguments: '{"code":' } }] }),
+  toolChunk({ tool_calls: [{ index: 0, function: { arguments: '"return 1"' } }] }),
+  toolChunk({ tool_calls: [{ index: 0, function: { arguments: '}' } }] }),
+  toolChunk({ tool_calls: [{ index: 1, id: 'call_b', function: { name: 'date', arguments: '{}' } }] }),
+  'data: [DONE]\n\n',
+].join('');
+const toolRun = await runStream([toolSse], 200, { tools: [{ type: 'function', function: { name: 'date' } }] });
+check('tool_calls 的分片能拼成完整参数', toolRun.result.toolCalls[0].function.arguments === '{"code":"return 1"}');
+check('一次调用多个工具时按 index 分开累积', toolRun.result.toolCalls.length === 2);
+check('第二个工具的参数与名称正确', toolRun.result.toolCalls[1].function.name === 'date');
+check('带上 tools 时请求体里有工具定义', lastBody.tools?.length === 1);
+check('没有工具调用时返回空数组', (await runStream(['data: [DONE]\n\n'], 200)).result.toolCalls.length === 0);
+check('不带 tools 时请求体里没有 tools 字段', !('tools' in lastBody));
+
+// 6. 中途停止
 const controller = new AbortController();
 global.fetch = async (_url, init) =>
   new Promise((_resolve, reject) => {
@@ -104,7 +129,7 @@ const pending = streamChat({
   apiKey: 'sk-x',
   baseURL: 'https://api.deepseek.com',
   model: 'm',
-  turns: [],
+  messages: [],
   signal: controller.signal,
   onDelta: () => {},
 });

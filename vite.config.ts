@@ -93,8 +93,9 @@ export default defineConfig({
   plugins: [react(), escapeNoncharactersPlugin(), manifestPlugin(), katexFontsPlugin()],
   build: {
     outDir: `dist/${target}`,
-    // 每个入口单独一次构建，第二次构建不能清掉第一次的产物
-    emptyOutDir: false,
+    // 每个入口单独一次构建：第一次清空目录内容（Vite 只删内容、保留目录本身，
+    // 目录被删掉重建会让浏览器里已加载的插件指向不存在的路径），第二次保留第一次的产物
+    emptyOutDir: entry === 'background',
     target: 'esnext',
     rollupOptions: {
       input: ENTRY_FILES[entry],
