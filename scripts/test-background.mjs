@@ -90,13 +90,9 @@ globalThis.chrome = {
   },
 };
 
-// fetch 桩：judge0 编译服务返回固定结果，模型 SSE 按脚本回放
+// fetch 桩：只回放模型的 SSE（内置编译器在 Node 里没有 Worker，走到会自己降级）
 const encoder = new TextEncoder();
 globalThis.fetch = async (url, init) => {
-  if (String(url).includes('judge0')) {
-    state.compileCalls.push(JSON.parse(init.body));
-    return new Response(JSON.stringify({ stdout: '7\n', status: { id: 3 } }), { status: 200 });
-  }
   state.modelCalls.push(JSON.parse(init.body));
   const sse = state.sse[Math.min(state.modelCalls.length - 1, state.sse.length - 1)] ?? '';
   return new Response(

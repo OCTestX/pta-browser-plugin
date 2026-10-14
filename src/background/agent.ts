@@ -146,12 +146,7 @@ export async function runTool(
     if (!code.trim()) return { output: '缺少 code 参数', isError: true };
     const stdin = typeof args.stdin === 'string' ? args.stdin : '';
     try {
-      const result = await compileAndRun({
-        code,
-        stdin,
-        serviceURL: settings.compileServiceURL,
-        languageId: settings.compileLanguageId,
-      });
+      const result = await compileAndRun({ code, stdin });
       return { output: formatCompileResult(result), isError: false };
     } catch (error) {
       return { output: error instanceof Error ? error.message : String(error), isError: true };
@@ -178,7 +173,7 @@ export async function runTool(
 
     // 自动检查：回读比对已在链路里做过，这里补样例编译比对与提交按钮状态
     if (args.verify !== false) {
-      notes.push(await verifyWrittenCode(injectScript, tabId, args.code, settings));
+      notes.push(await verifyWrittenCode(injectScript, tabId, args.code));
     }
 
     return { output: [outcome.output, ...notes].join('；'), isError: outcome.isError };
@@ -261,45 +256,37 @@ async function verifyWrittenCode(
   inject: typeof injectScript,
   tabId: number,
   code: unknown,
-  settings: Settings,
 ): Promise<string> {
   const source = typeof code === 'string' ? code : '';
   const checks: string[] = [];
 
-  // 1) 样例编译并比对输出（用第一组样例，避免每次都打一串请求）
-  if (settings.compileServiceURL) {
-    try {
-      const samplesRaw = await inject(tabId, READ_PROBLEM_SCRIPT, { samplesOnly: true });
-      const parsed = JSON.parse(samplesRaw.output) as {
-        samples?: { input: string; output: string }[];
-      };
-      const sample = parsed.samples?.[0];
-      if (!sample) {
-        checks.push('自动检查：题面里没识别出样例，跳过编译比对');
+  // 1) 样例编译并比对输出（用第一组样例，避免每次都多跑一遍）
+  try {
+    const samplesRaw = await inject(tabId, READ_PROBLEM_SCRIPT, { samplesOnly: true });
+    const parsed = JSON.parse(samplesRaw.output) as {
+      samples?: { input: string; output: string }[];
+    };
+    const sample = parsed.samples?.[0];
+    if (!sample) {
+      checks.push('自动检查：题面里没识别出样例，跳过编译比对');
+    } else {
+      const compiled = await compileAndRun({ code: source, stdin: sample.input });
+      if (compiled.compileOutput) {
+        checks.push(`自动检查：编译失败——${compiled.compileOutput.split('\n')[0]}`);
+      } else if (!compiled.ok) {
+        checks.push(`自动检查：内置编译器返回 ${compiled.statusText}`);
       } else {
-        const compiled = await compileAndRun({
-          code: source,
-          stdin: sample.input,
-          serviceURL: settings.compileServiceURL,
-          languageId: settings.compileLanguageId,
-        });
-        if (compiled.compileOutput) {
-          checks.push(`自动检查：编译失败——${compiled.compileOutput.split('\n')[0]}`);
-        } else if (!compiled.ok) {
-          checks.push(`自动检查：编译服务返回 ${compiled.statusText}`);
-        } else {
-          const diff = compareOutput(sample.output, compiled.stdout);
-          checks.push(
-            diff.same
-              ? `自动检查：样例 1（输入 ${JSON.stringify(sample.input.trim())}）输出一致`
-              : `自动检查：样例 1 输出不一致——${diff.detail}`,
-          );
-        }
+        const diff = compareOutput(sample.output, compiled.stdout);
+        checks.push(
+          diff.same
+            ? `自动检查：样例 1（输入 ${JSON.stringify(sample.input.trim())}）输出一致`
+            : `自动检查：样例 1 输出不一致——${diff.detail}`,
+        );
       }
-    } catch (error) {
-      const reason = error instanceof Error ? error.message : String(error);
-      checks.push(`自动检查：编译比对没做成（${reason}）`);
     }
+  } catch (error) {
+    const reason = error instanceof Error ? error.message : String(error);
+    checks.push(`自动检查：编译比对没做成（${reason}）`);
   }
 
   // 2) 提交按钮可用性

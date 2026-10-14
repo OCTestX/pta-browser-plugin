@@ -36,8 +36,11 @@ src/
   content/katexStyles.ts KaTeX 样式的字库地址改写成扩展地址
   content/styles.css     悬浮窗样式（跟随 content.js 一起注入，不污染页面）
   shared/                browser API 入口、消息协议、工具定义、设置与消息类型
+public/engine/          内置 C 编译器：Clang/LLD 的 wasm + sysroot + WASI 运行时（见该目录 README）
 scripts/
+  fetch-engine.mjs      下载编译器的三大资源（约 91MB，build 前自动跑一次）
   gen-icons.py           生成 public/icons 下的图标
+  test-compile.mjs       内置 C 编译器：真实引擎编译运行 + 样例比对
   test-deepseek.mjs      假的 fetch 跑 SSE 解析与错误映射
   smoke.mjs              jsdom 冒烟测试：清单完整性、悬浮窗、流式对话、设置页
 ```
@@ -162,18 +165,41 @@ npm run icons      # 重新生成图标（需要 python3 + Pillow）
   - 17 种方法分组：**编辑器状态（CM6 API）**：整段 dispatch / 先 focus 再 dispatch / dispatch + 标注输入 / replaceSelection / 逐行 dispatch；**CDP 真实输入**：CDP 逐字真实按键 / CDP 真实点击 + 逐字按键 / CDP keyDown+text 逐字 / CDP 整段插入；**DOM 与事件**：execCommand / 手工派发 beforeinput+input / 改 DOM + 派发 input / 模拟输入法事件链 / 手工派发 paste 事件 / 原生 value setter；**剪贴板**：剪贴板 + 真 Ctrl+V / 剪贴板 + execCommand(paste)
 - 版本号同步到 0.8.0
 
-## v0.6 已完成
+## v0.9 已完成：内置 C 编译器（不需要外部服务）
 
-工具 `compile_and_run_c`：把 C 代码送到编译服务编译并运行，可带标准输入，把编译错误 / 运行错误 / 超时 / 服务问题都转成中文汇报（输出过长会截断）。
+工具 `compile_and_run_c` 现在**完全在插件本地编译运行**：不联网、代码不出本机、不用配任何服务地址。
+（v0.8 及之前走 Judge0 在线编译服务，设置页那两个「编译服务地址 / 编译语言 ID」随之删掉了。）
 
-**为什么走远程而不是内置编译器**：浏览器插件里放不下真正的本地编译环境——clang 的 wasm 加上 sysroot 上百 MB，而且 MV3 不允许从远端加载 wasm 代码（远程代码一律禁止），所以「内置 C 编译器」这条在插件形态下走不通。因此按 **Judge0 协议**（开源、可自建、事实标准）接编译服务：
+**怎么做到「内置」**：把 Clang 22.1.8 + wasm-ld（LLD）+ wasi-sdk 33 的 sysroot 全部编成 WebAssembly 塞进插件，
+整套引擎跑在 Web Worker 里：
 
-- 默认 `https://ce.judge0.com`（公共实例，已在 `host_permissions` 里声明）
-- 设置页可改成自建或校内的 Judge0 地址；换域名要同时加进 `manifest` 的 `host_permissions`
-- 语言 ID 默认 `50`（C, GCC），改成 `54` 就是 C++ (GCC)
-- 代码会发给该编译服务；介意的话把地址换成自己部署的
+| 环节 | 做法 |
+|---|---|
+| 编译 | `clang -cc1 -emit-obj`，C 头文件来自 sysroot 的 `include/wasm32-wasip1` |
+| 链接 | `wasm-ld` 链接 `crt1.o` + `libc.a` + `libclang_rt.builtins.a`，产出用户程序的 .wasm |
+| 运行 | 用 JS 实现的 WASI shim 跑这个 .wasm：stdin 预喂（题目的样例输入）、stdout / stderr 分开收集 |
 
-系统提示里也加了：写完 C 代码要先用 `compile_and_run_c` 拿题面样例跑一遍，输出对不上就自己改，别把没验证的代码交给用户。
+资源约 91MB（`public/engine/`），三个大文件不进 git，`npm run build` 会先跑 `scripts/fetch-engine.mjs`
+从固定的 Release 下载并 sha256 校验（只需一次，之后永久离线）。
+
+几个实现上的取舍：
+
+- **Worker 而不是直接跑**：编译+运行是同步 CPU 密集任务，更重要的是——学生写错边界条件容易写出**死循环**，
+  wasm 里没有任何协作式检查点，唯一能停下来的办法就是 `worker.terminate()` 整个杀掉再重建
+- **Chrome 用 offscreen 文档承载 Worker**：MV3 的 service worker 里建不了 Worker；Firefox 的 background 是
+  event page，直接 `new Worker`。编译期间后台每 20 秒戳一次扩展 API，防止 service worker 被按空闲回收
+- **阶段化超时**：编译+链接 60 秒（首次含引擎加载），运行 10 秒，超时就杀 Worker 并汇报「运行超时（多半是死循环）」
+- **用 noeh 版 clang/lld**：标准版有一条 exnref 指令要 Chrome 125+，剥掉它之后 Chrome 63+ / Firefox 115+ / 各种国产内核 WebView 都能跑
+- **必须在 manifest 里放行 wasm**：MV3 扩展页默认 CSP 是 `script-src 'self'`，不含 wasm 权限，
+  offscreen 文档属于扩展页，它里面的 Worker 调 `WebAssembly.compile` 会被直接拦下
+  （报 "violates Content Security Policy directive: script-src 'self'"）。manifest 里写的是
+  `script-src 'self' 'wasm-unsafe-eval'`，Firefox 只认字符串形式，构建时和 offscreen 权限一起打了补丁
+- **语义参照 PTA 判题机**（GCC），和桌面 clang/gcc 一致，而不是自己实现一个解释器：自测通过不等于提交能过，但至少不会因为编译器方言吃亏
+- 引擎来源 [cppstudio-io/wasm-clang-runtime](https://github.com/cppstudio-io/wasm-clang-runtime)（Apache-2.0，其前身是 binji/wasm-clang），
+  `shared.js` 改成了 C 专用（原版硬编 C++）、补了 stderr 分流；详见 `public/engine/README.md`
+
+汇报文案沿用原来那套：编译错误原样带回 clang 诊断（含行列）、运行区分「崩溃 / 非零退出 / 超时」、输出过长会截断。
+版本号同步到 0.9.0。
 
 ## PTA 三件套（原计划 v0.7，提前做了）
 

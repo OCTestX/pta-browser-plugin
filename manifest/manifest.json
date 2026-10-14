@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "PTA 助手",
-  "version": "0.8.1",
+  "version": "1.0.0",
   "description": "帮助学生完成 PTA 题目的 AI 助手插件",
   "icons": {
     "16": "icons/icon-16.png",
@@ -18,8 +18,11 @@
       "128": "icons/icon-128.png"
     }
   },
-  "permissions": ["storage", "activeTab", "scripting", "debugger"],
-  "host_permissions": ["https://api.deepseek.com/*", "https://ce.judge0.com/*"],
+  "permissions": ["storage", "activeTab", "scripting", "debugger", "offscreen"],
+  "host_permissions": ["https://api.deepseek.com/*"],
+  "content_security_policy": {
+    "extension_pages": "script-src 'self' 'wasm-unsafe-eval'; object-src 'self'"
+  },
   "background": {
     "service_worker": "background.js"
   },

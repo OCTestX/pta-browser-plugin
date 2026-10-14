@@ -25,6 +25,14 @@ function applyFirefoxPatch(manifest: Record<string, unknown>): Record<string, un
     browser_specific_settings: {
       gecko: { id: 'pta-assistant@example.com', strict_min_version: '115.0' },
     },
+    // offscreen 是 Chrome 独有的：Firefox 直接在 event page 里 new Worker
+    permissions: ((manifest.permissions as string[] | undefined) ?? []).filter(
+      (permission) => permission !== 'offscreen',
+    ),
+    // Firefox 的 content_security_policy 只认字符串形式（Chrome 认 { extension_pages: ... } 对象）。
+    // 两个浏览器都需要在扩展页 CSP 里放行 wasm，否则 Worker 里 WebAssembly.compile 会被拦
+    content_security_policy: (manifest.content_security_policy as { extension_pages?: string } | undefined)
+      ?.extension_pages,
   };
 }
 

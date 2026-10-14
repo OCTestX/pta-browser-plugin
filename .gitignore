@@ -10,4 +10,9 @@ yarn-error.log*
 /.pnp
 .pnp.js
 
+# 内置编译器的大资源（约 91MB，由 scripts/fetch-engine.mjs 从固定 Release 下载）
+/public/engine/clang22-noeh
+/public/engine/lld22-noeh
+/public/engine/sysroot22.tar
+
 .vscode/*
