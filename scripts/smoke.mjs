@@ -16,12 +16,30 @@ const referenced = [
   ...(manifest.background?.scripts ?? []),
   ...Object.values(manifest.icons ?? {}),
   ...Object.values(manifest.action?.default_icon ?? {}),
+  ...(manifest.web_accessible_resources ?? []).flatMap((entry) => entry.resources ?? []),
 ];
-const missing = referenced.filter((file) => !existsSync(`${outDir}/${file}`));
+const exists = (entry) =>
+  existsSync(`${outDir}/${entry.endsWith('/*') ? entry.slice(0, -2) : entry}`);
+const missing = referenced.filter((entry) => !exists(entry));
 if (missing.length > 0) {
   throw new Error(`✗ 清单引用的文件不存在：${missing.join(', ')}（先跑 npm run build）`);
 }
 console.log(`✓ 清单引用的 ${new Set(referenced).size} 个文件都存在（manifest_version ${manifest.manifest_version}）`);
+if (!existsSync(`${outDir}/katex-fonts/KaTeX_Main-Regular.woff2`)) {
+  throw new Error('✗ KaTeX 字库没有复制到产物目录（先跑 npm run build）');
+}
+if (!exists('katex-fonts/*')) {
+  throw new Error('✗ katex-fonts 没在 web_accessible_resources 里声明，字体会被 Chrome 拦掉');
+}
+console.log('✓ KaTeX 字库已复制，且已在 web_accessible_resources 里声明');
+
+// Chrome 用 base::IsStringUTF8 校验脚本，非字符会被判成「不是 UTF-8 编码」，Python 的严格解码却放行
+for (const script of new Set([...referenced.filter((f) => f.endsWith('.js'))])) {
+  if (/[\uFDD0-\uFDEF\uFFFE\uFFFF]/u.test(readFileSync(`${outDir}/${script}`, 'utf8'))) {
+    throw new Error(`✗ ${script} 里有 Unicode 非字符，Chrome 会报「不是 UTF-8 编码」并拒绝加载`);
+  }
+}
+console.log('✓ 脚本里没有会让 Chrome 拒绝加载的 Unicode 非字符');
 
 /* ---------- 测试脚手架 ---------- */
 
@@ -46,6 +64,7 @@ function boot({ hasApiKey }) {
   // 打桩的 background：只实现 content script 依赖的那几个消息
   window.chrome = {
     runtime: {
+      getURL: (filePath) => `chrome-extension://test/${filePath}`,
       onMessage: {
         addListener: (fn) => listeners.push(fn),
         removeListener: () => {},
@@ -111,6 +130,13 @@ const host = withKey.window.document.getElementById('pta-assistant-host');
 check('宿主节点已注入页面', Boolean(host?.shadowRoot));
 check('样式已注入 shadow root', (host.shadowRoot.querySelector('style')?.textContent ?? '').includes('.panel'));
 check('React 挂载前收到的 toggle 也能打开悬浮窗', Boolean(withKey.find('.panel')));
+
+const injectedCss = host.shadowRoot.querySelector('style').textContent;
+check('页面样式与 KaTeX 样式都在同一个 style 里', injectedCss.includes('.panel') && injectedCss.includes('.katex'));
+check(
+  'KaTeX 字库地址改写成扩展地址',
+  injectedCss.includes('chrome-extension://test/katex-fonts/KaTeX_Main-Regular.woff2'),
+);
 check('聊天区存在', Boolean(withKey.find('.messages')));
 check('输入框存在', Boolean(withKey.find('.composer__input')));
 
@@ -127,15 +153,62 @@ check('生成中输入框被禁用', withKey.find('.composer__input').disabled);
 const requestId = withKey.requests.find((r) => r.type === 'chat/start')?.requestId;
 check('chat/start 带上了对话上下文', requestId !== undefined);
 
-withKey.emit({ type: 'chat/delta', requestId, text: '先看题目' });
+withKey.emit({ type: 'chat/delta', requestId, text: '先看题目的**输入输出**格式：\n\n' });
 await tick();
-withKey.emit({ type: 'chat/delta', requestId, text: '的输入输出格式。' });
+withKey.emit({
+  type: 'chat/delta',
+  requestId,
+  text: '给定 $n$，求 $\\sum_{i=1}^{n} i$。\n\n```c\nint main() {',
+});
 await tick();
 check(
-  '流式增量逐段追加到助手气泡',
-  withKey.find('.messages').textContent.includes('先看题目的输入输出格式。'),
+  '流式增量逐段追加并渲染成 markdown',
+  withKey.find('.messages').textContent.includes('先看题目的输入输出格式'),
 );
+check('行内加粗生效', withKey.find('.bubble__content--md strong')?.textContent === '输入输出');
+check('行内公式渲染成 KaTeX', Boolean(withKey.find('.bubble__content--md .katex')));
+check('未闭合的代码围栏先按代码块渲染', Boolean(withKey.find('.bubble__content--md pre code')));
 check('生成中显示光标', Boolean(withKey.find('.bubble__cursor')));
+
+withKey.emit({
+  type: 'chat/delta',
+  requestId,
+  text: '}\n```\n\n参考[题目链接](https://pintia.cn)。',
+});
+await tick();
+check(
+  '围栏闭合后代码内容完整',
+  withKey.find('.bubble__content--md pre code')?.textContent.includes('int main() {'),
+);
+check('markdown 链接会新开标签页', withKey.find('.bubble__content--md a')?.getAttribute('target') === '_blank');
+
+// 模型基本都写成单行 $$...$$，micromark 只认独占一行的 $$，要归一化
+withKey.emit({ type: 'chat/delta', requestId, text: '\n\n公式 $$E = mc^2$$ 要居中\n' });
+await tick();
+check('单行 $$...$$ 按块级公式渲染', Boolean(withKey.find('.bubble__content--md .katex-display')));
+
+// 代码块里的 $$ 不能被动，也不能被算进公式配对
+withKey.emit({ type: 'chat/delta', requestId, text: '\n\n```c\nint a = $$b$$;\n```\n' });
+await tick();
+check(
+  '代码块里的 $$ 原样保留',
+  [...withKey.find('.bubble__content--md').querySelectorAll('pre code')].some((block) =>
+    block.textContent.includes('int a = $$b$$;'),
+  ),
+);
+
+// 最后一段是模型刚写到一半的块级公式
+withKey.emit({ type: 'chat/delta', requestId, text: '\n\n推导：$$\\int_0^1 x\\,dx' });
+await tick();
+check('未闭合的 $$ 也会先渲染成块级公式', Boolean(withKey.find('.bubble__content--md .katex-display')));
+
+// 回答被截断：公式没闭合，后面还跟着正文，不能硬补收尾把正文吞进公式
+withKey.emit({ type: 'chat/delta', requestId, text: '\n\n所以答案是 $\\frac{1}{2}$ 结束' });
+await tick();
+check(
+  '公式没闭合又接正文时不会渲染出 KaTeX 报错',
+  withKey.find('.bubble__content--md').querySelectorAll('.katex-error').length === 0,
+);
 
 withKey.emit({ type: 'chat/done', requestId, aborted: false });
 await tick();

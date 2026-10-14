@@ -1,4 +1,7 @@
 import { readFileSync } from 'node:fs';
+import { copyFile, mkdir, readdir } from 'node:fs/promises';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { defineConfig, type Plugin } from 'vite';
 import react from '@vitejs/plugin-react';
 
@@ -25,6 +28,31 @@ function applyFirefoxPatch(manifest: Record<string, unknown>): Record<string, un
   };
 }
 
+// Chrome 用 base::IsStringUTF8 校验内容脚本，Unicode 非字符（U+FFFE/U+FFFF 之类）会被判成
+// 「不是 UTF-8 编码」而拒绝加载，但是 Python / Node 的严格解码都会放行，本地很难发现。
+// 依赖里有裸的非字符（正则字符类里的 \uffff），构建产物统一转义掉。
+function escapeNoncharactersPlugin(): Plugin {
+  const escape = (code: string): string =>
+    code.replace(/[\uFDD0-\uFDEF\uFFFE\uFFFF]/gu, (char) => {
+      const hex = (char.codePointAt(0) ?? 0).toString(16).padStart(4, '0');
+      return `\\u${hex}`;
+    });
+
+  return {
+    name: 'pta-escape-noncharacters',
+    // 必须在压缩之后：压缩器会把 \uffff 这种转义再写成字面字符
+    generateBundle(_options, bundle) {
+      for (const item of Object.values(bundle)) {
+        if (item.type === 'chunk') {
+          item.code = escape(item.code);
+        } else if (item.fileName.endsWith('.js') && typeof item.source === 'string') {
+          item.source = escape(item.source);
+        }
+      }
+    },
+  };
+}
+
 function manifestPlugin(): Plugin {
   return {
     name: 'pta-manifest',
@@ -42,8 +70,27 @@ function manifestPlugin(): Plugin {
   };
 }
 
+// KaTeX 的样式引用了自己的字库，必须跟着产物一起走（只带 woff2，浏览器优先用它）
+function katexFontsPlugin(): Plugin {
+  return {
+    name: 'pta-katex-fonts',
+    async writeBundle(options) {
+      const outDir = options.dir ?? `dist/${target}`;
+      const from = fileURLToPath(new URL('./node_modules/katex/dist/fonts', import.meta.url));
+      const to = path.join(outDir, 'katex-fonts');
+      await mkdir(to, { recursive: true });
+      const files = await readdir(from);
+      await Promise.all(
+        files
+          .filter((file) => file.endsWith('.woff2'))
+          .map((file) => copyFile(path.join(from, file), path.join(to, file))),
+      );
+    },
+  };
+}
+
 export default defineConfig({
-  plugins: [react(), manifestPlugin()],
+  plugins: [react(), escapeNoncharactersPlugin(), manifestPlugin(), katexFontsPlugin()],
   build: {
     outDir: `dist/${target}`,
     // 每个入口单独一次构建，第二次构建不能清掉第一次的产物

@@ -29,7 +29,8 @@ src/
   content/index.tsx      content script：注入 Shadow DOM 宿主节点并挂载 React
   content/App.tsx        悬浮窗主体（对话 / 设置两个视图）
   content/hooks/         useChat（消息与流式增量）、useSettings（设置读写）
-  content/components/    消息列表、输入区、设置页
+  content/components/    消息列表、markdown 渲染、输入区、设置页
+  content/katexStyles.ts KaTeX 样式的字库地址改写成扩展地址
   content/styles.css     悬浮窗样式（跟随 content.js 一起注入，不污染页面）
   shared/                browser API 入口、消息协议、设置与消息类型
 scripts/
@@ -48,6 +49,8 @@ npm run icons      # 重新生成图标（需要 python3 + Pillow）
 ```
 
 需要 Node 22.18+（`scripts/test-deepseek.mjs` 直接跑 TS 用的类型擦除）。
+
+加新依赖时注意：Chrome 会用 `base::IsStringUTF8` 校验脚本，Unicode 非字符（U+FFFE / U+FFFF 之类）会被判成「不是 UTF-8 编码」而拒绝加载整个插件，但 Python / Node 的严格解码都会放行，很容易查半天。构建里已经统一把非字符转义成 `\uXXXX`（必须在压缩之后做），冒烟测试也会检查。
 
 加载方式：
 
@@ -82,6 +85,22 @@ npm run icons      # 重新生成图标（需要 python3 + Pillow）
 对话上下文取自面板里可见的消息（系统提示和报错气泡不发），刷新页面即清空；上下文记忆与 markdown 渲染在 v0.3 处理。
 
 已知限制：自定义接口地址时，需要把该域名加进 `manifest/manifest.json` 的 `host_permissions`，否则浏览器会拦掉请求。
+
+## v0.3 已完成
+
+- 助手气泡实时渲染 markdown（表格、列表、引用、代码块、链接按新标签页打开），公式用 KaTeX 渲染
+- 流式过场做了三件事，避免半截内容渲染错：
+  - 没写完的代码围栏补上收尾，代码块立刻成形
+  - 单行 `$$x$$` 拆成独占一行（micromark 只认这种才算块级公式，否则会当成行内公式不居中）
+  - `\[ \]` `\( \)` 这类 LaTeX 定界符统一成 `$`；公式写到一半时先渲染成公式，但后面已经接上中文正文（回答被截断）就按普通文本处理，不硬补收尾去吞正文
+- 代码块里的 `$$` 不会被改写，也不参与公式配对
+- KaTeX 用只带 woff2 的字库（20 个文件 296K），构建时复制到 `dist/<target>/katex-fonts/`，CSS 里的相对地址改写成扩展地址，并在 `web_accessible_resources` 里声明
+
+已知限制：
+
+- content.js 因为带上了 markdown + KaTeX 涨到 690K（gzip 205K），首次注入会有一点开销
+- 若页面极其严格地限制字体（`font-src`），公式可能退回系统字体显示，结构仍然正确
+- 依赖里 katex@0.16 有一条「原型污染绕过 trust 限制」的低危通告，我们没用 `trust` 选项，且输入来自模型而非攻击者
 
 开发计划
 v0.1

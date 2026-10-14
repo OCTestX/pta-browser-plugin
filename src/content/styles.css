@@ -151,6 +151,112 @@
   font-size: 13px;
 }
 
+/* ---------- 助手气泡里的 markdown ---------- */
+
+.bubble__content--md {
+  white-space: normal;
+}
+
+.bubble__content--md > :first-child {
+  margin-top: 0;
+}
+
+.bubble__content--md > :last-child {
+  margin-bottom: 0;
+}
+
+.bubble__content--md p,
+.bubble__content--md ul,
+.bubble__content--md ol,
+.bubble__content--md blockquote,
+.bubble__content--md pre,
+.bubble__content--md table {
+  margin: 0 0 8px;
+}
+
+.bubble__content--md h1,
+.bubble__content--md h2,
+.bubble__content--md h3,
+.bubble__content--md h4 {
+  margin: 12px 0 6px;
+  font-size: 15px;
+  line-height: 1.4;
+}
+
+.bubble__content--md ul,
+.bubble__content--md ol {
+  padding-left: 20px;
+}
+
+.bubble__content--md li {
+  margin-bottom: 2px;
+}
+
+.bubble__content--md code {
+  padding: 1px 5px;
+  border-radius: 4px;
+  background: rgba(31, 36, 48, 0.08);
+  font-family: 'SFMono-Regular', Consolas, Menlo, monospace;
+  font-size: 12.5px;
+}
+
+.bubble__content--md pre {
+  padding: 10px 12px;
+  border-radius: 8px;
+  background: #1f2430;
+  color: #eef1f8;
+  overflow-x: auto;
+}
+
+.bubble__content--md pre code {
+  padding: 0;
+  background: transparent;
+  color: inherit;
+}
+
+.bubble__content--md blockquote {
+  padding-left: 10px;
+  border-left: 3px solid var(--pta-border);
+  color: var(--pta-text-muted);
+}
+
+.bubble__content--md table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+}
+
+.bubble__content--md th,
+.bubble__content--md td {
+  padding: 5px 8px;
+  border: 1px solid var(--pta-border);
+  text-align: left;
+}
+
+.bubble__content--md th {
+  background: var(--pta-surface);
+}
+
+.bubble__content--md a {
+  color: var(--pta-accent);
+}
+
+.bubble__content--md hr {
+  border: none;
+  border-top: 1px solid var(--pta-border);
+}
+
+/* 行内公式别把气泡撑宽，块级公式超宽时自己滚 */
+.bubble__content--md .katex {
+  font-size: 1.02em;
+}
+
+.bubble__content--md .katex-display {
+  margin: 8px 0;
+  overflow-x: auto;
+  overflow-y: hidden;
+}
+
 .bubble--error .bubble__content {
   border-color: var(--pta-danger);
   background: var(--pta-danger-soft);

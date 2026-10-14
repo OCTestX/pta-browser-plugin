@@ -1,5 +1,6 @@
 import { createRoot } from 'react-dom/client';
 import { App } from './App';
+import { katexStyles } from './katexStyles';
 import { togglePanel } from './panelStore';
 import { ext } from '../shared/browser';
 import { isTogglePanelMessage } from '../shared/messages';
@@ -27,7 +28,8 @@ function mount(): void {
   const shadow = host.attachShadow({ mode: 'open' });
 
   const style = document.createElement('style');
-  style.textContent = styles;
+  // KaTeX 的样式放前面，我们的样式放后面
+  style.textContent = `${katexStyles()}\n${styles}`;
   shadow.appendChild(style);
 
   const container = document.createElement('div');

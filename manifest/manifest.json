@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "PTA 助手",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "帮助学生完成 PTA 题目的 AI 助手插件",
   "icons": {
     "16": "icons/icon-16.png",
@@ -28,6 +28,12 @@
       "matches": ["<all_urls>"],
       "js": ["content.js"],
       "run_at": "document_idle"
+    }
+  ],
+  "web_accessible_resources": [
+    {
+      "resources": ["katex-fonts/*"],
+      "matches": ["<all_urls>"]
     }
   ]
 }

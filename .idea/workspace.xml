@@ -5,19 +5,16 @@
   </component>
   <component name="ChangeListManager">
     <list default="true" id="76c86c00-4e2f-4c64-b76e-7a270619abc7" name="更改" comment="">
-      <change beforePath="$PROJECT_DIR$/.idea/workspace.xml" beforeDir="false" afterPath="$PROJECT_DIR$/.idea/workspace.xml" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/README.md" beforeDir="false" afterPath="$PROJECT_DIR$/README.md" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/manifest/manifest.json" beforeDir="false" afterPath="$PROJECT_DIR$/manifest/manifest.json" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/package-lock.json" beforeDir="false" afterPath="$PROJECT_DIR$/package-lock.json" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/package.json" beforeDir="false" afterPath="$PROJECT_DIR$/package.json" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/scripts/smoke.mjs" beforeDir="false" afterPath="$PROJECT_DIR$/scripts/smoke.mjs" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/src/background/index.ts" beforeDir="false" afterPath="$PROJECT_DIR$/src/background/index.ts" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/src/content/App.tsx" beforeDir="false" afterPath="$PROJECT_DIR$/src/content/App.tsx" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/src/content/components/Composer.tsx" beforeDir="false" afterPath="$PROJECT_DIR$/src/content/components/Composer.tsx" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/src/content/components/MessageList.tsx" beforeDir="false" afterPath="$PROJECT_DIR$/src/content/components/MessageList.tsx" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/src/content/index.tsx" beforeDir="false" afterPath="$PROJECT_DIR$/src/content/index.tsx" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/src/content/styles.css" beforeDir="false" afterPath="$PROJECT_DIR$/src/content/styles.css" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/src/shared/messages.ts" beforeDir="false" afterPath="$PROJECT_DIR$/src/shared/messages.ts" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/src/shared/types.ts" beforeDir="false" afterPath="$PROJECT_DIR$/src/shared/types.ts" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/vite.config.ts" beforeDir="false" afterPath="$PROJECT_DIR$/vite.config.ts" afterDir="false" />
     </list>
     <option name="SHOW_DIALOG" value="false" />
     <option name="HIGHLIGHT_CONFLICTS" value="true" />
@@ -77,7 +74,7 @@
       <option name="number" value="Default" />
       <option name="presentableId" value="Default" />
       <updated>1791974303115</updated>
-      <workItem from="1791974303980" duration="4132000" />
+      <workItem from="1791974303980" duration="4858000" />
     </task>
     <servers />
   </component>
