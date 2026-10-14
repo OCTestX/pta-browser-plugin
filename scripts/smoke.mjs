@@ -279,18 +279,32 @@ check('保存后 Key 输入框被清空', withKey.find('.field__input[type="pass
 const testArea = [...withKey.shadow().querySelectorAll('.field__input--area')][0];
 check('设置页有模拟输入测试的文本框', Boolean(testArea));
 check('测试文本默认是助手的系统提示词', testArea.value.startsWith('你是「PTA 助手」'));
-const testButton = [...withKey.shadow().querySelectorAll('.button')].find(
-  (el) => el.textContent === '模拟输入到作答区',
+const testButton = [...withKey.shadow().querySelectorAll('.button')].find((el) =>
+  el.textContent.startsWith('模拟输入到作答区'),
 );
-check('设置页有模拟输入按钮', Boolean(testButton));
+check('设置页有模拟输入按钮且标着第几种方法', Boolean(testButton) && testButton.textContent.includes('第 1/7 种'));
+check('按钮旁说明了当前方法', withKey.find('.settings').textContent.includes('CDP 逐字真实按键'));
+
 testButton.click();
 await tick();
 const testRequest = withKey.requests.find((r) => r.type === 'tool/test-input');
-check('点按钮会把测试文本发给后台', testRequest?.text === testArea.value);
+check('点按钮会把测试文本与当前方法发给后台', testRequest?.text === testArea.value && testRequest.method === 'cdp-typing');
 check(
   '测试结果回显在设置页（含回读比对）',
   withKey.find('.settings__result')?.textContent.includes('回读比对'),
 );
+const advanced = [...withKey.shadow().querySelectorAll('.button')].find((el) =>
+  el.textContent.startsWith('模拟输入到作答区'),
+);
+check('点完自动换到下一种方法', advanced.textContent.includes('第 2/7 种'));
+check('换种后方法说明也跟着变', withKey.find('.settings').textContent.includes('CDP 整段插入'));
+check('方法进度写进了 storage', withKey.storageWrites.some((patch) => patch['pta-assistant-input-method-index'] === 1));
+const restart = [...withKey.shadow().querySelectorAll('.button')].find((el) => el.textContent === '重来');
+restart.click();
+await tick();
+check('点「重来」回到第 1 种', [...withKey.shadow().querySelectorAll('.button')]
+  .find((el) => el.textContent.startsWith('模拟输入到作答区'))
+  .textContent.includes('第 1/7 种'));
 
 withKey.find('.panel__back').click();
 await tick();

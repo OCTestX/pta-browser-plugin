@@ -45,8 +45,8 @@ export type ContentRequest =
   | { type: 'chat/stop'; requestId: string }
   | { type: 'settings/get' }
   | { type: 'settings/save'; patch: Partial<Settings> }
-  /** 设置页的「模拟输入测试」：用和工具完全相同的链路跑一次 simulate_keyboard_input */
-  | { type: 'tool/test-input'; text: string };
+  /** 设置页的「模拟输入测试」：按指定方法往作答区写一次文本 */
+  | { type: 'tool/test-input'; text: string; method?: string };
 
 export function isContentRequest(message: unknown): message is ContentRequest {
   return (
@@ -73,6 +73,8 @@ export interface StartChatResponse {
 export interface TestInputResponse {
   ok: boolean;
   result: string;
+  /** 这次用的是哪种方法（便于设置页显示进度） */
+  method?: string;
 }
 
 export interface ToolRunResponse {

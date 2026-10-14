@@ -107,6 +107,39 @@ export function createDebuggerIo(tabId: number): TypistIo {
   };
 }
 
+export async function ensureAttached(tabId: number): Promise<void> {
+  await attach(tabId);
+}
+
+/** 一次性插入整段文本（CDP 的输入法式插入，单条命令） */
+export async function insertTextOnce(tabId: number, text: string): Promise<void> {
+  await attach(tabId);
+  await ext.debugger.sendCommand({ tabId }, 'Input.insertText', { text });
+}
+
+/** 带 Ctrl 的组合键（用于对照实验里的真粘贴） */
+export async function pressWithCtrl(tabId: number, key: string): Promise<void> {
+  await attach(tabId);
+  const code = `Key${key.toUpperCase()}`;
+  const keyCode = key.toUpperCase().charCodeAt(0);
+  await ext.debugger.sendCommand({ tabId }, 'Input.dispatchKeyEvent', {
+    type: 'rawKeyDown',
+    modifiers: 2,
+    windowsVirtualKeyCode: keyCode,
+    nativeVirtualKeyCode: keyCode,
+    code,
+    key,
+  });
+  await ext.debugger.sendCommand({ tabId }, 'Input.dispatchKeyEvent', {
+    type: 'keyUp',
+    modifiers: 2,
+    windowsVirtualKeyCode: keyCode,
+    nativeVirtualKeyCode: keyCode,
+    code,
+    key,
+  });
+}
+
 /**
  * 原子写入之后戳一下页面：敲一个空格再退格，净效果为零，
  * 但会产生真实的输入事件，触发页面「内容被改过」的标记（否则提交按钮可能是灰的）。

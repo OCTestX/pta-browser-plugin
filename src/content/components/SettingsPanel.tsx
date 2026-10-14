@@ -1,8 +1,11 @@
 import { useEffect, useState } from 'react';
 import { ext } from '../../shared/browser';
 import { DEFAULT_SETTINGS, type Settings, type SettingsView } from '../../shared/settings';
+import { INPUT_METHODS } from '../../shared/input-methods';
 import { SYSTEM_PROMPT } from '../../shared/tools';
 import type { TestInputResponse } from '../../shared/messages';
+
+const METHOD_INDEX_KEY = 'pta-assistant-input-method-index';
 
 interface SettingsPanelProps {
   view: SettingsView | null;
@@ -29,6 +32,23 @@ export function SettingsPanel({ view, onSave, onBack }: SettingsPanelProps) {
   const [testText, setTestText] = useState(SYSTEM_PROMPT);
   const [testing, setTesting] = useState(false);
   const [testResult, setTestResult] = useState<string | null>(null);
+  // 每点一次按钮换下一种方法，当前是第几种记在 storage 里（关掉面板再打开还能接着试）
+  const [methodIndex, setMethodIndex] = useState(0);
+
+  useEffect(() => {
+    void (async () => {
+      const stored = await ext.storage.local.get(METHOD_INDEX_KEY);
+      const saved = Number(stored[METHOD_INDEX_KEY]);
+      if (Number.isInteger(saved) && saved >= 0 && saved < INPUT_METHODS.length) setMethodIndex(saved);
+    })();
+  }, []);
+
+  const method = INPUT_METHODS[methodIndex];
+
+  const rememberMethod = (next: number) => {
+    setMethodIndex(next);
+    void ext.storage.local.set({ [METHOD_INDEX_KEY]: next });
+  };
 
   // 设置是异步从 background 取回来的，取到后补上初值
   useEffect(() => {
@@ -73,12 +93,15 @@ export function SettingsPanel({ view, onSave, onBack }: SettingsPanelProps) {
       const response = (await ext.runtime.sendMessage({
         type: 'tool/test-input',
         text: testText,
+        method: method.id,
       })) as TestInputResponse | undefined;
       setTestResult(response?.result ?? '后台没有响应');
     } catch (error) {
       setTestResult(`测试失败：${error instanceof Error ? error.message : String(error)}`);
     } finally {
       setTesting(false);
+      // 换下一种，方便连续试
+      rememberMethod((methodIndex + 1) % INPUT_METHODS.length);
     }
   };
 
@@ -170,9 +193,22 @@ export function SettingsPanel({ view, onSave, onBack }: SettingsPanelProps) {
         </span>
         <div className="settings__actions">
           <button type="button" className="button" disabled={testing} onClick={() => void runTest()}>
-            {testing ? '输入中…' : '模拟输入到作答区'}
+            {testing ? '输入中…' : `模拟输入到作答区（第 ${methodIndex + 1}/${INPUT_METHODS.length} 种）`}
+          </button>
+          <button
+            type="button"
+            className="button button--ghost"
+            onClick={() => rememberMethod(0)}
+            title="回到第 1 种方法"
+          >
+            重来
           </button>
         </div>
+        <span className="field__hint">
+          当前方法：<b>{method.label}</b> —— {method.hint}
+          <br />
+          每点一次按钮自动换下一种（试完一圈回到第 1 种）；试出哪种能用就告诉我。
+        </span>
         {testResult && <pre className="settings__result">{testResult}</pre>}
       </label>
 

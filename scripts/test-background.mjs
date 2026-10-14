@@ -477,14 +477,25 @@ check('上限轮数就是 MAX_TOOL_ROUNDS', state.modelCalls.length === 80);
 
 /* ---------- 设置页的模拟输入测试 ---------- */
 
-state.pageTool = { ok: true, result: '已逐字敲入 1 行（5 个字符）；回读比对：1 行与目标一致' };
-const testResponse = await respond(
-  { type: 'tool/test-input', text: 'hello' },
-  { tab: { id: 7 } },
-);
-check('模拟输入测试走的是同一条工具链路（同样的参数）', state.pageToolCalls[0]?.args.text === 'hello' && state.pageToolCalls[0].args.clear === true);
-check('测试结果原样回给设置页', testResponse.ok === true && testResponse.result.includes('回读比对'));
-check('没有标签页时说明不支持', (await respond({ type: 'tool/test-input', text: 'x' }, {})).ok === false);
+state.pageTool = { ok: true, result: '已逐字敲入 1 行；回读比对：1 行与目标一致' };
+state.debuggerCalls = [];
+
+// 1) CDP 逐字：先聚焦，再逐字发真实按键
+const typingTest = await respond({ type: 'tool/test-input', text: 'hi', method: 'cdp-typing' }, { tab: { id: 7 } });
+check('CDP 逐字方法先让页面聚焦', state.pageToolCalls[0]?.args.focusOnly === true);
+check('CDP 逐字方法逐字发真实按键', state.debuggerCalls.some((call) => call[0] === 'Input.dispatchKeyEvent' && call[2].type === 'char'));
+check('结果里标出用的是哪种方法', typingTest.result.includes('CDP 逐字真实按键'));
+
+// 2) 页面脚本类方法：把 method 传下去（页面脚本在 test-pta-tools 里另测）
+state.pageTool = { ok: true, result: '方法：聚焦全选后 execCommand(insertText) 整段插入；回读比对：与目标一致' };
+const execTest = await respond({ type: 'tool/test-input', text: 'hi', method: 'execCommand' }, { tab: { id: 7 } });
+check('页面脚本类方法把结果与比对回给设置页', execTest.ok === true && execTest.result.includes('回读比对'));
+check('页面脚本类方法带上了方法名', execTest.method === 'execCommand');
+
+// 3) 未知方法退回第一种，空文本直接报错
+check('未知方法退回第 1 种', (await respond({ type: 'tool/test-input', text: 'x', method: '不存在' }, { tab: { id: 7 } })).method === 'cdp-typing');
+check('没有标签页时说明不支持', (await respond({ type: 'tool/test-input', text: 'x', method: 'execCommand' }, {})).ok === false);
+check('空文本直接报错', (await respond({ type: 'tool/test-input', text: '', method: 'execCommand' }, { tab: { id: 7 } })).ok === false);
 
 /* ---------- 没有 Key 时不发请求 ---------- */
 

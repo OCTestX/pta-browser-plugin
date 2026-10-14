@@ -116,6 +116,18 @@ const HELPERS = `
     return lines.length > 0 ? lines.join('\\n') : (element.textContent || '');
   };
 
+  // 页面弹的提示（比如「禁止粘贴」）：让测试结果能看出是不是被页面拦了
+  const findPageNotice = () => {
+    const patterns = ['禁止粘贴', '禁止复制', '不允许粘贴', '不能粘贴', '请勿粘贴'];
+    const nodes = Array.from(document.querySelectorAll('[role=alert], [class*=message], [class*=toast], [class*=notice], [class*=tips], body > div'));
+    for (const node of nodes) {
+      const text = shortText(node);
+      if (!text || text.length > 120) continue;
+      if (patterns.some((pattern) => text.indexOf(pattern) >= 0)) return text;
+    }
+    return '';
+  };
+
   const normalizeLines = (value) => {
     const lines = String(value).replace(/\\r\\n/g, '\\n').split('\\n').map((l) => l.replace(/[ \\t]+$/, ''));
     while (lines.length > 0 && lines[lines.length - 1] === '') lines.pop();
@@ -484,4 +496,82 @@ if (!found) {
 }
 if (lines !== null) parts.push('作答区：' + lines + ' 行');
 return parts.join('；');
+`;
+
+/** 测试按钮用的「多种输入方法」：按 method 走不同的写入通道 */
+export const INPUT_METHOD_SCRIPT = `${HELPERS}
+const method = String(__args.method || '');
+const text = String(__args.text === undefined ? '' : __args.text);
+if (!text) return '没有给 text';
+
+const picked = pickEditorView();
+const finish = (how) => {
+  const element = findEditorElement();
+  const after = picked.best ? picked.best.view.state.doc.toString() : (element ? readFromDom(element) : '');
+  const parts = [how, compareText(text, after)];
+  const notice = findPageNotice();
+  if (notice) parts.push('页面上出现了提示：' + notice);
+  return parts.join('；');
+};
+
+// 一、走编辑器实例，不产生任何真实输入事件
+if (method === 'dispatch' || method === 'dispatchTyped') {
+  if (!picked.best) return '没拿到可写的编辑器实例';
+  const view = picked.best.view;
+  if (method === 'dispatch') {
+    view.dispatch({ changes: { from: 0, to: view.state.doc.length, insert: text } });
+  } else {
+    // 逐行、多次 transaction，并标注成「输入」事件，尽量让页面当成正常编辑
+    view.dispatch({ changes: { from: 0, to: view.state.doc.length, insert: '' } });
+    let position = 0;
+    for (const line of text.split('\\n')) {
+      const chunk = (position === 0 ? '' : '\\n') + line;
+      view.dispatch({ changes: { from: position, insert: chunk }, userEvent: 'input.type' });
+      position += chunk.length;
+    }
+  }
+  await new Promise((resolve) => setTimeout(resolve, 200));
+  view.dispatch({ selection: { anchor: view.state.doc.length } });
+  return finish(method === 'dispatch'
+    ? '方法：编辑器实例整段 dispatch（不产生输入事件）'
+    : '方法：编辑器实例逐行 dispatch 并标注 userEvent=input.type');
+}
+
+if (method === 'clipboard') {
+  // 对照用：写剪贴板，真粘贴交给 background 发 Ctrl+V
+  try {
+    await navigator.clipboard.writeText(text);
+    return '方法：已把文本写进剪贴板，接下来由插件发 Ctrl+V（这一步预期会被页面的 onpaste 拦住，用来对照）';
+  } catch (e) {
+    return '方法：写剪贴板失败（' + (e && e.message ? e.message : String(e)) + '）';
+  }
+}
+
+// 二、走 DOM + 事件
+const element = findEditorElement();
+if (!element) return '页面上没找到可编辑的作答区';
+element.focus();
+const selection = document.getSelection();
+if (selection) {
+  const range = document.createRange();
+  range.selectNodeContents(element);
+  selection.removeAllRanges();
+  selection.addRange(range);
+}
+
+if (method === 'execCommand') {
+  let inserted = false;
+  try { inserted = document.execCommand('insertText', false, text); } catch (e) { inserted = false; }
+  await new Promise((resolve) => setTimeout(resolve, 200));
+  return finish(inserted ? '方法：聚焦全选后 execCommand(insertText) 整段插入' : '方法：execCommand 不可用');
+}
+
+if (method === 'inputEvents') {
+  element.dispatchEvent(new InputEvent('beforeinput', { bubbles: true, cancelable: true, inputType: 'insertText', data: text }));
+  element.dispatchEvent(new InputEvent('input', { bubbles: true, inputType: 'insertText', data: text }));
+  await new Promise((resolve) => setTimeout(resolve, 200));
+  return finish('方法：手工派发 beforeinput + input 事件（isTrusted=false）');
+}
+
+return '未知方法：' + method;
 `;

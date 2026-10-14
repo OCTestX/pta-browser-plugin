@@ -5,6 +5,7 @@
 import { JSDOM } from 'jsdom';
 import {
   CHECK_READY_SCRIPT,
+  INPUT_METHOD_SCRIPT,
   CLOSE_DIALOGS_SCRIPT,
   READ_EDITOR_SCRIPT,
   READ_JUDGE_SCRIPT,
@@ -112,8 +113,10 @@ function createPage({ withView = true, body = '', sampleBoxes = 0 } = {}) {
         dispatch: (transaction) => {
           // 真实 CM6 的 dispatch 既能改文档，也能只挪光标；两种都要接住
           if (transaction.changes && typeof transaction.changes.from === 'number') {
-            const { from, to, insert } = transaction.changes;
-            doc = doc.slice(0, from) + (insert ?? '') + doc.slice(to);
+            const from = transaction.changes.from;
+            // 真实 CM6 里 {from, insert} 不写 to 就等于「在 from 处插入」，to 默认取 from
+            const to = typeof transaction.changes.to === 'number' ? transaction.changes.to : from;
+            doc = doc.slice(0, from) + (transaction.changes.insert ?? '') + doc.slice(to);
           }
           if (transaction.selection) window.__lastSelection = transaction.selection;
         },
@@ -356,6 +359,76 @@ const closed = await runScript(dialogWindow, CLOSE_DIALOGS_SCRIPT, {});
 check('关闭控件在弹窗内部才会被点到', closed.includes('已关掉 1 层弹窗'));
 check('弹窗确实被关掉了', !dialogWindow.document.querySelector('.pc-modal'));
 check('没有弹窗时如实告知', (await runScript(createPage({ withView: false }), CLOSE_DIALOGS_SCRIPT, {})).includes('没找到需要关的弹窗'));
+
+/* ---------- 多种输入方法（设置页测试按钮用的那串） ---------- */
+
+const methodText = 'int main(void) {\n  return 0;\n}';
+
+// 1) 编辑器实例整段 dispatch
+const dispatchPage = createPage();
+const dispatchResult = await runScript(dispatchPage, INPUT_METHOD_SCRIPT, { method: 'dispatch', text: methodText });
+check('方法 dispatch：整段写入并回读一致', dispatchPage.__doc() === methodText && dispatchResult.includes('回读比对：') && methodText.trim() === dispatchPage.__doc().trim());
+
+// 2) 编辑器实例逐行 dispatch（带 userEvent）
+const typedPage = createPage();
+const typedResult = await runScript(typedPage, INPUT_METHOD_SCRIPT, { method: 'dispatchTyped', text: methodText });
+check('方法 dispatchTyped：逐行写入后内容一致', typedPage.__doc() === methodText && typedResult.includes('userEvent'));
+
+// 3) 聚焦 + execCommand
+const execPage = createPage({ withView: false });
+const execArea = execPage.document.createElement('div');
+execArea.className = 'cm-content';
+execArea.setAttribute('contenteditable', 'true');
+execPage.document.body.appendChild(execArea);
+let execText = null;
+execPage.document.execCommand = (command, _ui, value) => {
+  execText = value;
+  execArea.innerHTML = '';
+  for (const line of value.split('\n')) {
+    const node = execPage.document.createElement('div');
+    node.className = 'cm-line';
+    node.textContent = line;
+    execArea.appendChild(node);
+  }
+  return true;
+};
+const execResult = await runScript(execPage, INPUT_METHOD_SCRIPT, { method: 'execCommand', text: methodText });
+check('方法 execCommand：走 execCommand 且回读一致', execText === methodText && execResult.includes('execCommand'));
+
+// 4) 手工派发输入事件（不改 DOM，预期内容不会变）
+const eventsPage = createPage({ withView: false });
+const eventsArea = eventsPage.document.createElement('div');
+eventsArea.className = 'cm-content';
+eventsArea.setAttribute('contenteditable', 'true');
+eventsPage.document.body.appendChild(eventsArea);
+const fired = [];
+eventsArea.addEventListener('input', () => fired.push('input'));
+const eventsResult = await runScript(eventsPage, INPUT_METHOD_SCRIPT, { method: 'inputEvents', text: methodText });
+check('方法 inputEvents：事件派发了，但内容没变（如实报不一致）', fired.includes('input') && eventsResult.includes('不一致'));
+
+// 5) 剪贴板：写成功就交给 background 发 Ctrl+V；写失败要如实说
+const clipPage = createPage({ withView: false });
+// jsdom 的 navigator.clipboard 是只读的，得用 defineProperty
+Object.defineProperty(clipPage.navigator, 'clipboard', {
+  value: { writeText: async () => {} },
+  configurable: true,
+});
+check('方法 clipboard：写进剪贴板后交给 Ctrl+V', (await runScript(clipPage, INPUT_METHOD_SCRIPT, { method: 'clipboard', text: methodText })).includes('剪贴板'));
+const noClipPage = createPage({ withView: false });
+delete noClipPage.navigator.clipboard;
+check('方法 clipboard：环境不支持时如实报告', (await runScript(noClipPage, INPUT_METHOD_SCRIPT, { method: 'clipboard', text: methodText })).includes('写剪贴板失败'));
+
+// 6) 页面弹「禁止粘贴」时要能读出来（这正是我们在查的现象）
+const noticePage = createPage();
+const toast = noticePage.document.createElement('div');
+toast.className = 'el-message';
+toast.textContent = '禁止粘贴';
+noticePage.document.body.appendChild(toast);
+const noticeResult = await runScript(noticePage, INPUT_METHOD_SCRIPT, { method: 'dispatch', text: methodText });
+check('页面出现「禁止粘贴」提示时会写进结果', noticeResult.includes('页面上出现了提示') && noticeResult.includes('禁止粘贴'));
+
+check('未知方法如实报告', (await runScript(createPage(), INPUT_METHOD_SCRIPT, { method: '???', text: 'x' })).includes('未知方法'));
+check('空文本直接报错', (await runScript(createPage(), INPUT_METHOD_SCRIPT, { method: 'dispatch', text: '' })).includes('没有给 text'));
 
 await pressableJsdom(problemPage);
 console.log('\nPTA 三件套校验通过');
