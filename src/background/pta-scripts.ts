@@ -498,79 +498,168 @@ if (lines !== null) parts.push('作答区：' + lines + ' 行');
 return parts.join('；');
 `;
 
-/** 测试按钮用的「多种输入方法」：按 method 走不同的写入通道 */
+/** 设置页「模拟输入测试」的页面侧方法（一种方法一个按钮） */
 export const INPUT_METHOD_SCRIPT = `${HELPERS}
 const method = String(__args.method || '');
 const text = String(__args.text === undefined ? '' : __args.text);
 if (!text) return '没有给 text';
 
 const picked = pickEditorView();
+const element = findEditorElement();
 const finish = (how) => {
-  const element = findEditorElement();
-  const after = picked.best ? picked.best.view.state.doc.toString() : (element ? readFromDom(element) : '');
+  const after = picked.best
+    ? picked.best.view.state.doc.toString()
+    : (element ? readFromDom(element) : '');
   const parts = [how, compareText(text, after)];
   const notice = findPageNotice();
   if (notice) parts.push('页面上出现了提示：' + notice);
   return parts.join('；');
 };
 
-// 一、走编辑器实例，不产生任何真实输入事件
-if (method === 'dispatch' || method === 'dispatchTyped') {
-  if (!picked.best) return '没拿到可写的编辑器实例';
-  const view = picked.best.view;
+const requireView = () => {
+  if (!picked.best) return null;
+  return picked.best.view;
+};
+
+const selectAllInEditor = () => {
+  if (!element) return;
+  element.focus();
+  const selection = document.getSelection();
+  if (!selection) return;
+  const range = document.createRange();
+  range.selectNodeContents(element);
+  selection.removeAllRanges();
+  selection.addRange(range);
+};
+
+// 只报告作答区位置，给 CDP 真实点击用
+if (method === 'rect') {
+  if (!element) return null;
+  const rect = element.getBoundingClientRect();
+  return { x: Math.round(rect.left + rect.width / 2), y: Math.round(rect.top + rect.height / 2), width: Math.round(rect.width), height: Math.round(rect.height) };
+}
+
+// ---------- A. 编辑器状态（CM6 API）----------
+if (method === 'dispatch' || method === 'dispatchFocus' || method === 'dispatchUserEvent' || method === 'replaceSelection' || method === 'dispatchTyped') {
+  const view = requireView();
+  if (!view) return '没拿到可写的编辑器实例';
+  const whole = { from: 0, to: view.state.doc.length };
+
   if (method === 'dispatch') {
-    view.dispatch({ changes: { from: 0, to: view.state.doc.length, insert: text } });
+    view.dispatch({ changes: { ...whole, insert: text } });
+    await new Promise((resolve) => setTimeout(resolve, 150));
+  } else if (method === 'dispatchFocus') {
+    view.focus();
+    view.dispatch({ changes: { ...whole, insert: text } });
+    await new Promise((resolve) => setTimeout(resolve, 150));
+  } else if (method === 'dispatchUserEvent') {
+    view.dispatch({ changes: { ...whole, insert: text }, userEvent: 'input.type' });
+    await new Promise((resolve) => setTimeout(resolve, 150));
+  } else if (method === 'replaceSelection') {
+    view.dispatch(view.state.replaceSelection(text));
+    await new Promise((resolve) => setTimeout(resolve, 150));
   } else {
-    // 逐行、多次 transaction，并标注成「输入」事件，尽量让页面当成正常编辑
-    view.dispatch({ changes: { from: 0, to: view.state.doc.length, insert: '' } });
+    view.dispatch({ changes: { ...whole, insert: '' } });
     let position = 0;
     for (const line of text.split('\\n')) {
       const chunk = (position === 0 ? '' : '\\n') + line;
       view.dispatch({ changes: { from: position, insert: chunk }, userEvent: 'input.type' });
       position += chunk.length;
     }
+    await new Promise((resolve) => setTimeout(resolve, 150));
   }
-  await new Promise((resolve) => setTimeout(resolve, 200));
+
   view.dispatch({ selection: { anchor: view.state.doc.length } });
-  return finish(method === 'dispatch'
-    ? '方法：编辑器实例整段 dispatch（不产生输入事件）'
-    : '方法：编辑器实例逐行 dispatch 并标注 userEvent=input.type');
+  const labels = {
+    dispatch: '整段 dispatch',
+    dispatchFocus: 'view.focus() 后整段 dispatch',
+    dispatchUserEvent: '整段 dispatch 并标注 userEvent=input.type',
+    replaceSelection: 'view.state.replaceSelection 后 dispatch',
+    dispatchTyped: '逐行 dispatch 并标注 userEvent',
+  };
+  return finish('方法：' + labels[method]);
 }
 
-if (method === 'clipboard') {
-  // 对照用：写剪贴板，真粘贴交给 background 发 Ctrl+V
+// ---------- B. 剪贴板 ----------
+if (method === 'clipboardPaste' || method === 'execCommandPaste') {
+  let written = false;
   try {
     await navigator.clipboard.writeText(text);
-    return '方法：已把文本写进剪贴板，接下来由插件发 Ctrl+V（这一步预期会被页面的 onpaste 拦住，用来对照）';
+    written = true;
   } catch (e) {
-    return '方法：写剪贴板失败（' + (e && e.message ? e.message : String(e)) + '）';
+    written = false;
   }
+  if (!written) return '方法：写剪贴板失败（页面可能没给剪贴板权限）';
+  if (method === 'clipboardPaste') {
+    // 真 Ctrl+V 交给 background 发
+    return 'MARK_CLIPBOARD_READY';
+  }
+  selectAllInEditor();
+  let pasted = false;
+  try { pasted = document.execCommand('paste'); } catch (e) { pasted = false; }
+  await new Promise((resolve) => setTimeout(resolve, 200));
+  return finish(pasted ? '方法：写剪贴板后 execCommand("paste")' : '方法：execCommand("paste") 不被允许');
 }
 
-// 二、走 DOM + 事件
-const element = findEditorElement();
-if (!element) return '页面上没找到可编辑的作答区';
-element.focus();
-const selection = document.getSelection();
-if (selection) {
-  const range = document.createRange();
-  range.selectNodeContents(element);
-  selection.removeAllRanges();
-  selection.addRange(range);
+// ---------- C. DOM 与事件 ----------
+if (method === 'valueSetter') {
+  if (element instanceof HTMLInputElement || element instanceof HTMLTextAreaElement) {
+    const prototype = element instanceof HTMLInputElement ? HTMLInputElement.prototype : HTMLTextAreaElement.prototype;
+    const setter = Object.getOwnPropertyDescriptor(prototype, 'value') && Object.getOwnPropertyDescriptor(prototype, 'value').set;
+    if (setter) setter.call(element, text); else element.value = text;
+    element.dispatchEvent(new Event('input', { bubbles: true }));
+    element.dispatchEvent(new Event('change', { bubbles: true }));
+    await new Promise((resolve) => setTimeout(resolve, 200));
+    return finish('方法：原生 value setter + input/change');
+  }
+  return '方法：这个元素不是 <input>/<textarea>，value setter 用不上（CodeMirror 要走别的）';
 }
+
+if (!element) return '页面上没找到可编辑的作答区';
+selectAllInEditor();
 
 if (method === 'execCommand') {
   let inserted = false;
   try { inserted = document.execCommand('insertText', false, text); } catch (e) { inserted = false; }
   await new Promise((resolve) => setTimeout(resolve, 200));
-  return finish(inserted ? '方法：聚焦全选后 execCommand(insertText) 整段插入' : '方法：execCommand 不可用');
+  return finish(inserted ? '方法：聚焦全选后 execCommand(insertText)' : '方法：execCommand 不可用');
 }
 
 if (method === 'inputEvents') {
   element.dispatchEvent(new InputEvent('beforeinput', { bubbles: true, cancelable: true, inputType: 'insertText', data: text }));
   element.dispatchEvent(new InputEvent('input', { bubbles: true, inputType: 'insertText', data: text }));
   await new Promise((resolve) => setTimeout(resolve, 200));
-  return finish('方法：手工派发 beforeinput + input 事件（isTrusted=false）');
+  return finish('方法：手工派发 beforeinput + input（isTrusted=false）');
+}
+
+if (method === 'domMutation') {
+  element.textContent = text;
+  element.dispatchEvent(new InputEvent('input', { bubbles: true, inputType: 'insertText', data: text }));
+  await new Promise((resolve) => setTimeout(resolve, 200));
+  return finish('方法：直接改 DOM 文本后再派发 input');
+}
+
+if (method === 'composition') {
+  element.dispatchEvent(new CompositionEvent('compositionstart', { bubbles: true, data: '' }));
+  element.dispatchEvent(new CompositionEvent('compositionupdate', { bubbles: true, data: text }));
+  element.dispatchEvent(new InputEvent('beforeinput', { bubbles: true, cancelable: true, inputType: 'insertCompositionText', data: text }));
+  element.dispatchEvent(new CompositionEvent('compositionend', { bubbles: true, data: text }));
+  element.dispatchEvent(new InputEvent('input', { bubbles: true, inputType: 'insertCompositionText', data: text }));
+  await new Promise((resolve) => setTimeout(resolve, 200));
+  return finish('方法：模拟输入法事件链（composition + insertCompositionText）');
+}
+
+if (method === 'pasteEvent') {
+  let fired = false;
+  try {
+    const data = new DataTransfer();
+    data.setData('text/plain', text);
+    fired = element.dispatchEvent(new ClipboardEvent('paste', { bubbles: true, cancelable: true, clipboardData: data }));
+  } catch (e) {
+    fired = false;
+  }
+  await new Promise((resolve) => setTimeout(resolve, 200));
+  return finish(fired ? '方法：手工派发 paste 事件（isTrusted=false）' : '方法：这个环境不支持构造 paste 事件');
 }
 
 return '未知方法：' + method;

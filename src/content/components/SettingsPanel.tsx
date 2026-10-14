@@ -1,11 +1,10 @@
 import { useEffect, useState } from 'react';
 import { ext } from '../../shared/browser';
 import { DEFAULT_SETTINGS, type Settings, type SettingsView } from '../../shared/settings';
-import { INPUT_METHODS } from '../../shared/input-methods';
+import { INPUT_METHODS, INPUT_METHOD_GROUPS, inputMethodIndex } from '../../shared/input-methods';
 import { SYSTEM_PROMPT } from '../../shared/tools';
 import type { TestInputResponse } from '../../shared/messages';
 
-const METHOD_INDEX_KEY = 'pta-assistant-input-method-index';
 const METHOD_OK_KEY = 'pta-assistant-input-method-ok';
 
 /** 这次测试算不算「成功」：内容回读一致，而且页面没弹「禁止粘贴」这类提示 */
@@ -36,43 +35,45 @@ export function SettingsPanel({ view, onSave, onBack }: SettingsPanelProps) {
   const [saving, setSaving] = useState(false);
   // 模拟输入测试：默认拿系统提示词当测试文本，方便对照回读结果是不是一字不差
   const [testText, setTestText] = useState(SYSTEM_PROMPT);
-  const [testing, setTesting] = useState(false);
+  const [testing, setTesting] = useState<string | null>(null);
   const [testResult, setTestResult] = useState<string | null>(null);
-  // 每点一次按钮换下一种方法，当前是第几种记在 storage 里（关掉面板再打开还能接着试）
-  const [methodIndex, setMethodIndex] = useState(0);
+  // 已经实测哪种方法能用，记下来标个 ✅
   const [workingMethod, setWorkingMethod] = useState<string | null>(null);
 
   useEffect(() => {
     void (async () => {
-      const stored = await ext.storage.local.get([METHOD_INDEX_KEY, METHOD_OK_KEY]);
-      const saved = Number(stored[METHOD_INDEX_KEY]);
+      const stored = await ext.storage.local.get(METHOD_OK_KEY);
       const known = stored[METHOD_OK_KEY];
       if (typeof known === 'string' && INPUT_METHODS.some((item) => item.id === known)) {
         setWorkingMethod(known);
-        // 已经知道哪种能用了，就从它开始试，不用从第 1 种再点一遍
-        const knownIndex = INPUT_METHODS.findIndex((item) => item.id === known);
-        if (!Number.isInteger(saved)) setMethodIndex(knownIndex);
       }
-      if (Number.isInteger(saved) && saved >= 0 && saved < INPUT_METHODS.length) setMethodIndex(saved);
     })();
   }, []);
 
-  const method = INPUT_METHODS[methodIndex];
 
-  const rememberMethod = (next: number) => {
-    setMethodIndex(next);
-    void ext.storage.local.set({ [METHOD_INDEX_KEY]: next });
+  const runTest = async (methodId: string) => {
+    const method = INPUT_METHODS.find((item) => item.id === methodId) ?? INPUT_METHODS[0];
+    setTesting(method.id);
+    setTestResult(null);
+    try {
+      const response = (await ext.runtime.sendMessage({
+        type: 'tool/test-input',
+        text: testText,
+        method: method.id,
+      })) as TestInputResponse | undefined;
+      const result = response?.result ?? '后台没有响应';
+      setTestResult(result);
+      // 记下哪种方法在真页面上真的能用
+      if (isMethodTestSuccess(response?.ok === true, result)) {
+        setWorkingMethod(method.id);
+        void ext.storage.local.set({ [METHOD_OK_KEY]: method.id });
+      }
+    } catch (error) {
+      setTestResult(`测试失败：${error instanceof Error ? error.message : String(error)}`);
+    } finally {
+      setTesting(null);
+    }
   };
-
-  // 设置是异步从 background 取回来的，取到后补上初值
-  useEffect(() => {
-    if (!view) return;
-    setBaseURL(view.baseURL);
-    setModel(view.model);
-    setUseDebuggerInput(view.useDebuggerInput);
-    setCompileServiceURL(view.compileServiceURL);
-    setCompileLanguageId(String(view.compileLanguageId));
-  }, [view]);
 
   const save = async (patch: Partial<Settings>, done: string) => {
     setSaving(true);
@@ -98,31 +99,6 @@ export function SettingsPanel({ view, onSave, onBack }: SettingsPanelProps) {
     };
     if (apiKey.trim()) patch.apiKey = apiKey.trim();
     return save(patch, '已保存');
-  };
-
-  const runTest = async () => {
-    setTesting(true);
-    setTestResult(null);
-    try {
-      const response = (await ext.runtime.sendMessage({
-        type: 'tool/test-input',
-        text: testText,
-        method: method.id,
-      })) as TestInputResponse | undefined;
-      const result = response?.result ?? '后台没有响应';
-      setTestResult(result);
-      // 记下哪种方法在真页面上真的能用，以后就从它开始
-      if (isMethodTestSuccess(response?.ok === true, result)) {
-        setWorkingMethod(method.id);
-        void ext.storage.local.set({ [METHOD_OK_KEY]: method.id });
-      }
-    } catch (error) {
-      setTestResult(`测试失败：${error instanceof Error ? error.message : String(error)}`);
-    } finally {
-      setTesting(false);
-      // 换下一种，方便连续试
-      rememberMethod((methodIndex + 1) % INPUT_METHODS.length);
-    }
   };
 
   return (
@@ -200,47 +176,45 @@ export function SettingsPanel({ view, onSave, onBack }: SettingsPanelProps) {
       </label>
 
       <label className="field">
-        <span className="field__label">模拟输入测试</span>
+        <span className="field__label">模拟输入测试（一种方法一个按钮）</span>
         <textarea
           className="field__input field__input--area"
-          rows={4}
+          rows={3}
           value={testText}
           onChange={(event) => setTestText(event.target.value)}
         />
         <span className="field__hint">
-          点按钮会把这段文字按**和工具完全相同的链路**写进当前页面的作答区（会覆盖作答区原有内容，不会提交）。
-          默认填的是助手的系统提示词，方便你对照「回读比对」是不是一字不差；换成一段带括号、引号、缩进的代码，就能顺带压一压自动闭合和自动缩进。
+          用下面的文本逐个试每种写入方法（会覆盖作答区内容、不提交）。CDP 那几个方法不看「用调试器发送真实按键」开关，一律直接试；
+          哪个成功就会标上 ✅ 并记下来。实测结论：只有 <b>整段 dispatch</b> 能写进去，其余都被页面拦。
         </span>
-        <div className="settings__actions">
-          <button type="button" className="button" disabled={testing} onClick={() => void runTest()}>
-            {testing ? '输入中…' : `模拟输入到作答区（第 ${methodIndex + 1}/${INPUT_METHODS.length} 种）`}
-          </button>
-          <button
-            type="button"
-            className="button button--ghost"
-            onClick={() => rememberMethod(0)}
-            title="回到第 1 种方法"
-          >
-            重来
-          </button>
-        </div>
-        <span className="field__hint">
-          当前方法：<b>{method.label}</b> —— {method.hint}
-          <br />
-          每点一次按钮自动换下一种（试完一圈回到第 1 种）。成功后会自动记为「可用方法」，
-          下次打开设置就从它开始试。
-          {workingMethod && (
-            <>
-              <br />
-              当前可用方法：
-              <b>
-                第 {INPUT_METHODS.findIndex((item) => item.id === workingMethod) + 1} 种 ·{' '}
-                {INPUT_METHODS.find((item) => item.id === workingMethod)?.label}
-              </b>
-              （`write_editor_code` 工具走的正是这一种）
-            </>
-          )}
-        </span>
+        {workingMethod && (
+          <span className="field__hint">
+            当前可用方法：<b>{INPUT_METHODS[inputMethodIndex(workingMethod)].label}</b>
+            （`write_editor_code` 工具走的正是这一种）
+          </span>
+        )}
+
+        {INPUT_METHOD_GROUPS.map((group) => (
+          <div className="method-group" key={group}>
+            <span className="method-group__title">{group}</span>
+            <div className="method-buttons">
+              {INPUT_METHODS.filter((item) => item.group === group).map((item) => (
+                <button
+                  key={item.id}
+                  type="button"
+                  className={`method-button${workingMethod === item.id ? ' method-button--ok' : ''}`}
+                  title={item.hint}
+                  disabled={testing !== null}
+                  onClick={() => void runTest(item.id)}
+                >
+                  {testing === item.id ? '输入中…' : item.label}
+                  {workingMethod === item.id ? ' ✅' : ''}
+                </button>
+              ))}
+            </div>
+          </div>
+        ))}
+
         {testResult && <pre className="settings__result">{testResult}</pre>}
       </label>
 

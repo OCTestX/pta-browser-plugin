@@ -481,19 +481,52 @@ state.pageTool = { ok: true, result: '已逐字敲入 1 行；回读比对：1 �
 state.debuggerCalls = [];
 
 // 1) CDP 逐字：先聚焦，再逐字发真实按键
-const typingTest = await respond({ type: 'tool/test-input', text: 'hi', method: 'cdp-typing' }, { tab: { id: 7 } });
+const typingTest = await respond({ type: 'tool/test-input', text: 'hi', method: 'cdpSysTyping' }, { tab: { id: 7 } });
 check('CDP 逐字方法先让页面聚焦', state.pageToolCalls[0]?.args.focusOnly === true);
 check('CDP 逐字方法逐字发真实按键', state.debuggerCalls.some((call) => call[0] === 'Input.dispatchKeyEvent' && call[2].type === 'char'));
 check('结果里标出用的是哪种方法', typingTest.result.includes('CDP 逐字真实按键'));
 
-// 2) 页面脚本类方法：把 method 传下去（页面脚本在 test-pta-tools 里另测）
+// 2) CDP keyDown+text：换一种按键写法
+state.debuggerCalls = [];
+await respond({ type: 'tool/test-input', text: 'hi', method: 'cdpKeyDownText' }, { tab: { id: 7 } });
+check(
+  'CDP keyDown+text 用 keyDown 带 text 敲字',
+  state.debuggerCalls.some((call) => call[0] === 'Input.dispatchKeyEvent' && call[2].type === 'keyDown' && call[2].text === 'h'),
+);
+
+// 3) CDP 整段插入
+state.debuggerCalls = [];
+await respond({ type: 'tool/test-input', text: 'hi', method: 'cdpInsertText' }, { tab: { id: 7 } });
+check('CDP 整段插入走 Input.insertText', state.debuggerCalls.some((call) => call[0] === 'Input.insertText' && call[2].text === 'hi'));
+
+// 4) CDP 真实点击 + 逐字：点击坐标来自页面报告的 rect
+state.debuggerCalls = [];
+state.pageTool = { ok: true, result: JSON.stringify({ x: 60, y: 40 }) };
+await respond({ type: 'tool/test-input', text: 'hi', method: 'cdpClickTyping' }, { tab: { id: 7 } });
+check(
+  'CDP 真实点击方法先发鼠标点击',
+  state.debuggerCalls.some((call) => call[0] === 'Input.dispatchMouseEvent' && call[2].type === 'mousePressed'),
+);
+
+// 5) 剪贴板 + 真 Ctrl+V：页面返回标记后由插件发 Ctrl+V
+state.debuggerCalls = [];
+state.pageTool = { ok: true, result: 'MARK_CLIPBOARD_READY' };
+const pasteTest = await respond({ type: 'tool/test-input', text: 'hi', method: 'clipboardPaste' }, { tab: { id: 7 } });
+check(
+  '剪贴板方法由插件发出 Ctrl+V',
+  state.debuggerCalls.some((call) => call[0] === 'Input.dispatchKeyEvent' && call[2].modifiers === 2 && call[2].key === 'v'),
+);
+check('剪贴板方法如实汇报结果', pasteTest.result.includes('Ctrl+V'));
+
+// 6) 页面脚本类方法：把 method 传下去（页面脚本在 test-pta-tools 里另测）
 state.pageTool = { ok: true, result: '方法：聚焦全选后 execCommand(insertText) 整段插入；回读比对：与目标一致' };
 const execTest = await respond({ type: 'tool/test-input', text: 'hi', method: 'execCommand' }, { tab: { id: 7 } });
 check('页面脚本类方法把结果与比对回给设置页', execTest.ok === true && execTest.result.includes('回读比对'));
 check('页面脚本类方法带上了方法名', execTest.method === 'execCommand');
 
-// 3) 未知方法退回第一种，空文本直接报错
-check('未知方法退回第 1 种', (await respond({ type: 'tool/test-input', text: 'x', method: '不存在' }, { tab: { id: 7 } })).method === 'cdp-typing');
+// 7) 未知方法退回第一种（现在是「整段 dispatch」），空文本直接报错
+state.pageTool = { ok: true, result: '没拿到可写的编辑器实例' };
+check('未知方法退回第 1 种', (await respond({ type: 'tool/test-input', text: 'x', method: '不存在' }, { tab: { id: 7 } })).method === 'dispatch');
 check('没有标签页时说明不支持', (await respond({ type: 'tool/test-input', text: 'x', method: 'execCommand' }, {})).ok === false);
 check('空文本直接报错', (await respond({ type: 'tool/test-input', text: '', method: 'execCommand' }, { tab: { id: 7 } })).ok === false);
 

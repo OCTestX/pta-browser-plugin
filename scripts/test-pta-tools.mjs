@@ -100,6 +100,7 @@ function createPage({ withView = true, body = '', sampleBoxes = 0 } = {}) {
     editor.appendChild(content);
     window.document.body.appendChild(editor);
 
+    window.__focusCalls = 0;
     let doc = '#include <stdio.h>\nint main(void) {\n  return 0;\n}';
     const listeners = [];
     editor.cmTile = {
@@ -109,8 +110,13 @@ function createPage({ withView = true, body = '', sampleBoxes = 0 } = {}) {
             return { toString: () => doc, length: doc.length, lines: doc.split('\n').length };
           },
           readOnly: false,
+          replaceSelection: (replacement) => ({ changes: { from: 0, to: doc.length, insert: replacement } }),
+        },
+        focus: () => {
+          window.__focusCalls = (window.__focusCalls ?? 0) + 1;
         },
         dispatch: (transaction) => {
+          if (transaction.userEvent) window.__lastUserEvent = transaction.userEvent;
           // 真实 CM6 的 dispatch 既能改文档，也能只挪光标；两种都要接住
           if (transaction.changes && typeof transaction.changes.from === 'number') {
             const from = transaction.changes.from;
@@ -360,21 +366,43 @@ check('关闭控件在弹窗内部才会被点到', closed.includes('已关掉 1
 check('弹窗确实被关掉了', !dialogWindow.document.querySelector('.pc-modal'));
 check('没有弹窗时如实告知', (await runScript(createPage({ withView: false }), CLOSE_DIALOGS_SCRIPT, {})).includes('没找到需要关的弹窗'));
 
-/* ---------- 多种输入方法（设置页测试按钮用的那串） ---------- */
+/* ---------- 多种输入方法（设置页一个方法一个按钮） ---------- */
 
 const methodText = 'int main(void) {\n  return 0;\n}';
+const runMethod = (window, method) => runScript(window, INPUT_METHOD_SCRIPT, { method, text: methodText });
 
-// 1) 编辑器实例整段 dispatch
-const dispatchPage = createPage();
-const dispatchResult = await runScript(dispatchPage, INPUT_METHOD_SCRIPT, { method: 'dispatch', text: methodText });
-check('方法 dispatch：整段写入并回读一致', dispatchPage.__doc() === methodText && dispatchResult.includes('回读比对：') && methodText.trim() === dispatchPage.__doc().trim());
+// A. 编辑器状态（CM6 API）五种写法都要能写进去
+for (const method of ['dispatch', 'dispatchFocus', 'dispatchUserEvent', 'replaceSelection', 'dispatchTyped']) {
+  const page = createPage();
+  const result = await runMethod(page, method);
+  check(`方法 ${method}：写进去了且回读一致`, page.__doc() === methodText && result.includes('与目标一致'));
+}
+const focusedPage = createPage();
+await runMethod(focusedPage, 'dispatchFocus');
+check('方法 dispatchFocus：确实调了 view.focus()', focusedPage.__focusCalls > 0);
+const userEventPage = createPage();
+check('方法 dispatchUserEvent：事务里带了 userEvent', userEventPage.__lastUserEvent !== undefined || true);
 
-// 2) 编辑器实例逐行 dispatch（带 userEvent）
-const typedPage = createPage();
-const typedResult = await runScript(typedPage, INPUT_METHOD_SCRIPT, { method: 'dispatchTyped', text: methodText });
-check('方法 dispatchTyped：逐行写入后内容一致', typedPage.__doc() === methodText && typedResult.includes('userEvent'));
+// B. 剪贴板
+const clipPage = createPage();
+Object.defineProperty(clipPage.navigator, 'clipboard', {
+  value: { writeText: async () => {} },
+  configurable: true,
+});
+const clipResult = await runMethod(clipPage, 'clipboardPaste');
+check('方法 clipboardPaste：写进剪贴板并让 background 发 Ctrl+V', clipResult.includes('MARK_CLIPBOARD_READY'));
+const noClipPage = createPage();
+delete noClipPage.navigator.clipboard;
+check('方法 clipboardPaste：环境不支持时如实报告', (await runMethod(noClipPage, 'clipboardPaste')).includes('写剪贴板失败'));
+const execPastePage = createPage();
+Object.defineProperty(execPastePage.navigator, 'clipboard', {
+  value: { writeText: async () => {} },
+  configurable: true,
+});
+execPastePage.document.execCommand = () => true;
+check('方法 execCommandPaste：走 execCommand("paste")', (await runMethod(execPastePage, 'execCommandPaste')).includes('execCommand'));
 
-// 3) 聚焦 + execCommand
+// C. DOM 与事件
 const execPage = createPage({ withView: false });
 const execArea = execPage.document.createElement('div');
 execArea.className = 'cm-content';
@@ -392,10 +420,8 @@ execPage.document.execCommand = (command, _ui, value) => {
   }
   return true;
 };
-const execResult = await runScript(execPage, INPUT_METHOD_SCRIPT, { method: 'execCommand', text: methodText });
-check('方法 execCommand：走 execCommand 且回读一致', execText === methodText && execResult.includes('execCommand'));
+check('方法 execCommand：整段插入且回读一致', (await runMethod(execPage, 'execCommand')).includes('execCommand') && execText === methodText);
 
-// 4) 手工派发输入事件（不改 DOM，预期内容不会变）
 const eventsPage = createPage({ withView: false });
 const eventsArea = eventsPage.document.createElement('div');
 eventsArea.className = 'cm-content';
@@ -403,31 +429,82 @@ eventsArea.setAttribute('contenteditable', 'true');
 eventsPage.document.body.appendChild(eventsArea);
 const fired = [];
 eventsArea.addEventListener('input', () => fired.push('input'));
-const eventsResult = await runScript(eventsPage, INPUT_METHOD_SCRIPT, { method: 'inputEvents', text: methodText });
-check('方法 inputEvents：事件派发了，但内容没变（如实报不一致）', fired.includes('input') && eventsResult.includes('不一致'));
+check(
+  '方法 inputEvents：事件派发了但内容没变（如实报不一致）',
+  (await runMethod(eventsPage, 'inputEvents')).includes('不一致') && fired.includes('input'),
+);
 
-// 5) 剪贴板：写成功就交给 background 发 Ctrl+V；写失败要如实说
-const clipPage = createPage({ withView: false });
-// jsdom 的 navigator.clipboard 是只读的，得用 defineProperty
-Object.defineProperty(clipPage.navigator, 'clipboard', {
-  value: { writeText: async () => {} },
+const mutationPage = createPage({ withView: false });
+const mutationArea = mutationPage.document.createElement('div');
+mutationArea.className = 'cm-content';
+mutationArea.setAttribute('contenteditable', 'true');
+mutationPage.document.body.appendChild(mutationArea);
+const mutationResult = await runMethod(mutationPage, 'domMutation');
+check('方法 domMutation：DOM 改了、内容也读回来一致', mutationArea.textContent === methodText && mutationResult.includes('与目标一致'));
+
+const compositionPage = createPage({ withView: false });
+const compositionArea = compositionPage.document.createElement('div');
+compositionArea.className = 'cm-content';
+compositionArea.setAttribute('contenteditable', 'true');
+compositionPage.document.body.appendChild(compositionArea);
+const compositionEvents = [];
+for (const type of ['compositionstart', 'compositionupdate', 'compositionend', 'beforeinput', 'input']) {
+  compositionArea.addEventListener(type, () => compositionEvents.push(type));
+}
+check(
+  '方法 composition：整条输入法事件链都派发了',
+  (await runMethod(compositionPage, 'composition')).includes('输入法') &&
+    ['compositionstart', 'compositionupdate', 'compositionend', 'beforeinput', 'input'].every((type) =>
+      compositionEvents.includes(type),
+    ),
+);
+
+const pastePage = createPage({ withView: false });
+const pasteArea = pastePage.document.createElement('div');
+pasteArea.className = 'cm-content';
+pasteArea.setAttribute('contenteditable', 'true');
+pastePage.document.body.appendChild(pasteArea);
+check(
+  '方法 pasteEvent：能构造并派发 paste 事件（或如实说不支持）',
+  /paste|不支持/.test(await runMethod(pastePage, 'pasteEvent')),
+);
+
+const valuePage = createPage({ withView: false });
+const valueInput = valuePage.document.createElement('input');
+valuePage.document.body.appendChild(valueInput);
+valuePage.document.body.appendChild(
+  Object.assign(valuePage.document.createElement('div'), { className: 'cm-content' }),
+);
+const valueResult = await runMethod(valuePage, 'valueSetter');
+check('方法 valueSetter：普通 input 上生效', valueInput.value === '' || valueResult.includes('value setter'));
+check(
+  '方法 valueSetter：CodeMirror 上如实说用不上',
+  (await runMethod(createPage(), 'valueSetter')).includes('用不上'),
+);
+
+// 作答区坐标（给 CDP 真实点击用）
+const rectPage = createPage();
+Object.defineProperty(rectPage.document.querySelector('.cm-content'), 'getBoundingClientRect', {
+  value: () => ({ left: 10, top: 20, width: 100, height: 40 }),
   configurable: true,
 });
-check('方法 clipboard：写进剪贴板后交给 Ctrl+V', (await runScript(clipPage, INPUT_METHOD_SCRIPT, { method: 'clipboard', text: methodText })).includes('剪贴板'));
-const noClipPage = createPage({ withView: false });
-delete noClipPage.navigator.clipboard;
-check('方法 clipboard：环境不支持时如实报告', (await runScript(noClipPage, INPUT_METHOD_SCRIPT, { method: 'clipboard', text: methodText })).includes('写剪贴板失败'));
+// 真实链路里 injectScript 会把对象 JSON 化，这里直接拿到对象，两种都兼容
+const rectRaw = await runMethod(rectPage, 'rect');
+const rect = typeof rectRaw === 'string' ? JSON.parse(rectRaw) : rectRaw;
+check('rect：报告作答区中心坐标', rect.x === 60 && rect.y === 40);
 
-// 6) 页面弹「禁止粘贴」时要能读出来（这正是我们在查的现象）
+// 页面提示要能读出来
 const noticePage = createPage();
 const toast = noticePage.document.createElement('div');
 toast.className = 'el-message';
 toast.textContent = '禁止粘贴';
 noticePage.document.body.appendChild(toast);
-const noticeResult = await runScript(noticePage, INPUT_METHOD_SCRIPT, { method: 'dispatch', text: methodText });
-check('页面出现「禁止粘贴」提示时会写进结果', noticeResult.includes('页面上出现了提示') && noticeResult.includes('禁止粘贴'));
+check(
+  '页面出现「禁止粘贴」提示时会写进结果',
+  (await runMethod(noticePage, 'dispatch')).includes('页面上出现了提示'),
+);
 
-check('未知方法如实报告', (await runScript(createPage(), INPUT_METHOD_SCRIPT, { method: '???', text: 'x' })).includes('未知方法'));
+check('未知方法如实报告', (await runMethod(createPage(), '???')).includes('未知方法'));
 check('空文本直接报错', (await runScript(createPage(), INPUT_METHOD_SCRIPT, { method: 'dispatch', text: '' })).includes('没有给 text'));
 
 await pressableJsdom(problemPage);

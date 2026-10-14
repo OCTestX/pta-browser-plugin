@@ -89,11 +89,15 @@ const PROBE_CURSOR = `(() => {
  * 逐字发真实按键（不粘贴、不直接改 DOM）：PTA 的 onpaste 是平台的反抄袭控制，
  * 剪贴板通道走不通，编辑器也只认正常的按键事件。
  */
-export function createDebuggerIo(tabId: number): TypistIo {
+export function createDebuggerIo(
+  tabId: number,
+  mode: 'char' | 'keyDownText' = 'char',
+): TypistIo {
   return {
     typeChar: async (char) => {
       await attach(tabId);
-      await pressChar(tabId, char);
+      if (mode === 'keyDownText') await pressKeyDownText(tabId, char);
+      else await pressChar(tabId, char);
     },
     press: async (key) => {
       await attach(tabId);
@@ -148,6 +152,24 @@ export async function pokeEditor(tabId: number): Promise<void> {
   await attach(tabId);
   await pressChar(tabId, ' ');
   await pressKey(tabId, 'Backspace');
+}
+
+/** 用 CDP 在页面坐标上发一次真实鼠标点击（聚焦用） */
+export async function clickAt(tabId: number, x: number, y: number): Promise<void> {
+  await attach(tabId);
+  const base = { x, y, button: 'left', clickCount: 1 };
+  await ext.debugger.sendCommand({ tabId }, 'Input.dispatchMouseEvent', { ...base, type: 'mousePressed' });
+  await ext.debugger.sendCommand({ tabId }, 'Input.dispatchMouseEvent', { ...base, type: 'mouseReleased' });
+}
+
+/** 另一种「敲字符」：keyDown 带 text（有的页面只认这种） */
+async function pressKeyDownText(tabId: number, char: string): Promise<void> {
+  await ext.debugger.sendCommand({ tabId }, 'Input.dispatchKeyEvent', {
+    type: 'keyDown',
+    text: char,
+    unmodifiedText: char,
+    key: char,
+  });
 }
 
 /** 单字符按键：type=char 只负责把字符插到光标处 */

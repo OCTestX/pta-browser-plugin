@@ -46,6 +46,8 @@ console.log('✓ 脚本里没有会让 Chrome 拒绝加载的 Unicode 非字符'
 /* ---------- 测试脚手架 ---------- */
 
 const code = readFileSync(`${outDir}/content.js`, 'utf8');
+// 和 src/shared/input-methods.ts 保持同步的按钮数量（改了那边这里也要改）
+const INPUT_METHODS_COUNT = 17;
 
 // React 的渲染是异步的，固定 sleep 在机器忙的时候会偶发失败。
 // 这里改成等 DOM 安静下来：有新改动就重新计时，直到安静 quietMs。
@@ -284,55 +286,42 @@ check('保存后 Key 输入框被清空', withKey.find('.field__input[type="pass
 const testArea = [...withKey.shadow().querySelectorAll('.field__input--area')][0];
 check('设置页有模拟输入测试的文本框', Boolean(testArea));
 check('测试文本默认是助手的系统提示词', testArea.value.startsWith('你是「PTA 助手」'));
-const testButton = [...withKey.shadow().querySelectorAll('.button')].find((el) =>
-  el.textContent.startsWith('模拟输入到作答区'),
-);
-check('设置页有模拟输入按钮且标着第几种方法', Boolean(testButton) && testButton.textContent.includes('第 1/7 种'));
-check('按钮旁说明了当前方法', withKey.find('.settings').textContent.includes('CDP 逐字真实按键'));
-
-testButton.click();
+const methodButtons = [...withKey.shadow().querySelectorAll('.method-button')];
+check('每种输入方法一个按钮', methodButtons.length === INPUT_METHODS_COUNT);
+check('按钮按分组显示', withKey.find('.settings').textContent.includes('编辑器状态（CM6 API）') &&
+  withKey.find('.settings').textContent.includes('CDP 真实输入'));
+const dispatchButton = methodButtons.find((el) => el.textContent.startsWith('整段 dispatch'));
+check('有「整段 dispatch」按钮', Boolean(dispatchButton));
+dispatchButton.click();
 await tick();
 const testRequest = withKey.requests.find((r) => r.type === 'tool/test-input');
-check('点按钮会把测试文本与当前方法发给后台', testRequest?.text === testArea.value && testRequest.method === 'cdp-typing');
+check('点按钮会把测试文本与该方法发给后台', testRequest?.text === testArea.value && testRequest.method === 'dispatch');
 check(
   '测试结果回显在设置页（含回读比对）',
   withKey.find('.settings__result')?.textContent.includes('回读比对'),
 );
-const advanced = [...withKey.shadow().querySelectorAll('.button')].find((el) =>
-  el.textContent.startsWith('模拟输入到作答区'),
-);
-check('点完自动换到下一种方法', advanced.textContent.includes('第 2/7 种'));
-check('换种后方法说明也跟着变', withKey.find('.settings').textContent.includes('CDP 整段插入'));
-check('方法进度写进了 storage', withKey.storageWrites.some((patch) => patch['pta-assistant-input-method-index'] === 1));
-check(
-  '测试成功会记下可用方法',
-  withKey.storageWrites.some((patch) => patch['pta-assistant-input-method-ok'] === 'cdp-typing'),
-);
+check('成功后该方法按钮标上 ✅', dispatchButton.textContent.includes('✅'));
 check(
   '设置页显示当前可用方法',
   withKey.find('.settings').textContent.includes('当前可用方法') &&
-    withKey.find('.settings').textContent.includes('第 1 种'),
+    withKey.find('.settings').textContent.includes('整段 dispatch'),
+);
+check(
+  '可用方法记进了 storage',
+  withKey.storageWrites.some((patch) => patch['pta-assistant-input-method-ok'] === 'dispatch'),
 );
 
-// 被页面拦住的那次不该被记成「可用」
-withKey.setTestInputResult('【execCommand 整段插入】方法：聚焦全选后 execCommand 整段插入；回读比对：与目标一致；页面上出现了提示：禁止粘贴');
-const blockedButton = [...withKey.shadow().querySelectorAll('.button')].find((el) =>
-  el.textContent.startsWith('模拟输入到作答区'),
-);
+// 另一种方法：被页面拦住的不该被记成「可用」
+withKey.setTestInputResult('【execCommand 整段插入】方法：聚焦全选后 execCommand(insertText)；回读比对：与目标一致；页面上出现了提示：禁止粘贴');
+const execButton = methodButtons.find((el) => el.textContent.startsWith('execCommand'));
 const writesBefore = withKey.storageWrites.length;
-blockedButton.click();
+execButton.click();
 await tick();
 check(
   '被「禁止粘贴」拦住的那次不会记成可用方法',
-  withKey.storageWrites.length === writesBefore + 1 && // 只写了「进度」
-    withKey.storageWrites.at(-1)['pta-assistant-input-method-ok'] === undefined,
+  withKey.storageWrites.length === writesBefore &&
+    !execButton.textContent.includes('✅'),
 );
-const restart = [...withKey.shadow().querySelectorAll('.button')].find((el) => el.textContent === '重来');
-restart.click();
-await tick();
-check('点「重来」回到第 1 种', [...withKey.shadow().querySelectorAll('.button')]
-  .find((el) => el.textContent.startsWith('模拟输入到作答区'))
-  .textContent.includes('第 1/7 种'));
 
 withKey.find('.panel__back').click();
 await tick();

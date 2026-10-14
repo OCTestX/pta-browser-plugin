@@ -665,3 +665,49 @@
   white-space: pre-wrap;
   word-break: break-word;
 }
+
+/* ---------- 模拟输入测试：一种方法一个按钮 ---------- */
+
+.method-group {
+  margin-top: 10px;
+}
+
+.method-group__title {
+  display: block;
+  margin-bottom: 5px;
+  color: var(--pta-text-muted);
+  font-size: 12px;
+}
+
+.method-buttons {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.method-button {
+  padding: 5px 9px;
+  border: 1px solid var(--pta-border);
+  border-radius: 8px;
+  background: var(--pta-surface);
+  color: var(--pta-text);
+  font: inherit;
+  font-size: 12px;
+  line-height: 1.3;
+  cursor: pointer;
+}
+
+.method-button:hover:not(:disabled) {
+  border-color: var(--pta-accent);
+  color: var(--pta-accent);
+}
+
+.method-button:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+.method-button--ok {
+  border-color: var(--pta-ok);
+  color: var(--pta-ok);
+}
