@@ -107,6 +107,16 @@ export function createDebuggerIo(tabId: number): TypistIo {
   };
 }
 
+/**
+ * 原子写入之后戳一下页面：敲一个空格再退格，净效果为零，
+ * 但会产生真实的输入事件，触发页面「内容被改过」的标记（否则提交按钮可能是灰的）。
+ */
+export async function pokeEditor(tabId: number): Promise<void> {
+  await attach(tabId);
+  await pressChar(tabId, ' ');
+  await pressKey(tabId, 'Backspace');
+}
+
 /** 单字符按键：type=char 只负责把字符插到光标处 */
 async function pressChar(tabId: number, char: string): Promise<void> {
   await ext.debugger.sendCommand({ tabId }, 'Input.dispatchKeyEvent', {

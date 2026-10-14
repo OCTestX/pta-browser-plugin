@@ -89,7 +89,12 @@ globalThis.chrome = {
         throw new Error('world MAIN is not supported');
       }
       state.worlds.push(options.world);
-      // 真的执行注入函数，覆盖 AsyncFunction / 序列化 / 错误归一化
+      // PTA 那几个脚本要在真实 DOM 里跑，这里用桩结果代替（它们在 test-pta-tools.mjs 里另测）
+      const source = String((options.args && options.args[0]) || '');
+      if (source.includes('pickEditorView')) {
+        return [{ result: { ok: true, output: state.pageTool.result } }];
+      }
+      // 其它注入（js_inject）真的执行，覆盖 AsyncFunction / 序列化 / 错误归一化
       const result = await options.func(...options.args);
       return [{ result }];
     },
@@ -333,6 +338,29 @@ check('编译运行结果回灌给模型', state.modelCalls[1].messages.at(-1).c
 state.sse = [toolCallsSse('call_c2', 'compile_and_run_c', ['{}']), textSse('好')];
 await chat();
 check('缺 code 时直接返回错误，不发请求', state.modelCalls[1].messages.at(-1).content.includes('缺少 code 参数'));
+
+/* ---------- 覆写代码后用真实按键戳一下 ---------- */
+
+await respond({ type: 'settings/save', patch: { useDebuggerInput: true } });
+state.pageTool = { ok: true, result: '已通过编辑器实例（#pta-answer-editor → cmTile.view）整段覆写 3 行。回读比对：3 行与目标一致' };
+state.sse = [toolCallsSse('call_w1', 'write_editor_code', ['{"code":"int main(){}"}']), textSse('写好了。')];
+await chat();
+const pokeChars = state.debuggerCalls
+  .filter((call) => call[0] === 'Input.dispatchKeyEvent' && call[2].type === 'char')
+  .map((call) => call[2].text);
+check('覆写代码后会敲一个字符再删掉（触发页面的修改标记）', pokeChars.join('') === ' ');
+check(
+  '戳一下用的是真实按键的退格',
+  state.debuggerCalls.some((call) => call[0] === 'Input.dispatchKeyEvent' && call[2].windowsVirtualKeyCode === 8),
+);
+check('工具结果里说明了戳过一下', state.modelCalls[1].messages.at(-1).content.includes('修改标记'));
+check('戳完把调试器断开了', state.debuggerCalls.some((call) => call[0] === 'detach'));
+
+// 关掉开关就不该碰调试器
+await respond({ type: 'settings/save', patch: { useDebuggerInput: false } });
+state.sse = [toolCallsSse('call_w2', 'write_editor_code', ['{"code":"int main(){}"}']), textSse('写好了。')];
+await chat();
+check('开关关闭时不会戳页面（不碰调试器）', state.debuggerCalls.length === 0);
 
 /* ---------- 真实按键开关 ---------- */
 

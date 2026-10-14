@@ -177,9 +177,9 @@ npm run icons      # 重新生成图标（需要 python3 + Pillow）
 
 | 工具 | 做什么 | 实现 |
 |---|---|---|
-| `read_problem` | 拿到当前题目的题面 | 按容器优先级扫 `'.problem-content', '.problem-statement', '.pt12-problem-content', '[class*=problem]', '[class*=statement]'`，取第一个文本长度 > 40 的；都没命中就退到整页正文，并在结果里说明来源；顺手带上标题、地址、题目 ID |
-| `read_editor_code` | 读作答区里的代码 | 优先顺着 DOM 摸到编辑器实例（`#pta-answer-editor → cmTile.view`），用 `view.state.doc` 读**完整文档**；拿不到实例才退回 `.cm-line`（只读得到渲染出来的行，结果里会说明） |
-| `write_editor_code` | 改作答区里的代码（默认整段覆写） | 优先 `view.dispatch({changes})` **原子写入**——绕开自动闭合与自动缩进，一次改完；退路是聚焦 + 全选 + `execCommand('insertText')` 整段插入；两条路都会**回读比对**，结果里写明是否一致、第几行不一致 |
+| `read_problem` | 拿到当前题目的题面 | ① 按类名找，但**遍历所有匹配**而不是只取第一个（只取第一个的话，文本太少的那个会把整个选择器废掉）；② 类名对不上时**按小标题定位**：同时出现「题目描述/输入格式/输出格式/样例输入/样例输出」里两个以上的**最小**容器；③ 都失败才退整页正文，并从第一个小标题开始截断、滤掉「上一题/下一题/图例/Toggle Sidebar/复制」这类纯 UI 文案行；④ 顺手把样例抠成「输入/输出」成对返回，可以直接当 `compile_and_run_c` 的 stdin |
+| `read_editor_code` | 读作答区里的代码 | 题面的「输入样例/输出样例」**也是 CodeMirror**（`contenteditable="false"` + `aria-readonly="true"`），所以先收集所有编辑器实例、**剔除只读的**，再在可写的里面取内容最长的；用 `view.state.doc` 读完整文档；只有只读实例时会明确说「只有样例框、没有作答区」而不是含糊报「编辑器是只读的」 |
+| `write_editor_code` | 改作答区里的代码（默认整段覆写） | 同样跳过只读样例框；优先 `view.dispatch({changes})` **原子写入**并**把光标留在文末**；退路是聚焦 + 全选 + `execCommand('insertText')`；两条路都**回读比对**。开了「真实按键」开关时，写完会**自动敲一个空格再退格**（净效果为零，但触发页面「内容被改过」的标记，否则提交按钮可能是灰的）；开关没开或调试器不可用时会提示这一步需要手动做 |
 
 编辑器实例不在公开 API 上，只能顺着 DOM 摸：先在 `#pta-answer-editor / .cm-editor / .cm-content` 及其祖先上找 `cmTile.view / cmView / editorView / view / _view`（PTA 用的是 `cmTile.view`），再退一步扫自身属性找「有 `state.doc` + `dispatch`」的对象，找到后把路径一并写进结果里。
 

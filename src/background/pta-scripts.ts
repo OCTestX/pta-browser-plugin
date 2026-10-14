@@ -12,18 +12,24 @@ const HELPERS = `
   // 模板字符串里写不了裸的三反引号，用它拼代码块围栏
   const fence = String.fromCharCode(96).repeat(3);
 
+  // 题面的「输入样例 / 输出样例」也是 CodeMirror，但是只读的；
+  // 只看 contenteditable 不够（它们是 contenteditable="false" + aria-readonly="true"）
+  const isEditableElement = (node) => {
+    if (!node) return false;
+    if (node.getAttribute('aria-readonly') === 'true') return false;
+    const attr = node.getAttribute('contenteditable');
+    if (attr === 'false') return false;
+    return node.isContentEditable || attr === '' || attr === 'true' || attr === 'plaintext-only';
+  };
+
   const findEditorElement = () => {
     const nodes = Array.from(document.querySelectorAll('.cm-content, [contenteditable="true"]'));
     let best = null;
     let bestLength = 0;
-    for (const el of nodes) {
-      const editable = el.isContentEditable || (() => {
-        const attr = el.getAttribute('contenteditable');
-        return attr === '' || attr === 'true' || attr === 'plaintext-only';
-      })();
-      if (!editable) continue;
-      const length = (el.innerText || el.textContent || '').length;
-      if (!best || length > bestLength) { best = el; bestLength = length; }
+    for (const node of nodes) {
+      if (!isEditableElement(node)) continue;
+      const length = (node.innerText || node.textContent || '').length;
+      if (!best || length > bestLength) { best = node; bestLength = length; }
     }
     return best;
   };
@@ -36,14 +42,13 @@ const HELPERS = `
   const describePath = (node, key) => {
     const id = node.id ? '#' + node.id : '';
     const cls = typeof node.className === 'string' && node.className.trim()
-      ? '.' + node.className.trim().split(/\\s+/).slice(0, 2).join('.')
+      ? '.' + node.className.trim().split(/\s+/).slice(0, 2).join('.')
       : '';
     return node.tagName.toLowerCase() + id + cls + ' → ' + key;
   };
 
-  // 编辑器实例不在公开 API 上，只能顺着 DOM 摸过去；
-  // PTA 是挂成 #pta-answer-editor 的 cmTile.view
-  const findEditorView = () => {
+  // 编辑器实例不在公开 API 上，只能顺着 DOM 摸：PTA 挂在 #pta-answer-editor 的 cmTile.view 上
+  const collectEditorViews = () => {
     const starts = ['#pta-answer-editor', '.cm-editor', '.cm-content', '[contenteditable="true"]'];
     const roots = [];
     for (const selector of starts) {
@@ -51,33 +56,58 @@ const HELPERS = `
     }
     const likelyKeys = ['cmTile', 'cmView', 'editorView', 'view', '_view'];
     const skipKeys = new Set(['children', 'parentElement', 'ownerDocument', 'style', 'classList', 'dataset', 'innerHTML']);
+    const found = [];
+    const seen = new Set();
+
+    const consider = (value, node, path) => {
+      if (!looksLikeEditorView(value) || seen.has(value)) return;
+      seen.add(value);
+      // 找到承载它的可编辑元素（往上下都看一眼）
+      let element = node;
+      if (!element.classList || !element.classList.contains('cm-content')) {
+        element = element.querySelector ? element.querySelector('.cm-content') : null;
+      }
+      found.push({
+        view: value,
+        path,
+        readOnly: value.state.readOnly === true || (element ? !isEditableElement(element) : false),
+        length: String(value.state.doc).length,
+      });
+    };
 
     for (const root of roots) {
       for (let node = root; node; node = node.parentElement) {
         for (const key of likelyKeys) {
           let value;
           try { value = node[key]; } catch (e) { continue; }
-          if (looksLikeEditorView(value)) return { view: value, path: describePath(node, key) };
+          if (looksLikeEditorView(value)) consider(value, node, describePath(node, key));
           if (value && typeof value === 'object') {
             for (const subKey of likelyKeys) {
               let inner;
               try { inner = value[subKey]; } catch (e) { continue; }
-              if (looksLikeEditorView(inner)) {
-                return { view: inner, path: describePath(node, key + '.' + subKey) };
-              }
+              if (looksLikeEditorView(inner)) consider(inner, node, describePath(node, key + '.' + subKey));
             }
           }
         }
-        // 兜底：扫一遍自身属性（跳过明显重的），只在这一层做，避免递归太深
         for (const key of Object.getOwnPropertyNames(node)) {
           if (skipKeys.has(key) || likelyKeys.includes(key)) continue;
           let value;
           try { value = node[key]; } catch (e) { continue; }
-          if (looksLikeEditorView(value)) return { view: value, path: describePath(node, key) };
+          if (looksLikeEditorView(value)) consider(value, node, describePath(node, key));
         }
       }
     }
-    return null;
+    return found;
+  };
+
+  // 作答区＝可写的那一个；实在有多个就取内容最长的（作答区通常比样例框长），
+  // 都空就取最后一个（DOM 顺序上作答区在样例框后面）
+  const pickEditorView = () => {
+    const views = collectEditorViews();
+    const writable = views.filter((item) => !item.readOnly);
+    if (writable.length === 0) return { best: null, readOnlyCount: views.length, writableCount: 0 };
+    const best = writable.reduce((a, b) => (b.length > a.length ? b : a));
+    return { best, readOnlyCount: views.length - writable.length, writableCount: writable.length };
   };
 
   // DOM 退路：CodeMirror 只渲染视口附近的行，长文档会读缺
@@ -215,30 +245,123 @@ const HELPERS = `
 /** 定位并抠出题面 */
 export const READ_PROBLEM_SCRIPT = `${HELPERS}
 const maxChars = typeof __args.maxChars === 'number' ? __args.maxChars : 6000;
-const containers = ['.problem-content', '.problem-statement', '.pt12-problem-content', '[class*=problem]', '[class*=statement]'];
+const MARKERS = ['题目描述', '题目背景', '题目要求', '问题描述', '输入格式', '输出格式', '样例输入', '样例输出', '输入样例', '输出样例'];
+
+// 一、先按常见类名找，注意要遍历「所有」匹配：
+// 只取第一个匹配的话，第一个元素文本太少就会把整个选择器丢掉（PTA 的考试页就是这样）
+const specific = [
+  '.problem-content', '.problem-statement', '.pt12-problem-content', '.problem-description',
+  '[class*=problem-statement]', '[class*=statement]', '[class*=problem-content]',
+];
 let hit = null;
-for (const selector of containers) {
-  let node = null;
-  try { node = document.querySelector(selector); } catch (e) { continue; }
-  const text = textOf(node);
-  if (text.length > 40) { hit = { selector, text }; break; }
+for (const selector of specific) {
+  let nodes = [];
+  try { nodes = Array.from(document.querySelectorAll(selector)); } catch (e) { continue; }
+  for (const node of nodes) {
+    const text = textOf(node);
+    if (text.length > 40 && (!hit || text.length > hit.text.length)) hit = { selector, text };
+  }
 }
-const raw = hit ? hit.text : textOf(document.body);
-const text = raw.length > maxChars ? raw.slice(0, maxChars) + '\\n…（题面过长，已截断）' : raw;
+
+// 二、类名对不上时按小标题定位：同时出现两个以上小标题标记的「最小」容器
+if (!hit || hit.text.length < 200) {
+  let best = null;
+  let nodes = [];
+  try { nodes = Array.from(document.querySelectorAll('div, section, article, main, form')); } catch (e) {}
+  for (const node of nodes) {
+    const text = textOf(node);
+    if (text.length < 80 || text.length > 30000) continue;
+    const marks = MARKERS.filter((m) => text.indexOf(m) >= 0).length;
+    if (marks < 2) continue;
+    if (!best || marks > best.marks || (marks === best.marks && text.length < best.text.length)) {
+      best = { selector: '按小标题定位的容器（含 ' + marks + ' 个小标题）', text, marks };
+    }
+  }
+  if (best) hit = best;
+}
+
+let raw = hit ? hit.text : textOf(document.body);
+let source = hit ? hit.selector : '整页正文';
+if (!hit) {
+  // 退到整页正文时，从第一个小标题开始截，把前面的导航和侧栏丢掉
+  const positions = MARKERS.map((m) => raw.indexOf(m)).filter((i) => i >= 0);
+  if (positions.length > 0) {
+    raw = raw.slice(Math.min.apply(null, positions));
+    source = '整页正文（只取小标题之后的部分）';
+  }
+}
+
+// 三、把纯 UI 文案行滤掉
+const NOISE = [
+  '题目总览', '作答', '题数', '编程题', '图例', 'Toggle Sidebar', '上一题', '下一题',
+  '全屏浏览', '切换布局', '复制内容', '格式', '全屏', '题目描述', '我的提交', '提交本题作答', '复制',
+];
+const lines = raw.split('\\n').map((line) => line.replace(/[ \\t]+$/, '')).filter((line) => {
+  const text = line.trim();
+  if (!text) return true;
+  if (NOISE.indexOf(text) >= 0) return false;
+  if (/^当前\\d+\\s*-\\s*\\d+项/.test(text)) return false;
+  if (/^\\d+$/.test(text)) return false;
+  return true;
+});
+let text = lines.join('\\n').replace(/\\n{3,}/g, '\\n\\n').trim();
+if (text.length > maxChars) text = text.slice(0, maxChars) + '\\n…（题面过长，已截断）';
+
+// 四、顺手把样例抠出来，模型可以直接拿去当 compile_and_run_c 的 stdin
+const blocks = [];
+{
+  let current = null;
+  for (const line of text.split('\\n').map((l) => l.trim())) {
+    const isInput = /^(样例\\s*输入|输入样例|示例\\s*\\d*\\s*的?输入|sample\\s*input)/i.test(line);
+    const isOutput = /^(样例\\s*输出|输出样例|示例\\s*\\d*\\s*的?输出|sample\\s*output)/i.test(line);
+    if (isInput || isOutput) {
+      current = { kind: isInput ? 'in' : 'out', lines: [] };
+      blocks.push(current);
+      continue;
+    }
+    if (!current) continue;
+    if (MARKERS.some((marker) => line.indexOf(marker) === 0)) { current = null; continue; }
+    if (/^(复制|Copy)$/i.test(line)) continue;
+    current.lines.push(line);
+  }
+}
+const pairs = [];
+let pendingInput = null;
+for (const block of blocks) {
+  const body = block.lines.join('\\n').trim();
+  if (block.kind === 'in') {
+    pendingInput = { input: body, output: '' };
+  } else if (pendingInput) {
+    pendingInput.output = body;
+    pairs.push(pendingInput);
+    pendingInput = null;
+  }
+}
+
 const title = (document.title || textOf(document.querySelector('h1')) || '').trim();
 const idMatch = location.pathname.match(/\\/(\\d{6,})/);
-const lines = ['题目：' + (title || '（没取到标题）'), '地址：' + location.href];
-if (idMatch) lines.push('题目 ID：' + idMatch[1]);
-lines.push('', '题面（来源：' + (hit ? hit.selector : '整页正文（没命中题目容器）') + '，共 ' + raw.length + ' 字）：', text);
-return lines.join('\\n');
+const out = ['题目：' + (title || '（没取到标题）'), '地址：' + location.href];
+if (idMatch) out.push('题目 ID：' + idMatch[1]);
+if (pairs.length > 0) {
+  out.push('', '样例（共 ' + pairs.length + ' 组，可以直接当 compile_and_run_c 的 stdin）：');
+  pairs.slice(0, 5).forEach((pair, index) => {
+    out.push('样例 ' + (index + 1) + ' 输入：' + fence + '\\n' + (pair.input || '（空）') + '\\n' + fence);
+    out.push('样例 ' + (index + 1) + ' 输出：' + fence + '\\n' + (pair.output || '（空）') + '\\n' + fence);
+  });
+}
+out.push('', '题面（来源：' + source + '，' + text.length + ' 字）：', text);
+return out.join('\\n');
 `;
 
 /** 读作答区里的代码 */
 export const READ_EDITOR_SCRIPT = `${HELPERS}
-const found = findEditorView();
-if (found) {
-  const code = found.view.state.doc.toString();
-  return '编辑器实例：' + found.path + '\\n读到完整文档（' + found.view.state.doc.lines + ' 行，' + code.length + ' 字符）：\\n' + fence + '\\n' + code + '\\n' + fence;
+const picked = pickEditorView();
+if (picked.best) {
+  const code = picked.best.view.state.doc.toString();
+  return '作答区（' + picked.best.path + '）读到完整文档（' + picked.best.view.state.doc.lines + ' 行，' + code.length + ' 字符）：\\n' + fence + '\\n' + code + '\\n' + fence;
+}
+if (picked.readOnlyCount > 0) {
+  return '页面上只找到 ' + picked.readOnlyCount + ' 个只读编辑器（是题面的样例框，不是作答区），没找到可写的作答区';
 }
 const element = findEditorElement();
 if (!element) return '页面上没找到作答区（既没有编辑器实例，也没有可编辑区域）';
@@ -252,18 +375,24 @@ const code = String(__args.code === undefined ? '' : __args.code);
 if (!code.trim()) return '没有给 code 参数';
 const clear = __args.clear !== false;
 
-const found = findEditorView();
-if (found) {
-  const view = found.view;
-  if (view.state.readOnly) return '编辑器是只读的，写不进去';
+const picked = pickEditorView();
+if (!picked.best) {
+  if (picked.readOnlyCount > 0) {
+    return '页面上只有 ' + picked.readOnlyCount + ' 个只读编辑器（题面的样例框），没找到可写的作答区，写不进去';
+  }
+} else {
+  const view = picked.best.view;
+  if (view.state.readOnly) return '作答区是只读的，写不进去';
   const length = view.state.doc.length;
   const changes = clear || length === 0
     ? { from: 0, to: length, insert: code }
     : { from: length, to: length, insert: (view.state.doc.toString().endsWith('\\n') ? '' : '\\n') + code };
   view.dispatch({ changes });
+  // 把光标放到文末：一是用户接手时位置正常，二是后面用真实按键「戳一下」时不会插到代码中间
+  view.dispatch({ selection: { anchor: view.state.doc.length } });
   await new Promise((resolve) => setTimeout(resolve, 200));
   const after = view.state.doc.toString();
-  return '已通过编辑器实例（' + found.path + '）' + (clear ? '覆写' : '追加') + ' ' + code.split('\\n').length + ' 行。' + compareText(code, after);
+  return '已通过编辑器实例（' + picked.best.path + '）' + (clear ? '整段覆写' : '追加') + ' ' + code.split('\\n').length + ' 行。' + compareText(code, after);
 }
 
 // 退路：拿不到实例就聚焦后整段插入（整段插入不会触发逐字符的自动闭合）

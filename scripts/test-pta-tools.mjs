@@ -18,6 +18,36 @@ const check = (label, ok) => {
 };
 
 /** 把脚本当成插件注入的那段代码来跑：__args 注入 + AsyncFunction 包裹（脚本里能用 return / await） */
+/**
+ * jsdom 没有 innerText（块级元素之间不会产生换行），而脚本里的按行解析依赖它。
+ * 这里给个近似实现，让测试尽量贴近真实浏览器行为。
+ */
+function installInnerText(window) {
+  const BLOCKS = new Set([
+    'DIV', 'P', 'LI', 'TR', 'SECTION', 'ARTICLE', 'H1', 'H2', 'H3', 'H4', 'H5', 'PRE',
+    'BLOCKQUOTE', 'UL', 'OL', 'TABLE', 'FORM', 'MAIN', 'BODY', 'HEADER', 'FOOTER', 'NAV', 'BR',
+  ]);
+  Object.defineProperty(window.HTMLElement.prototype, 'innerText', {
+    configurable: true,
+    get() {
+      const walk = (node) => {
+        if (node.nodeType === 3) return node.textContent ?? '';
+        if (node.nodeType !== 1) return '';
+        if (node.style && node.style.display === 'none') return '';
+        if (node.tagName === 'BR') return '\n';
+        let out = '';
+        for (const child of node.childNodes) out += walk(child);
+        return BLOCKS.has(node.tagName) ? '\n' + out + '\n' : out;
+      };
+      return walk(this)
+        .replace(/[ \t]+\n/g, '\n')
+        .replace(/\n{2,}/g, '\n')
+        .replace(/^\n+|\n+$/g, '');
+    },
+  });
+  return window;
+}
+
 async function runScript(window, source, args) {
   const withArgs = args === undefined ? source : `const __args = ${JSON.stringify(args)};\n${source}`;
   // 必须在页面自己的 realm 里造函数，跟插件注入时一样，脚本才看得到 document / window
@@ -25,7 +55,7 @@ async function runScript(window, source, args) {
   return await new AsyncFunction(withArgs)();
 }
 
-function createPage({ withView = true, body = '' } = {}) {
+function createPage({ withView = true, body = '', sampleBoxes = 0 } = {}) {
   const dom = new JSDOM(`<!doctype html><html><head><title>7-1 星期几</title></head><body>${body}</body></html>`, {
     url: 'https://pintia.cn/problem-sets/1/problems/1150901824503297/description',
     // 只有开了 runScripts 才有真正跑在页面 realm 里的 window.eval
@@ -33,8 +63,30 @@ function createPage({ withView = true, body = '' } = {}) {
     pretendToBeVisual: true,
   });
   const { window } = dom;
+  installInnerText(window);
 
   if (!window.document.execCommand) window.document.execCommand = () => false;
+
+  // 题面的「输入样例 / 输出样例」也是 CodeMirror，但是只读（contenteditable=false + aria-readonly=true）
+  for (let index = 0; index < sampleBoxes; index += 1) {
+    const box = window.document.createElement('div');
+    box.className = 'cm-editor';
+    const content = window.document.createElement('div');
+    content.className = 'cm-content';
+    content.setAttribute('contenteditable', 'false');
+    content.setAttribute('aria-readonly', 'true');
+    box.appendChild(content);
+    box.cmTile = {
+      view: {
+        state: {
+          readOnly: true,
+          doc: { toString: () => (index === 0 ? '3 4' : '7'), length: 3, lines: 1 },
+        },
+        dispatch: () => {},
+      },
+    };
+    window.document.body.appendChild(box);
+  }
 
   if (withView) {
     // 假 CodeMirror 6：实例挂在 #pta-answer-editor 的 cmTile.view 上，行为和 PTA 一致
@@ -56,10 +108,13 @@ function createPage({ withView = true, body = '' } = {}) {
           },
           readOnly: false,
         },
-        dispatch: ({ changes }) => {
-          if (typeof changes.from === 'number') {
-            doc = doc.slice(0, changes.from) + (changes.insert ?? '') + doc.slice(changes.to);
+        dispatch: (transaction) => {
+          // 真实 CM6 的 dispatch 既能改文档，也能只挪光标；两种都要接住
+          if (transaction.changes && typeof transaction.changes.from === 'number') {
+            const { from, to, insert } = transaction.changes;
+            doc = doc.slice(0, from) + (insert ?? '') + doc.slice(to);
           }
+          if (transaction.selection) window.__lastSelection = transaction.selection;
         },
         on: (fn) => listeners.push(fn),
       },
@@ -92,6 +147,39 @@ check('题面结果里带上来源选择器', problem.includes('.problem-content
 check('题面结果里带上标题与题目 ID', problem.includes('7-1 星期几') && problem.includes('1150901824503297'));
 check('没有题目容器时退到整页正文且不报错', (await runScript(createPage({ withView: false, body: '<p>整页正文兜底</p>' }), READ_PROBLEM_SCRIPT, {})).includes('整页正文兜底'));
 
+// 复刻 PTA 考试页：题面不在任何已知类名里，外围全是导航/侧栏文案
+const examPage = new JSDOM(
+  `<!doctype html><html><head><title>7-8 计算星期值 - 极码工作室</title></head><body>
+     <div class="side-nav">题目总览 作答 / 题数 编程题 8/8 图例 1 2 3 Toggle Sidebar 上一题 下一题</div>
+     <div class="page-box">
+       <div class="box-a">
+         <div>题目描述</div>
+         <div>7-8 计算星期值 分数 15 全屏浏览 切换布局 作者 周文俊 单位 西南石油大学</div>
+         <div>给定一个整数 n，请算出它是星期几，输出对应的中文名称，注意要考虑闰年的情况，二月的天数会多一天，这一年有 366 天。</div>
+         <div>输入格式</div>
+         <div>输入一行，包含一个整数 n。</div>
+         <div>输出格式</div>
+         <div>输出一行，星期几的中文名称。</div>
+         <div>样例输入</div>
+         <div>复制</div>
+         <div>3 4</div>
+         <div>样例输出</div>
+         <div>复制</div>
+         <div>7</div>
+       </div>
+     </div>
+   </body></html>`,
+  { url: 'https://pintia.cn/problem-sets/2107307214921076736/exam/problems/type/7?problemSetProblemId=2107310773532155904', runScripts: 'outside-only' },
+).window;
+installInnerText(examPage);
+const examProblem = await runScript(examPage, READ_PROBLEM_SCRIPT, {});
+check('类名对不上时按小标题定位到题面容器', examProblem.includes('按小标题定位的容器'));
+check('题面正文读到了', examProblem.includes('请算出它是星期几'));
+check('导航与侧栏文案被滤掉', !examProblem.includes('Toggle Sidebar') && !examProblem.includes('上一题') && !examProblem.includes('图例'));
+check('抠出了样例输入', examProblem.includes('样例 1 输入') && examProblem.includes('3 4'));
+check('抠出了样例输出', examProblem.includes('样例 1 输出') && /样例 1 输出：[\s\S]*7/.test(examProblem));
+check('样例里的「复制」按钮文字被滤掉', !examProblem.includes('复制'));
+
 const longProblem = await runScript(problemPage, READ_PROBLEM_SCRIPT, { maxChars: 5 });
 check('题面过长会截断并说明', longProblem.includes('已截断'));
 
@@ -108,6 +196,19 @@ const domRead = await runScript(noViewPage, READ_EDITOR_SCRIPT, {});
 check('拿不到实例时退回 DOM 读，并说明只读到渲染出来的行', domRead.includes('int a;') && domRead.includes('没拿到编辑器实例'));
 
 check('页面上没有作答区时如实告知', (await runScript(createPage({ withView: false }), READ_EDITOR_SCRIPT, {})).includes('没找到作答区'));
+
+// 题面样例框也是 CM 实例且挂在前面：必须跳过只读的，选真正的作答区
+const samplePage = createPage({ sampleBoxes: 2 });
+const sampleRead = await runScript(samplePage, READ_EDITOR_SCRIPT, {});
+check('前面有只读样例框时，读到的是真正的作答区', sampleRead.includes('int main(void)') && !sampleRead.includes('3 4'));
+const sampleWrite = await runScript(samplePage, WRITE_EDITOR_SCRIPT, { code: 'int main(void) { return 0; }' });
+check('写代码也跳过只读样例框，写进作答区', samplePage.__doc() === 'int main(void) { return 0; }' && sampleWrite.includes('整段覆写'));
+check('写完之后光标停在文末（后面用真实按键戳一下不会插进代码中间）', samplePage.__lastSelection?.anchor === samplePage.__doc().length);
+
+// 只有只读样例框时要明确说清，而不是含糊报「编辑器是只读的」
+const onlyReadOnly = createPage({ withView: false, sampleBoxes: 2 });
+const onlyReadOnlyResult = await runScript(onlyReadOnly, WRITE_EDITOR_SCRIPT, { code: 'x' });
+check('只有只读样例框时说清是样例框、没有作答区', onlyReadOnlyResult.includes('只读编辑器') && onlyReadOnlyResult.includes('样例框'));
 
 /* ---------- 写代码 ---------- */
 
@@ -171,6 +272,7 @@ function createJudgePage({ judgeTextAfter, label = '提交本题作答' } = {}) 
     { url: 'https://pintia.cn/problem-sets/1/problems/1', runScripts: 'outside-only' },
   );
   const { window } = dom;
+  installInnerText(window);
   const clicks = [];
   window.document.querySelector('#real-submit').addEventListener('click', () => clicks.push('real'));
   window.document.querySelector('.tab').addEventListener('click', () => clicks.push('tab'));
@@ -227,6 +329,7 @@ const dialogWindow = new JSDOM(
    </body></html>`,
   { url: 'https://pintia.cn/problem-sets/1/problems/1', runScripts: 'outside-only' },
 ).window;
+installInnerText(dialogWindow);
 dialogWindow.document.querySelector('.pc-close').addEventListener('click', () => {
   dialogWindow.document.querySelector('.pc-modal').remove();
 });

@@ -9,7 +9,7 @@ import {
 } from '../shared/tools';
 import type { ApiMessage } from '../shared/types';
 import { compileAndRun } from './compile';
-import { createDebuggerIo, detach, pressKey } from './debugger-input';
+import { createDebuggerIo, detach, pokeEditor, pressKey } from './debugger-input';
 import {
   CLOSE_DIALOGS_SCRIPT,
   READ_EDITOR_SCRIPT,
@@ -159,6 +159,23 @@ async function runTool(
     // 等判题的脚本要在页面里跑很久，给它留够时间
     const timeout = name === 'submit_answer' ? (waitSeconds + 20) * 1000 : undefined;
     const result = await injectScript(tabId, PTA_SCRIPTS[name], args, timeout);
+
+    if (name === 'write_editor_code' && result.ok && settings.useDebuggerInput) {
+      // 整段写入走的是编辑器状态，PTA 可能没标成「改过」；用真实按键戳一下补上
+      try {
+        await pokeEditor(tabId);
+        return { output: `${result.output}；已用真实按键敲了一个字符再删掉，触发页面的修改标记`, isError: false };
+      } catch (error) {
+        const reason = error instanceof Error ? error.message : String(error);
+        return {
+          output: `${result.output}；真实按键不可用（${reason}）。如果提交按钮是灰的或提示未作答，让用户手动在作答区敲一个字符再删掉`,
+          isError: false,
+        };
+      } finally {
+        await detach(tabId);
+      }
+    }
+
     return { output: result.output, isError: !result.ok };
   }
 
