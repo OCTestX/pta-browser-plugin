@@ -248,6 +248,19 @@ function summarizeArgs(name: string, rawArgs: string): { code?: string; summary?
     const length = typeof parsed.content === 'string' ? parsed.content.length : 0;
     return { summary: `${filename}（${length} 字符）` };
   }
+  if (name === 'simulate_keyboard_input') {
+    const parts: string[] = [];
+    if (typeof parsed.selector === 'string' && parsed.selector) parts.push(parsed.selector);
+    if (typeof parsed.text === 'string' && parsed.text) parts.push(`输入「${previewText(parsed.text)}」`);
+    if (typeof parsed.press === 'string' && parsed.press) parts.push(`按下 ${parsed.press}`);
+    if (parsed.clear === true) parts.push('先清空');
+    return { summary: parts.join(' · ') };
+  }
   const summary = rawArgs.trim();
   return { summary: summary === '{}' || summary === '' ? undefined : summary };
+}
+
+function previewText(text: string): string {
+  const single = text.replace(/\s+/g, ' ');
+  return single.length > 20 ? `${single.slice(0, 20)}…` : single;
 }

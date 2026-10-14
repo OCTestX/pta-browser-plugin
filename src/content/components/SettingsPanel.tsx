@@ -11,6 +11,9 @@ export function SettingsPanel({ view, onSave, onBack }: SettingsPanelProps) {
   const [apiKey, setApiKey] = useState('');
   const [baseURL, setBaseURL] = useState(view?.baseURL ?? DEFAULT_SETTINGS.baseURL);
   const [model, setModel] = useState(view?.model ?? DEFAULT_SETTINGS.model);
+  const [useDebuggerInput, setUseDebuggerInput] = useState(
+    view?.useDebuggerInput ?? DEFAULT_SETTINGS.useDebuggerInput,
+  );
   const [status, setStatus] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
 
@@ -19,6 +22,7 @@ export function SettingsPanel({ view, onSave, onBack }: SettingsPanelProps) {
     if (!view) return;
     setBaseURL(view.baseURL);
     setModel(view.model);
+    setUseDebuggerInput(view.useDebuggerInput);
   }, [view]);
 
   const save = async (patch: Partial<Settings>, done: string) => {
@@ -36,7 +40,7 @@ export function SettingsPanel({ view, onSave, onBack }: SettingsPanelProps) {
 
   // 输入框留空表示不修改已保存的 Key
   const saveCurrent = () => {
-    const patch: Partial<Settings> = { baseURL, model };
+    const patch: Partial<Settings> = { baseURL, model, useDebuggerInput };
     if (apiKey.trim()) patch.apiKey = apiKey.trim();
     return save(patch, '已保存');
   };
@@ -75,6 +79,20 @@ export function SettingsPanel({ view, onSave, onBack }: SettingsPanelProps) {
           value={model}
           onChange={(event) => setModel(event.target.value)}
         />
+      </label>
+
+      <label className="field field--switch">
+        <input
+          type="checkbox"
+          checked={useDebuggerInput}
+          onChange={(event) => setUseDebuggerInput(event.target.checked)}
+        />
+        <span>
+          用调试器发送真实按键
+          <span className="field__hint">
+            开启后 simulate_keyboard_input 走 chrome.debugger 发 CDP 事件，按键是可信的，编辑器和浏览器默认行为（换行、提交）都会响应；代价是输入的那几秒标签页顶部会出现「正在调试此浏览器」横幅，且该标签页此时不能打开开发者工具。
+          </span>
+        </span>
       </label>
 
       <div className="settings__actions">

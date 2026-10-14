@@ -35,7 +35,7 @@ export function App() {
         ) : (
           <>
             <span className="panel__title">PTA 助手</span>
-            <span className="panel__badge">v0.4</span>
+            <span className="panel__badge">v0.5</span>
           </>
         )}
         <div className="panel__actions">

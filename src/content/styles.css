@@ -547,3 +547,16 @@
 .composer__input:disabled {
   color: var(--pta-text-muted);
 }
+
+/* ---------- 设置里的开关 ---------- */
+
+.field--switch {
+  display: flex;
+  gap: 8px;
+  align-items: flex-start;
+}
+
+.field--switch input {
+  margin-top: 2px;
+  flex: none;
+}

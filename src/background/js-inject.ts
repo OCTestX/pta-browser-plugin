@@ -53,8 +53,15 @@ function runInPage(source: string, timeoutMs: number): Promise<{ ok: boolean; ou
  * 在页面主世界执行代码：能拿到页面自己的 JS 对象（页面里 React 组件、编辑器实例之类）。
  * 主世界不可用（旧版 Firefox）时退回隔离世界——DOM 操作照常，只是拿不到页面对象。
  */
-export async function injectScript(tabId: number, source: string): Promise<InjectResult> {
+export async function injectScript(
+  tabId: number,
+  source: string,
+  args?: unknown,
+): Promise<InjectResult> {
   let lastError = '';
+  // 参数以 __args 的形式注入，脚本里直接用
+  const withArgs =
+    args === undefined ? source : `const __args = ${JSON.stringify(args)};\n${source}`;
 
   for (const world of ['MAIN', 'ISOLATED'] as const) {
     try {
@@ -62,7 +69,7 @@ export async function injectScript(tabId: number, source: string): Promise<Injec
         target: { tabId },
         world,
         func: runInPage,
-        args: [source, EXECUTE_TIMEOUT_MS],
+        args: [withArgs, EXECUTE_TIMEOUT_MS],
       });
       const result = results[0]?.result;
       if (!result) return { ok: false, output: '页面没有返回结果', world };

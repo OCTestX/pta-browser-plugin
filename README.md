@@ -103,7 +103,7 @@ npm run icons      # 重新生成图标（需要 python3 + Pillow）
 
 ## v0.4 已完成
 
-- agent loop：模型可以连续调用工具，结果回灌后继续下一轮，直到给出最终回答；最多 6 轮（`MAX_TOOL_ROUNDS`）
+- agent loop：模型可以连续调用工具，结果回灌后继续下一轮，直到给出最终回答；最多 80 轮（`MAX_TOOL_ROUNDS`）
 - 四个工具：
   - `js_inject`：在**页面主世界**执行模型写的 JS（所以能拿到 PTA 页面自己的 JS 对象），支持顶层 await，15 秒超时；主世界不可用时自动退回隔离世界（DOM 操作照常，只是拿不到页面对象）
   - `url`：当前页面地址（在页面侧取，SPA 路由变化也准）
@@ -113,6 +113,36 @@ npm run icons      # 重新生成图标（需要 python3 + Pillow）
 - 会话重建：工具卡片会还原成 `tool` 消息、调用记录挂在对应的 assistant 消息上，所以下一轮请求的上下文是完整的
 - 执行模型给的 JS 不弹确认（按需求选择），因此**代码会直接显示在卡片里供检查**；同时意味着页面内容有可能诱导模型写出危险代码，请只在可信页面上使用
 
+## v0.5 已完成
+
+新增工具 `simulate_keyboard_input`，让模型能真的往页面里打字：
+
+- 参数：`text`（要输入的文字）、`selector`（目标元素）、`clear`（先清空原内容）、`press`（按 Enter / Escape / Tab / ArrowDown 这类单键）、`perCharDelayMs`（真实按键的字符间隔，默认 8）
+- **不填 `selector` 会自动定位作答区**：按 `.cm-content, [contenteditable="true"]` 找、用 `isContentEditable` 过滤掉题面里只读的样例框、取文本最长的那个（页面上可能还残留上一题的编辑器）；找不到才退回当前焦点元素
+- 真实按键开关打开时是**逐字发按键**（`Input.dispatchKeyEvent` type=char，默认 8ms 间隔），不走剪贴板、也不直接改 DOM
+- **打字时会跟编辑器的「自动闭合 / 自动缩进」对抗**（`src/background/typist.ts`，思路取自同行实践）：
+  - 每敲一个左括号/引号，记住编辑器可能补上的右半边（「幻影」）；下一个字符之前先用页面探针看光标右侧：
+    源文本正要它 → `ArrowRight` 跨过去不重复敲；用不上 → `Delete` 抹掉；引号幻影留到字面量结束
+  - 换行前先把行尾幻影抹掉，否则会被 `Enter` 顶到下一行行首
+  - 每行开始前保证光标右侧为空，且**只允许删 `) ] } " '`**——见到字母数字立刻停手（探针可能读到重渲染前的旧 DOM，盲删会把代码吃掉）
+  - 缩进按探针「按一下、回读一次」地修：不能「要删 N 格就按 N 次 Backspace」，光标停在纯前导空白上时一次 Backspace 会删光整段缩进
+  - 探针读的是 `.cm-line` 的文本（语法高亮会把一行切成多个 span，读到当前文本节点结尾会漏掉闭合符）
+- 定位到元素后先 `click()` 再 `focus()`：很多编辑器和页面逻辑要点一下才真的聚焦
+- 输入框 / 文本域：走原型上的 `value` setter 再派发 `input` + `change`，这样 React 受控组件也能同步（直接赋值会被它的 value tracker 忽略）
+- 可编辑区域 / 代码编辑器：走 `document.execCommand('insertText')`，它能产生正常的 `beforeinput` / `input` 事件链，CodeMirror、Monaco 这类编辑器能接住
+- 兜底：`execCommand` 不可用时直接插入文本节点并派发 `input` 事件，并在结果里说明走了兜底
+- **真实按键开关**（设置页里的「用调试器发送真实按键」，默认关）：开启后 `simulate_keyboard_input` 改走 `chrome.debugger` 发 CDP 事件（`Input.insertText` / `Input.dispatchKeyEvent`），事件是 trusted 的，编辑器与浏览器默认行为都会响应。开启时先让页面聚焦并选中原内容，输入完立刻断开调试器，所以横幅只在输入的那几秒出现
+- 调试器用不了时（该标签页开着 DevTools、或浏览器不支持）会自动退回模拟事件，并在工具结果里说明原因
+- **输入后回读确认**：按键是异步生效的，不回读就是假成功。回读 CodeMirror 时按 `.cm-line` 的 `textContent` 拼行（读 `innerText` 会多吐一个尾部换行，导致比对整体错位一行），比对结果（一致 / 第几行不一致）会写进工具结果给模型看
+
+已知限制（`simulate_keyboard_input`）：
+
+- 还没有实现同行做法的「收尾统一扫缩进」（敲完 `Ctrl+Home` 逐行重排）：C 的缩进服务会在按 Enter 后回头重排 `case`/`default` 对齐，这类情况现在只能靠回读比对报出「第 X 行不一致」，模型看到后可以再来一次
+
+- 不开真实按键开关时，按键是**未信任事件**：浏览器默认行为不会发生（回车不换行、表单不提交），只对页面自己写的按键监听有效
+- 开了真实按键开关后：那个标签页会显示「正在调试此浏览器」横幅，且此时**不能打开开发者工具**（两者抢占同一个调试器）；扩展需要 `debugger` 权限，重新加载时要在扩展页确认一次
+- 目标元素需要有明确的 CSS 选择器；模型会先用 `js_inject` 确认结构（系统提示里要求它这么做）
+
 已知限制：
 
 - `js_inject` 依赖 host 权限：需要先用工具栏图标打开过悬浮窗（这时才拿到该标签页的 activeTab 授权）
@@ -120,6 +150,40 @@ npm run icons      # 重新生成图标（需要 python3 + Pillow）
 - content.js 因为带上了 markdown + KaTeX 涨到 690K（gzip 205K），首次注入会有一点开销
 - 若页面极其严格地限制字体（`font-src`），公式可能退回系统字体显示，结构仍然正确
 - 依赖里 katex@0.16 有一条「原型污染绕过 trust 限制」的低危通告，我们没用 `trust` 选项，且输入来自模型而非攻击者
+
+## PTA 三件套（原计划 v0.7，提前做了）
+
+三个工具都在**页面主世界**执行（编辑器实例挂在页面自己的 JS 对象上，隔离世界看不到），走的是已有的主世界注入器：
+
+| 工具 | 做什么 | 实现 |
+|---|---|---|
+| `read_problem` | 拿到当前题目的题面 | 按容器优先级扫 `'.problem-content', '.problem-statement', '.pt12-problem-content', '[class*=problem]', '[class*=statement]'`，取第一个文本长度 > 40 的；都没命中就退到整页正文，并在结果里说明来源；顺手带上标题、地址、题目 ID |
+| `read_editor_code` | 读作答区里的代码 | 优先顺着 DOM 摸到编辑器实例（`#pta-answer-editor → cmTile.view`），用 `view.state.doc` 读**完整文档**；拿不到实例才退回 `.cm-line`（只读得到渲染出来的行，结果里会说明） |
+| `write_editor_code` | 改作答区里的代码（默认整段覆写） | 优先 `view.dispatch({changes})` **原子写入**——绕开自动闭合与自动缩进，一次改完；退路是聚焦 + 全选 + `execCommand('insertText')` 整段插入；两条路都会**回读比对**，结果里写明是否一致、第几行不一致 |
+
+编辑器实例不在公开 API 上，只能顺着 DOM 摸：先在 `#pta-answer-editor / .cm-editor / .cm-content` 及其祖先上找 `cmTile.view / cmView / editorView / view / _view`（PTA 用的是 `cmTile.view`），再退一步扫自身属性找「有 `state.doc` + `dispatch`」的对象，找到后把路径一并写进结果里。
+
+系统提示里也把优先级写死了：读题面用 `read_problem`、读代码用 `read_editor_code`、改代码用 `write_editor_code`，**不要**用 `js_inject` 去 dispatch 编辑器、改 `input.value`、或想办法模拟粘贴。
+
+还没做（下一轮）：提交与判题（点提交按钮、等结论、对话与弹窗处理）、`switch/case` 的收尾缩进重排。
+
+## PTA 页面适配备忘（v0.7 用）
+
+来自同行实践（`other_pta.md`）的实测经验，v0.7 做「获取题目要求 / 获取用户代码 / 覆写用户代码」时直接用：
+
+- **作答区**就是 CodeMirror 6：`.cm-content` + `isContentEditable` 过滤 + 取最长者（已用在 `simulate_keyboard_input` 与 `read_editor_code` 里）；能摸到编辑器实例时优先用它（读全文、写是原子的）
+- **只用真实键盘事件**：PTA 的 `onpaste` 是平台反抄袭控制，实测「写剪贴板 + 真 Ctrl+V」编辑器纹丝不动，键盘是唯一通道
+- 题面抠取：已实现在 `read_problem` 里（见上一节）；**宁可读得糙，不能读不到**
+- 题面解析：按行分桶（小标题中英文双份词表 → description / inputFormat / outputFormat / constraints / 样例），样例按编号配对；一个桶都没开就把原文当描述交出去，**不抛异常**（PTA 结构会变，登录页也可能被当成题目页）
+- 题目 ID：从 URL 末段取纯数字段（`.../problems/1150901824503297/description`）
+- 语言识别：下拉框当前项 text/value、`.cm-editor/[data-language]` 上的属性；**不要扫全页找「C」字样**，认不出就如实标未知并把候选带给模型
+- CM6 自动闭合的「幻影」：括号引号一律逐字敲，敲之前先探针读光标右侧——是期望的闭合符就 `ArrowRight` 跨过去，用不上就 `Delete` 抹掉；换行前必须先把批次 flush 出去并抹掉行尾幻影，否则被顶到后面某一行
+- 缩进：不能「要删 N 格就按 N 次 Backspace」（光标在纯前导空白上时一次删光整段缩进）；用探针按一下回读一次；`Home` 是行首绝对 0 列且异步生效；C 的缩进服务会在 Enter 后回头重排 `case/default`，只能整体敲完再统一扫一遍
+- 探针要读到 `.cm-line` 末尾（语法高亮会把行切成多个 span），并用「列号 ≤ 行文本长度」自检陈旧 DOM，破坏性按键遇到 stale 一律跳过
+- 长文档（>50 行）：CM6 只渲染视口附近的行，整篇回读不可信，要切 ≤45 行一段分别校验
+- 判题状态归一化：先匹配 `AC|WA|RE|TLE|MLE|CE|PE|OLE`，再走中文词表；**顺序即优先级，泛化的「错误」必须排最后**（否则「编译错误」会被报成 WA，模型就只改算法不碰语法）
+- 提交与等待：先点掉遮挡弹窗，按文字在真 `<button>` 里精确匹配再包含匹配；等结论要同时满足「文字非空 ∧ 与提交前不同 ∧ 能归一化成状态码」（只看「变了」会把「评测中」当结论）；拿到结论后才关弹窗，没出结论绝不关
+- 工具按名字去重：同名工具在基础工具集与会话工具集里语义可能不同，桥接时会「后者覆盖前者」，去重选错的话模型自己的代码从头到尾没被编译过
 
 开发计划
 v0.1

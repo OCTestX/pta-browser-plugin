@@ -2,7 +2,9 @@
 // 图标点击链路（含补注入）、设置落盘、agent loop（工具调用、结果回灌、轮数上限、参数出错）。
 // executeScript 的桩会真的调用注入函数，所以 js-inject 里的超时/序列化/回退逻辑也会被执行。
 // 用法：node scripts/test-background.mjs [chrome|firefox]
+import { assertDistFresh } from './dist-fresh.mjs';
 const target = process.argv[2] ?? 'chrome';
+assertDistFresh(`dist/${target}`);
 
 const check = (label, ok) => {
   if (!ok) throw new Error(`✗ ${label}`);
@@ -24,8 +26,13 @@ const state = {
   sse: [],
   worlds: [],
   tabEvents: [],
-  /** 页面侧工具（url / write_document）的返回值 */
+  /** 页面侧工具（url / write_document / 键盘输入）的返回值 */
   pageTool: { ok: true, result: 'https://pintia.cn/problem-sets/1' },
+  /** 每次工具调用时页面侧收到的参数 */
+  pageToolCalls: [],
+  debuggerCalls: [],
+  attachedTabs: new Set(),
+  attachFails: false,
 };
 
 const encoder = new TextEncoder();
@@ -35,11 +42,39 @@ globalThis.chrome = {
   runtime: { onMessage: { addListener: (fn) => state.channels.message.push(fn) } },
   tabs: {
     sendMessage: async (tabId, message) => {
-      if (message.type === 'tool/run') return state.pageTool;
+      if (message.type === 'tool/run') {
+        state.pageToolCalls.push(message);
+        return state.pageTool;
+      }
       state.tabEvents.push(message);
       if (!state.contentScriptPresent) throw new Error('Could not establish connection.');
       return undefined;
     },
+  },
+  debugger: {
+    attach: async (target, version) => {
+      if (state.attachFails) throw new Error('Another debugger is already attached to the tab');
+      state.debuggerCalls.push(['attach', target.tabId, version]);
+      state.attachedTabs.add(target.tabId);
+    },
+    detach: async (target) => {
+      state.debuggerCalls.push(['detach', target.tabId]);
+      state.attachedTabs.delete(target.tabId);
+    },
+    sendCommand: async (target, method, params) => {
+      state.debuggerCalls.push([method, target.tabId, params]);
+      // 探针：假页面里光标右侧什么都没有、列号为 0
+      if (method === 'Runtime.evaluate') {
+        if (params.expression.includes('cm-line')) {
+          return params.expression.includes('indent')
+            ? { result: { value: { indent: 0, col: 0, stale: false } } }
+            : { result: { value: '' } };
+        }
+        return { result: { value: null } };
+      }
+      return {};
+    },
+    onDetach: { addListener: () => {} },
   },
   scripting: {
     executeScript: async (options) => {
@@ -102,6 +137,9 @@ async function chat(text = '帮我看下这道题') {
   state.modelCalls = [];
   state.worlds = [];
   state.tabEvents = [];
+  state.pageToolCalls = [];
+  state.debuggerCalls = [];
+  state.attachedTabs.clear();
   const response = await respond(
     { type: 'chat/start', requestId: 'r1', messages: [{ role: 'user', content: text }] },
     { tab: { id: 7 } },
@@ -161,7 +199,13 @@ state.sse = [
 const started = await chat('页面标题是什么');
 check('chat/start 立刻返回 ok，循环在后台跑', started.ok === true);
 check('模型被调用了两轮（工具 → 回答）', state.modelCalls.length === 2);
-check('第一轮带上了 4 个工具定义', state.modelCalls[0].tools?.length === 4);
+check('第一轮带上了全部工具定义', state.modelCalls[0].tools?.length === 8);
+check(
+  '工具定义里有 PTA 三件套与键盘工具',
+  ['read_problem', 'read_editor_code', 'write_editor_code', 'simulate_keyboard_input'].every((name) =>
+    state.modelCalls[0].tools.some((t) => t.function.name === name),
+  ),
+);
 check('第一轮第一条消息是系统提示', state.modelCalls[0].messages[0].role === 'system');
 
 const second = state.modelCalls[1].messages;
@@ -250,12 +294,86 @@ check(
   state.modelCalls[1].messages.at(-1).content.includes('可用工具'),
 );
 
+/* ---------- 真实按键开关 ---------- */
+
+const keyboardArgs = ['{"text":"Hello","selector":"#answer","press":"Enter"}'];
+state.pageTool = { ok: true, result: '已把焦点放到 input#answer' };
+
+// 开关关闭（默认）：只走 DOM 事件，不碰调试器
+state.sse = [toolCallsSse('call_k1', 'simulate_keyboard_input', keyboardArgs), textSse('好')];
+await chat();
+check('开关关闭时不使用调试器', state.debuggerCalls.length === 0);
+check(
+  '开关关闭时把完整参数交给页面侧',
+  state.pageToolCalls[0].args.text === 'Hello' && state.pageToolCalls[0].args.press === 'Enter',
+);
+
+// 开关打开：先 focusOnly 聚焦，再用 CDP 输入文本与按键，最后断开
+await respond({ type: 'settings/save', patch: { useDebuggerInput: true } });
+state.pageTool = { ok: true, result: 'Hello' }; // 回读拿到编辑器里的内容
+state.sse = [toolCallsSse('call_k2', 'simulate_keyboard_input', keyboardArgs), textSse('好')];
+await chat();
+
+check('开启后先让页面聚焦（focusOnly），不自己写 value', state.pageToolCalls[0].args.focusOnly === true);
+check(
+  '开启后页面侧只负责聚焦与回读（输入交给调试器）',
+  state.pageToolCalls.length === 2 &&
+    state.pageToolCalls[0].args.focusOnly === true &&
+    state.pageToolCalls[1].args.readOnly === true,
+);
+const typedChars = state.debuggerCalls
+  .filter((call) => call[0] === 'Input.dispatchKeyEvent' && call[2].type === 'char')
+  .map((call) => call[2].text)
+  .join('');
+check('开启后逐字发真实按键输入文本', typedChars === 'Hello');
+check('逐字输入走 char 事件而不是 insertText', !state.debuggerCalls.some((call) => call[0] === 'Input.insertText'));
+check(
+  '打字过程中会用页面探针判断光标右侧内容',
+  state.debuggerCalls.some((call) => call[0] === 'Runtime.evaluate'),
+);
+check(
+  '工具结果里带上了打字统计',
+  state.modelCalls[1].messages.at(-1).content.includes('已逐字敲入'),
+);
+check(
+  '开启后通过 CDP 按下 Enter',
+  state.debuggerCalls.some(
+    (call) => call[0] === 'Input.dispatchKeyEvent' && call[2].windowsVirtualKeyCode === 13,
+  ),
+);
+check(
+  '输入后会回读编辑器内容做比对',
+  state.pageToolCalls.some((call) => call.args.readOnly === true),
+);
+check('调用结束后断开了调试器', state.debuggerCalls.some((call) => call[0] === 'detach') && !state.attachedTabs.size);
+const cdpResult = state.modelCalls[1].messages.at(-1).content;
+check(
+  '工具结果里说明了走真实按键并带上回读比对',
+  cdpResult.includes('真实按键') && cdpResult.includes('回读比对'),
+);
+
+// 调试器用不了（DevTools 占着、浏览器不支持）：退回 DOM 事件并说明原因
+state.attachFails = true;
+state.pageTool = { ok: true, result: '已把焦点放到 input#answer' };
+state.sse = [toolCallsSse('call_k3', 'simulate_keyboard_input', keyboardArgs), textSse('好')];
+await chat();
+check(
+  '调试器失败时退回 DOM 事件并说明原因',
+  state.modelCalls[1].messages.at(-1).content.includes('已退回模拟事件'),
+);
+check(
+  '回退时会补一次完整的页面侧输入',
+  state.pageToolCalls.some((call) => call.args.text === 'Hello'),
+);
+state.attachFails = false;
+await respond({ type: 'settings/save', patch: { useDebuggerInput: false } });
+
 /* ---------- 轮数上限 ---------- */
 
 state.sse = [toolCallsSse('call_loop', 'date', ['{}'])]; // 每轮都只调工具，永远不收敛
 await chat();
 check('一直调工具时会停在轮数上限', state.tabEvents.some((e) => e.type === 'chat/notice'));
-check('上限轮数就是 MAX_TOOL_ROUNDS', state.modelCalls.length === 6);
+check('上限轮数就是 MAX_TOOL_ROUNDS', state.modelCalls.length === 80);
 
 /* ---------- 没有 Key 时不发请求 ---------- */
 

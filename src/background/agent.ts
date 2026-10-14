@@ -1,15 +1,26 @@
 import {
   MAX_TOOL_ROUNDS,
   SYSTEM_PROMPT,
+  TOOL_NAMES,
   TOOL_SCHEMAS,
   isToolName,
   parseToolArguments,
   truncate,
 } from '../shared/tools';
 import type { ApiMessage } from '../shared/types';
+import { createDebuggerIo, detach, pressKey } from './debugger-input';
+import {
+  READ_EDITOR_SCRIPT,
+  READ_PROBLEM_SCRIPT,
+  WRITE_EDITOR_SCRIPT,
+} from './pta-scripts';
+import { describeTypist, runTypist } from './typist';
+
+const DEFAULT_PER_CHAR_DELAY_MS = 8;
 import { streamChat } from './deepseek';
 import { injectScript } from './js-inject';
 import { loadSettings } from './settings';
+import type { Settings } from '../shared/settings';
 
 export interface ToolOutcome {
   output: string;
@@ -69,7 +80,13 @@ export async function runAgent(options: RunAgentOptions): Promise<void> {
         name: call.function.name,
         args: call.function.arguments,
       });
-      const outcome = await runTool(call.function.name, call.function.arguments, tabId, events);
+      const outcome = await runTool(
+        call.function.name,
+        call.function.arguments,
+        tabId,
+        events,
+        settings,
+      );
       events.onToolEnd(call.id, outcome.output, outcome.isError);
       conversation.push({
         role: 'tool',
@@ -87,9 +104,10 @@ async function runTool(
   rawArguments: string,
   tabId: number,
   events: AgentEvents,
+  settings: Settings,
 ): Promise<ToolOutcome> {
   if (!isToolName(name)) {
-    return { output: `没有名为 ${name} 的工具，可用工具：js_inject、date、url、write_document`, isError: true };
+    return { output: `没有名为 ${name} 的工具，可用工具：${TOOL_NAMES.join('、')}`, isError: true };
   }
 
   const parsed = parseToolArguments(rawArguments);
@@ -105,8 +123,104 @@ async function runTool(
     return { output: result.output, isError: !result.ok };
   }
 
-  // url / write_document 需要页面上下文
+  // PTA 三件套：都在页面主世界跑（编辑器实例挂在页面自己的 JS 对象上）
+  if (name === 'read_problem' || name === 'read_editor_code' || name === 'write_editor_code') {
+    const scripts = {
+      read_problem: READ_PROBLEM_SCRIPT,
+      read_editor_code: READ_EDITOR_SCRIPT,
+      write_editor_code: WRITE_EDITOR_SCRIPT,
+    };
+    const result = await injectScript(tabId, scripts[name], args);
+    return { output: result.output, isError: !result.ok };
+  }
+
+  if (name === 'simulate_keyboard_input' && settings.useDebuggerInput) {
+    return typeWithDebugger(args, tabId, events);
+  }
+
+  // 其余工具需要页面上下文
   return events.runPageTool(name, args);
+}
+
+/**
+ * 开了「真实按键」开关时：先让页面把焦点放到目标元素上（顺带按需选中全部内容以便替换），
+ * 再用 CDP 输入文本 / 按键，事件是 trusted 的。
+ * CDP 用不了（DevTools 占着、浏览器不支持）就退回 DOM 事件，并说明原因。
+ */
+async function typeWithDebugger(
+  args: Record<string, unknown>,
+  tabId: number,
+  events: AgentEvents,
+): Promise<ToolOutcome> {
+  const text = typeof args.text === 'string' ? args.text : '';
+  const press = typeof args.press === 'string' ? args.press.trim() : '';
+
+  const focused = await events.runPageTool('simulate_keyboard_input', { ...args, focusOnly: true });
+  if (focused.isError) return focused;
+
+  const steps = [focused.output];
+  try {
+    if (text) {
+      // 逐字敲，边敲边和编辑器的自动闭合 / 自动缩进对抗
+      const stats = await runTypist(createDebuggerIo(tabId), text, perCharDelay(args));
+      steps.push(describeTypist(stats));
+    }
+    if (press) {
+      await pressKey(tabId, press);
+      steps.push(`已用真实按键按下 ${press}`);
+    }
+
+    // 按键是异步生效的，不回读确认就是假成功
+    if (text) {
+      const readBack = await events.runPageTool('simulate_keyboard_input', {
+        selector: args.selector,
+        readOnly: true,
+      });
+      if (!readBack.isError) steps.push(compareTyped(text, readBack.output));
+    }
+
+    return { output: steps.join('；'), isError: false };
+  } catch (error) {
+    const reason = error instanceof Error ? error.message : String(error);
+    const fallback = await events.runPageTool('simulate_keyboard_input', args);
+    return {
+      output: `调试器输入失败（${reason}），已退回模拟事件：${fallback.output}`,
+      isError: fallback.isError,
+    };
+  } finally {
+    // 横幅只在真正输入的这一小会儿出现
+    await detach(tabId);
+  }
+}
+
+function perCharDelay(args: Record<string, unknown>): number {
+  const value = args.perCharDelayMs;
+  if (typeof value !== 'number' || !Number.isFinite(value)) return DEFAULT_PER_CHAR_DELAY_MS;
+  return Math.min(Math.max(Math.round(value), 0), 200);
+}
+
+/** 尾部空白与末尾空行不算差异（编辑器可能补/去一个换行），其余逐行比对 */
+function compareTyped(expected: string, actual: string): string {
+  const normalize = (value: string): string[] => {
+    const lines = value
+      .replace(/\r\n/g, '\n')
+      .split('\n')
+      .map((line) => line.replace(/[ \t]+$/, ''));
+    while (lines.length > 0 && lines.at(-1) === '') lines.pop();
+    return lines;
+  };
+
+  const want = normalize(expected);
+  const got = normalize(actual);
+  const mismatch = want.findIndex((line, index) => line !== (got[index] ?? '\u0000'));
+
+  if (mismatch === -1 && want.length === got.length) {
+    return `回读比对：${want.length} 行与目标一致`;
+  }
+  const at = mismatch === -1 ? Math.min(want.length, got.length) : mismatch;
+  const brief = (line: string | undefined) =>
+    line === undefined ? '（没有这一行）' : line.length > 40 ? `${line.slice(0, 40)}…` : line;
+  return `回读比对：与目标不一致（第 ${at + 1} 行起），期望「${brief(want[at])}」，实际「${brief(got[at])}」`;
 }
 
 function describeNow(): string {

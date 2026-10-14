@@ -1,10 +1,27 @@
-/** 工具名：js_inject / date 在 background 执行，url / write_document 在页面里执行 */
-export type ToolName = 'js_inject' | 'date' | 'url' | 'write_document';
+/** 工具名：js_inject / date / 三件套在 background 侧发起，其余在页面里执行 */
+export type ToolName =
+  | 'read_problem'
+  | 'read_editor_code'
+  | 'write_editor_code'
+  | 'js_inject'
+  | 'date'
+  | 'url'
+  | 'write_document'
+  | 'simulate_keyboard_input';
 
-export const TOOL_NAMES: ToolName[] = ['js_inject', 'date', 'url', 'write_document'];
+export const TOOL_NAMES: ToolName[] = [
+  'read_problem',
+  'read_editor_code',
+  'write_editor_code',
+  'js_inject',
+  'date',
+  'url',
+  'write_document',
+  'simulate_keyboard_input',
+];
 
 /** 一次对话最多跑几轮工具，防止模型来回刷 */
-export const MAX_TOOL_ROUNDS = 6;
+export const MAX_TOOL_ROUNDS = 80;
 
 /** 单条工具结果最多回灌多少字符，避免把上下文撑爆 */
 export const MAX_TOOL_RESULT = 4000;
@@ -17,13 +34,24 @@ export const SYSTEM_PROMPT = [
   '- 代码用 ``` 代码块并标注语言（C 语言写 ```c）。',
   '- 数学公式用 $...$ 或 $$...$$。',
   '',
-  '可以用这些工具：',
-  '- url：拿到用户当前所在页面的地址',
-  '- date：拿到当前日期',
-  '- js_inject：在用户浏览器当前页面里执行一段 JavaScript，把返回值带回来。用它读取或操作页面内容。',
+  '在 PTA 页面上做这些事，都有专用工具，优先用它们：',
+  '- read_problem：拿到当前这道题的题面。要解题、要写代码之前，先调它。',
+  '- read_editor_code：读出作答区里用户现在的代码。',
+  '- write_editor_code：把代码写进作答区（默认整段覆写），写完会回读比对。改用户的代码就用它。',
+  '',
+  '其它工具：',
+  '- js_inject：在用户当前页面里执行 JavaScript 并把返回值带回来。用来**读**页面（看结构、找选择器、读文本）和做上面几个工具做不到的事。',
+  '- simulate_keyboard_input：非 PTA 编辑器、或需要**真按键**（Enter/Tab/方向键）时才用。',
+  '- url：拿到用户当前所在页面的地址。',
+  '- date：拿到当前日期。',
   '- write_document：把整理好的内容写成文件下载到用户电脑。需要交付文档/题解时用它，不要在回答里贴整篇长文档。',
   '',
-  '注意：需要页面上的信息时先用 url / js_inject 去看，不要凭空猜测页面内容；js_inject 里用 return 返回结果，异步代码可以直接 await。',
+  '工具使用规则（重要）：',
+  '1. 读题面用 read_problem，读代码用 read_editor_code，改代码用 write_editor_code。',
+  '   **不要**用 js_inject 去 dispatch 编辑器、改 input.value、也不要想办法模拟粘贴——都要用上面的专用工具。',
+  '2. 往非 PTA 的输入框里写内容才用 simulate_keyboard_input；它不填 selector 会自动定位最大的可编辑区域，输入后会回读比对，结果里写明是否一致——不一致就别继续往下推，先查原因。',
+  '3. 需要页面上的信息时先看再答，不要凭空猜测页面内容。js_inject 里用 return 返回结果，异步代码可以直接 await。',
+  '4. simulate_keyboard_input 的按键是模拟的，浏览器默认行为（在输入框里换行、提交表单）不会发生，只对页面自己写的按键监听有效；要触发提交就找页面的按钮点它。',
 ].join('\n');
 
 export interface ToolSchema {
@@ -40,6 +68,49 @@ export interface ToolSchema {
 }
 
 export const TOOL_SCHEMAS: ToolSchema[] = [
+  {
+    type: 'function',
+    function: {
+      name: 'read_problem',
+      description:
+        '拿到用户当前这道题的题面（标题、地址、题目 ID、题目描述原文）。想解题先调它，不要靠猜页面内容。',
+      parameters: {
+        type: 'object',
+        properties: {
+          maxChars: { type: 'number', description: '题面最多返回多少字符，默认 6000' },
+        },
+        required: [],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'read_editor_code',
+      description:
+        '读出作答区里用户当前写的代码。优先通过编辑器实例读完整文档，拿不到实例才退回 DOM。',
+      parameters: { type: 'object', properties: {}, required: [] },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'write_editor_code',
+      description:
+        '把代码写进作答区（默认整段覆写）。优先用编辑器实例的 dispatch 原子写入，绕开自动闭合与自动缩进；写完会回读比对并在结果里说明是否一致。要改用户的代码就用它，不要用 js_inject 去改 DOM 或模拟粘贴。',
+      parameters: {
+        type: 'object',
+        properties: {
+          code: { type: 'string', description: '要写入的完整代码' },
+          clear: {
+            type: 'boolean',
+            description: '是否整段覆写，默认 true；填 false 表示追加到已有内容之后',
+          },
+        },
+        required: ['code'],
+      },
+    },
+  },
   {
     type: 'function',
     function: {
@@ -69,6 +140,35 @@ export const TOOL_SCHEMAS: ToolSchema[] = [
       name: 'url',
       description: '获取用户当前所在页面的完整地址。',
       parameters: { type: 'object', properties: {}, required: [] },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'simulate_keyboard_input',
+      description:
+        '往页面上的输入框或可编辑区域（含代码编辑器）里输入文字，也可以按下 Enter、Escape、Tab、方向键这类按键。要让页面真正收到输入就用这个工具，不要用 js_inject 直接改 value。不填 selector 时会自动找页面上最大的可编辑区域（PTA 的作答区），找不到才用当前焦点元素。',
+      parameters: {
+        type: 'object',
+        properties: {
+          text: { type: 'string', description: '要输入的文字' },
+          selector: {
+            type: 'string',
+            description:
+              '目标元素的 CSS 选择器，例如 "#answer"。不填会自动定位最大的可编辑区域（PTA 作答区）',
+          },
+          clear: { type: 'boolean', description: '输入前是否先清空目标里已有的内容，默认 false' },
+          press: {
+            type: 'string',
+            description: '要按下的键名，例如 Enter、Escape、Tab、ArrowDown、Backspace',
+          },
+          perCharDelayMs: {
+            type: 'number',
+            description: '真实按键模式下每个字符之间的间隔毫秒数，默认 8，怕被编辑器吞字符就调大',
+          },
+        },
+        required: [],
+      },
     },
   },
   {

@@ -3,9 +3,11 @@
 // 用法：node scripts/smoke.mjs [chrome|firefox]
 import { existsSync, readFileSync } from 'node:fs';
 import { JSDOM } from 'jsdom';
+import { assertDistFresh } from './dist-fresh.mjs';
 
 const target = process.argv[2] ?? 'chrome';
 const outDir = `dist/${target}`;
+assertDistFresh(outDir);
 
 /* ---------- 清单完整性 ---------- */
 
@@ -385,6 +387,150 @@ check('write_document 会触发下载并清洗文件名', downloads[0] === '题�
 check('write_document 的结果里带上文件名与字数', writeResponse.result.includes('题解_1.md（4 字符）'));
 check('write_document 缺 content 时返回失败', (await tools.request({ type: 'tool/run', name: 'write_document', args: { filename: 'a.md' } })).ok === false);
 check('未知工具返回失败', (await tools.request({ type: 'tool/run', name: 'nope', args: {} })).ok === false);
+
+/* ---------- 场景五：模拟键盘输入 ---------- */
+
+const keyboard = boot({ hasApiKey: true });
+await tick();
+keyboard.toggle();
+await tick();
+
+const page = keyboard.window.document;
+const input = page.createElement('input');
+input.id = 'answer';
+input.value = '旧值';
+page.body.appendChild(input);
+
+const inputEvents = [];
+input.addEventListener('input', () => inputEvents.push(input.value));
+
+// 开了真实按键开关时，background 只让页面侧聚焦并选中已有内容（输入交给 CDP）
+const focusOnly = await keyboard.request({
+  type: 'tool/run',
+  name: 'simulate_keyboard_input',
+  args: { selector: '#answer', clear: true, focusOnly: true },
+});
+check('focusOnly 只聚焦并选中原内容，不改动值', focusOnly.ok && input.value === '旧值');
+check('focusOnly 返回里说明已选中原内容', focusOnly.result.includes('选中'));
+check('focusOnly 不派发 input 事件', inputEvents.length === 0);
+
+const typed = await keyboard.request({
+  type: 'tool/run',
+  name: 'simulate_keyboard_input',
+  args: { selector: '#answer', text: '42', clear: true },
+});
+check('往输入框写入文字并清空原内容', input.value === '42');
+check('输入会派发 input 事件（React 受控组件靠它同步）', inputEvents.at(-1) === '42');
+check('结果里说明了目标元素与写入内容', typed.ok && typed.result.includes('#answer') && typed.result.includes('42'));
+
+const appended = await keyboard.request({
+  type: 'tool/run',
+  name: 'simulate_keyboard_input',
+  args: { selector: '#answer', text: '!' },
+});
+check('不指定 clear 时追加在原内容后面', input.value === '42!' && appended.ok);
+
+const pressed = [];
+input.addEventListener('keydown', (event) => pressed.push(event.key));
+input.addEventListener('keyup', (event) => pressed.push(`up:${event.key}`));
+const pressResult = await keyboard.request({
+  type: 'tool/run',
+  name: 'simulate_keyboard_input',
+  args: { selector: '#answer', press: 'Enter' },
+});
+check('按下 Enter 会派发 keydown 与 keyup', pressed.includes('Enter') && pressed.includes('up:Enter'));
+check('结果里说明按下了哪个键', pressResult.ok && pressResult.result.includes('Enter'));
+
+// contenteditable / 代码编辑器：优先走 execCommand，它能产生正常的 input 事件链
+const editor = page.createElement('div');
+editor.id = 'editor';
+editor.setAttribute('contenteditable', 'true'); // jsdom 没实现 isContentEditable，用属性等价
+page.body.appendChild(editor);
+const execCalls = [];
+page.execCommand = (command, _ui, value) => {
+  execCalls.push([command, value]);
+  editor.appendChild(page.createTextNode(value));
+  return true;
+};
+const editorResult = await keyboard.request({
+  type: 'tool/run',
+  name: 'simulate_keyboard_input',
+  args: { selector: '#editor', text: 'int main() {}' },
+});
+check('可编辑区域走 execCommand insertText', execCalls[0]?.[0] === 'insertText' && execCalls[0][1] === 'int main() {}');
+check('可编辑区域写入后有内容', editor.textContent === 'int main() {}' && editorResult.ok);
+
+// execCommand 不可用时（某些浏览器/环境）要能兜底
+page.execCommand = () => false;
+editor.textContent = '';
+const fallback = await keyboard.request({
+  type: 'tool/run',
+  name: 'simulate_keyboard_input',
+  args: { selector: '#editor', text: '兜底文本' },
+});
+check('execCommand 不可用时直接插入文本节点', editor.textContent === '兜底文本' && fallback.result.includes('execCommand'));
+
+const missingTarget = await keyboard.request({
+  type: 'tool/run',
+  name: 'simulate_keyboard_input',
+  args: { selector: '#not-exist', text: 'x' },
+});
+check('选择器找不到时返回失败并说明原因', missingTarget.ok === false && missingTarget.result.includes('找不到'));
+
+const nothing = await keyboard.request({ type: 'tool/run', name: 'simulate_keyboard_input', args: {} });
+check('既不给 text 也不给 press 时返回失败', nothing.ok === false);
+
+// 自动定位作答区：题面里的样例框（短的只读/可编辑框）不该被选中，取最长的那个
+const sampleBox = page.createElement('div');
+sampleBox.className = 'cm-content';
+sampleBox.setAttribute('contenteditable', 'true');
+sampleBox.textContent = '1 2';
+page.body.appendChild(sampleBox);
+
+const answerArea = page.createElement('div');
+answerArea.className = 'cm-content';
+answerArea.setAttribute('contenteditable', 'true');
+for (const [index, text] of ['int main() {', '  return 0;', '}'].entries()) {
+  const line = page.createElement('div');
+  line.className = 'cm-line';
+  line.textContent = text;
+  line.dataset.line = String(index);
+  answerArea.appendChild(line);
+}
+page.body.appendChild(answerArea);
+
+const autoFocus = await keyboard.request({
+  type: 'tool/run',
+  name: 'simulate_keyboard_input',
+  args: { text: 'x' },
+});
+check('没给 selector 时自动定位最大的可编辑区域', autoFocus.ok && autoFocus.result.includes('自动'));
+check('自动定位选中的是作答区而不是题面样例框', autoFocus.result.includes('cm-content'));
+
+const readBack = await keyboard.request({
+  type: 'tool/run',
+  name: 'simulate_keyboard_input',
+  args: { readOnly: true },
+});
+check('回读按 .cm-line 拼行，不会多出尾部空行', readBack.result === 'int main() {\n  return 0;\n}');
+
+const noEditor = boot({ hasApiKey: true });
+await tick();
+noEditor.toggle();
+await tick();
+const noEditorResult = await noEditor.request({
+  type: 'tool/run',
+  name: 'simulate_keyboard_input',
+  args: { readOnly: true },
+});
+check('页面上没有可编辑区域时回读返回失败', noEditorResult.ok === false);
+
+const notEditable = keyboard.request({
+  type: 'tool/run',
+  name: 'simulate_keyboard_input',
+  args: { selector: 'body', text: '写不进去' },
+});
+check('目标不是输入元素时如实告知', (await notEditable).result.includes('不是可输入元素'));
 
 // write_document 里有个 60 秒后才回收 objectURL 的定时器，不关窗口进程会多挂一分钟
 booted.forEach((window) => window.close());

@@ -1,6 +1,6 @@
 {
   "name": "pta-browser-plugin",
-  "version": "0.4.0",
+  "version": "0.5.0",
   "description": "帮助学生完成 PTA 题目的浏览器插件（Chrome / Firefox）",
   "private": true,
   "type": "module",
@@ -9,7 +9,8 @@
     "build:chrome": "ENTRY=background TARGET=chrome vite build && ENTRY=content TARGET=chrome vite build",
     "build:firefox": "ENTRY=background TARGET=firefox vite build && ENTRY=content TARGET=firefox vite build",
     "typecheck": "tsc --noEmit",
-    "test": "node scripts/test-deepseek.mjs && node scripts/test-background.mjs chrome && node scripts/test-background.mjs firefox && npm run smoke",
+    "pretest": "npm run build",
+    "test": "node scripts/test-typist.mjs && node scripts/test-pta-tools.mjs && node scripts/test-deepseek.mjs && node scripts/test-background.mjs chrome && node scripts/test-background.mjs firefox && npm run smoke",
     "smoke": "node scripts/smoke.mjs chrome && node scripts/smoke.mjs firefox",
     "icons": "python3 scripts/gen-icons.py"
   },
