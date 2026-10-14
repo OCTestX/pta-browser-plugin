@@ -92,6 +92,114 @@ const HELPERS = `
     return lines;
   };
 
+
+  // ---- 判题与弹窗（提交相关的几条实测经验都写在这里）----
+
+  // 归一化判题文字：顺序即优先级 —— 具体状态排在泛化词前面，
+  // 否则「编译错误」会被当成「错误」报成 WA，模型就会一直改算法而不碰那句语法错误
+  const judgeStatus = (text) => {
+    const value = String(text || '');
+    const code = value.match(/\\b(AC|WA|RE|TLE|MLE|CE|PE|OLE)\\b/i);
+    if (code) return code[1].toUpperCase();
+    const words = [
+      ['编译错误', 'CE'],
+      ['运行超时', 'TLE'],
+      ['内存超限', 'MLE'],
+      ['输出超限', 'OLE'],
+      ['运行错误', 'RE'],
+      ['格式错误', 'PE'],
+      ['答案错误', 'WA'],
+      ['未通过', '未通过'],
+      ['答案正确', 'AC'],
+      ['通过', 'AC'],
+    ];
+    for (const [word, status] of words) {
+      if (value.includes(word)) return status;
+    }
+    return null;
+  };
+
+  // jsdom 这类环境没有 innerText，退回 textContent
+  const textOf = (node) => ((node && (node.innerText || node.textContent || '')) + '').trim();
+  const shortText = (node) => textOf(node).slice(0, 200);
+  const buttonLabel = (node) => ((node && (node.innerText || node.textContent || node.value || '')) + '').trim();
+
+  // 判题文字可能挂在弹窗里，也可能直接出现在页面上
+  const readJudgeText = () => {
+    const containers = ['[class*=judge]', '[class*=result]', '[class*=status]', '[role=alert]', '.el-message', '.ant-message', '[class*=modal]', '[class*=dialog]'];
+    const chunks = [];
+    for (const selector of containers) {
+      let nodes = [];
+      try { nodes = Array.from(document.querySelectorAll(selector)); } catch (e) { continue; }
+      for (const node of nodes) {
+        const text = shortText(node);
+        if (text && text.length < 200) chunks.push(text);
+      }
+    }
+    const joined = chunks.join(' \\n ');
+    const matched = judgeStatus(joined);
+    if (matched) return { text: joined.slice(0, 400), status: matched };
+    // 弹窗里没找到就从整页正文按行捞
+    const lines = (document.body.innerText || '').split('\\n').map((line) => line.trim()).filter(Boolean);
+    const hit = lines.find((line) => judgeStatus(line));
+    return { text: hit || joined.slice(0, 400), status: hit ? judgeStatus(hit) : null };
+  };
+
+  // 分三级找提交按钮：真按钮精确匹配 → 真按钮包含匹配 → 退到 a/[role=button]/class 含 btn 的元素。
+  // 顺序很关键：PTA 登录页上「登录」既是标签页又是提交按钮，按 DOM 顺序点会点到标签页
+  const findSubmitButton = () => {
+    const labels = ['提交本题作答', '提交答案', '提交', '提交评测', 'Submit'];
+    const candidates = [];
+    for (const label of labels) {
+      for (const node of document.querySelectorAll('button, input[type=submit]')) {
+        if (buttonLabel(node) === label) return { node, how: '精确匹配 ' + label };
+      }
+    }
+    for (const label of labels) {
+      for (const node of document.querySelectorAll('button, input[type=submit]')) {
+        if (buttonLabel(node).includes(label)) candidates.push({ node, how: '包含匹配 ' + label });
+      }
+    }
+    if (candidates.length > 0) return candidates[0];
+    for (const label of labels) {
+      try {
+        const node = Array.from(document.querySelectorAll('a, [role=button], div[class*=btn], span[class*=btn], li, label'))
+          .find((el) => textOf(el) === label);
+        if (node) return { node, how: '兜底匹配 ' + label };
+      } catch (e) {}
+    }
+    return null;
+  };
+
+  // 关弹窗：ESC → 在识别到的弹窗内部找关闭控件 → 点文字按钮 → 点遮罩；最多三轮（关一层常常还压着一层）
+  const dismissOverlays = () => {
+    let closed = 0;
+    const dialogSelectors = ['[class*=modal]', '[class*=dialog]', '[class*=overlay]', '[class*=popup]', '.el-dialog', '.ant-modal'];
+    for (let round = 0; round < 3; round++) {
+      let did = false;
+      document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', keyCode: 27, bubbles: true }));
+
+      const dialogs = [];
+      for (const selector of dialogSelectors) {
+        try { document.querySelectorAll(selector).forEach((node) => dialogs.push(node)); } catch (e) {}
+      }
+      for (const dialog of dialogs) {
+        const closers = Array.from(dialog.querySelectorAll('[class*=close], [class*=dismiss], [aria-label*=close i], .pc-close, button'));
+        for (const closer of closers) {
+          const text = textOf(closer);
+          const isTextButton = ['关闭', '确定', '我知道了', '知道了', '取消'].includes(text);
+          const looksClose = /close|dismiss/i.test(closer.className || '') || /close/i.test(closer.getAttribute('aria-label') || '');
+          if (isTextButton || looksClose) {
+            try { closer.click(); closed += 1; did = true; break; } catch (e) {}
+          }
+        }
+        if (did) break;
+      }
+      if (!did) break;
+    }
+    return closed;
+  };
+
   // 回读比对：尾部空白与末尾空行不算差异
   const compareText = (expected, actual) => {
     const want = normalizeLines(expected);
@@ -108,8 +216,6 @@ const HELPERS = `
 export const READ_PROBLEM_SCRIPT = `${HELPERS}
 const maxChars = typeof __args.maxChars === 'number' ? __args.maxChars : 6000;
 const containers = ['.problem-content', '.problem-statement', '.pt12-problem-content', '[class*=problem]', '[class*=statement]'];
-// innerText 是渲染后的文本（优先），个别环境没实现就退回 textContent
-const textOf = (node) => ((node && (node.innerText || node.textContent)) || '').trim();
 let hit = null;
 for (const selector of containers) {
   let node = null;
@@ -177,4 +283,50 @@ await new Promise((resolve) => setTimeout(resolve, 200));
 const after = readFromDom(element);
 const route = inserted ? '已聚焦后整段插入' : 'execCommand 不可用，未能写入';
 return route + '（没拿到编辑器实例），' + compareText(code, after);
+`;
+
+/** 提交作答并等判题结论 */
+export const SUBMIT_ANSWER_SCRIPT = `${HELPERS}
+const waitSeconds = Math.min(Math.max(Number(__args.waitSeconds) || 20, 5), 120);
+const pollMs = Math.min(Math.max(Number(__args.pollMs) || 2000, 10), 5000);
+
+// 先读一次旧结论、关掉上一次留下的弹窗：弹窗盖着编辑器和提交按钮，不关掉点不到
+const before = readJudgeText();
+const closed = dismissOverlays();
+
+const found = findSubmitButton();
+if (!found) {
+  return '没找到提交按钮。可用按钮：' + Array.from(document.querySelectorAll('button'))
+    .map((b) => textOf(b)).filter(Boolean).slice(0, 20).join(' / ');
+}
+if (found.node.scrollIntoView) found.node.scrollIntoView({ block: 'center' });
+found.node.click();
+
+const deadline = Date.now() + waitSeconds * 1000;
+let latest = { text: '', status: null };
+while (Date.now() < deadline) {
+  await new Promise((resolve) => setTimeout(resolve, pollMs));
+  const now = readJudgeText();
+  latest = now;
+  // 结论要同时满足：文字非空 ∧ 与提交前不同 ∧ 能归一化成状态码
+  // （只看「变了」会把「评测中」当成结论，然后把还在评测的弹窗关掉，这次结果永远等不到）
+  if (now.status && now.text && now.text !== before.text) {
+    return '已点击提交（' + found.how + (closed ? '，先关掉了 ' + closed + ' 层弹窗' : '') + '）。\\n判题结论：' + now.status + '\\n原文：' + now.text.slice(0, 300);
+  }
+}
+
+return '已点击提交（' + found.how + '）。\\n等了 ' + waitSeconds + ' 秒还没出结论，当前页面上看到的是：' + (latest.text || '（没读到判题文字）') + '\\n可以稍后再调 read_judge_result 看结果（拿到结论之前不要关弹窗）。';
+`;
+
+/** 读当前判题结果（不点任何东西） */
+export const READ_JUDGE_SCRIPT = `${HELPERS}
+const now = readJudgeText();
+if (!now.text) return '页面上没读到判题文字（可能还没有提交过，或者弹窗已经关了）';
+return (now.status ? '判题结论：' + now.status + '\\n' : '还没出结论（或读到的不是结论）。\\n') + '原文：' + now.text.slice(0, 400);
+`;
+
+/** 关掉挡在前面的弹窗 */
+export const CLOSE_DIALOGS_SCRIPT = `${HELPERS}
+const closed = dismissOverlays();
+return closed > 0 ? '已关掉 ' + closed + ' 层弹窗' : '没找到需要关的弹窗';
 `;

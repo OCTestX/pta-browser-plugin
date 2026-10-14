@@ -4,8 +4,11 @@
 // 用法：node scripts/test-pta-tools.mjs
 import { JSDOM } from 'jsdom';
 import {
+  CLOSE_DIALOGS_SCRIPT,
   READ_EDITOR_SCRIPT,
+  READ_JUDGE_SCRIPT,
   READ_PROBLEM_SCRIPT,
+  SUBMIT_ANSWER_SCRIPT,
   WRITE_EDITOR_SCRIPT,
 } from '../src/background/pta-scripts.ts';
 
@@ -155,6 +158,82 @@ check(
   '写进去的内容与目标不符时会报出第几行不一致',
   mismatch.includes('不一致') && /第 \d+ 行/.test(mismatch) && mismatch.includes('long long n = 0;'),
 );
+
+/* ---------- 提交与判题 ---------- */
+
+function createJudgePage({ judgeTextAfter, label = '提交本题作答' } = {}) {
+  const dom = new JSDOM(
+    `<!doctype html><html><body>
+      <button class="tab">提交</button>
+      <button id="real-submit">${label}</button>
+      <div class="judge-panel">评测中</div>
+    </body></html>`,
+    { url: 'https://pintia.cn/problem-sets/1/problems/1', runScripts: 'outside-only' },
+  );
+  const { window } = dom;
+  const clicks = [];
+  window.document.querySelector('#real-submit').addEventListener('click', () => clicks.push('real'));
+  window.document.querySelector('.tab').addEventListener('click', () => clicks.push('tab'));
+  window.__clicks = clicks;
+  window.__setJudgeText = (text) => {
+    window.document.querySelector('.judge-panel').textContent = text;
+  };
+  window.__judgeTextAfter = judgeTextAfter;
+  return window;
+}
+
+// 按钮选择：同名标签页在前也不能点错
+const judgePage = createJudgePage();
+const submitted = await runScript(judgePage, SUBMIT_ANSWER_SCRIPT, { waitSeconds: 5, pollMs: 10 });
+check('提交时点的是同名按钮里精确匹配的那个（不是标签页）', judgePage.__clicks.join(',') === 'real');
+check('没出结论时如实说还没出结论而不是瞎报', submitted.includes('还没出结论'));
+
+// 结论要同时满足「非空 ∧ 与提交前不同 ∧ 能归一化成状态码」
+judgePage.__setJudgeText('评测中');
+const stillPending = await runScript(judgePage, SUBMIT_ANSWER_SCRIPT, { waitSeconds: 5, pollMs: 10 });
+check('只有「评测中」时不算结论', stillPending.includes('还没出结论'));
+
+const acPage = createJudgePage();
+const acRun = await runScript(acPage, SUBMIT_ANSWER_SCRIPT, { waitSeconds: 5, pollMs: 10 });
+check('判题面板文字变了之后拿到结论', acRun.includes('还没出结论') || acRun.includes('判题结论'));
+acPage.__setJudgeText('答案正确');
+const ac = await runScript(acPage, READ_JUDGE_SCRIPT, {});
+check('read_judge_result 归一化出 AC', ac.includes('AC'));
+
+// 归一化的顺序：具体状态优先于泛化词，否定词优先于肯定词
+const compileError = createJudgePage();
+compileError.__setJudgeText('编译错误');
+check('编译错误归成 CE 而不是 WA', (await runScript(compileError, READ_JUDGE_SCRIPT, {})).includes('CE'));
+
+const notPassed = createJudgePage();
+notPassed.__setJudgeText('未通过 部分测试点答案错误');
+check('「未通过」不会被当成通过', (await runScript(notPassed, READ_JUDGE_SCRIPT, {})).includes('未通过'));
+
+check('页面上没有判题文字时如实告知', (await runScript(createPage({ withView: false }), READ_JUDGE_SCRIPT, {})).includes('没读到判题文字'));
+
+// 等结论时会轮询直到文字变化
+const slowPage = createJudgePage();
+setTimeout(() => slowPage.__setJudgeText('运行超时'), 30);
+const slow = await runScript(slowPage, SUBMIT_ANSWER_SCRIPT, { waitSeconds: 5, pollMs: 10 });
+check('轮询到结论后立刻返回', slow.includes('TLE'));
+
+// 关弹窗
+const dialogWindow = new JSDOM(
+  `<!doctype html><html><body>
+     <div class="pc-modal">
+       <div class="pc-modal-content">判题结果：答案正确</div>
+       <button class="pc-close">关闭</button>
+     </div>
+   </body></html>`,
+  { url: 'https://pintia.cn/problem-sets/1/problems/1', runScripts: 'outside-only' },
+).window;
+dialogWindow.document.querySelector('.pc-close').addEventListener('click', () => {
+  dialogWindow.document.querySelector('.pc-modal').remove();
+});
+const closed = await runScript(dialogWindow, CLOSE_DIALOGS_SCRIPT, {});
+check('关闭控件在弹窗内部才会被点到', closed.includes('已关掉 1 层弹窗'));
+check('弹窗确实被关掉了', !dialogWindow.document.querySelector('.pc-modal'));
+check('没有弹窗时如实告知', (await runScript(createPage({ withView: false }), CLOSE_DIALOGS_SCRIPT, {})).includes('没找到需要关的弹窗'));
 
 await pressableJsdom(problemPage);
 console.log('\nPTA 三件套校验通过');

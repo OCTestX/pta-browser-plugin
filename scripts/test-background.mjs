@@ -210,10 +210,19 @@ state.sse = [
 const started = await chat('页面标题是什么');
 check('chat/start 立刻返回 ok，循环在后台跑', started.ok === true);
 check('模型被调用了两轮（工具 → 回答）', state.modelCalls.length === 2);
-check('第一轮带上了全部工具定义', state.modelCalls[0].tools?.length === 9);
+check('第一轮带上了全部工具定义', state.modelCalls[0].tools?.length === 12);
 check(
   '工具定义里有 PTA 三件套与键盘工具',
-  ['read_problem', 'read_editor_code', 'write_editor_code', 'simulate_keyboard_input'].every((name) =>
+  [
+    'read_problem',
+    'read_editor_code',
+    'write_editor_code',
+    'compile_and_run_c',
+    'submit_answer',
+    'read_judge_result',
+    'close_dialogs',
+    'simulate_keyboard_input',
+  ].every((name) =>
     state.modelCalls[0].tools.some((t) => t.function.name === name),
   ),
 );

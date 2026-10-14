@@ -5,22 +5,11 @@
   </component>
   <component name="ChangeListManager">
     <list default="true" id="76c86c00-4e2f-4c64-b76e-7a270619abc7" name="更改" comment="">
-      <change afterPath="$PROJECT_DIR$/other_pta.md" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/.idea/workspace.xml" beforeDir="false" afterPath="$PROJECT_DIR$/.idea/workspace.xml" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/README.md" beforeDir="false" afterPath="$PROJECT_DIR$/README.md" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/manifest/manifest.json" beforeDir="false" afterPath="$PROJECT_DIR$/manifest/manifest.json" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/package.json" beforeDir="false" afterPath="$PROJECT_DIR$/package.json" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/scripts/smoke.mjs" beforeDir="false" afterPath="$PROJECT_DIR$/scripts/smoke.mjs" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/scripts/test-background.mjs" beforeDir="false" afterPath="$PROJECT_DIR$/scripts/test-background.mjs" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/scripts/test-pta-tools.mjs" beforeDir="false" afterPath="$PROJECT_DIR$/scripts/test-pta-tools.mjs" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/src/background/agent.ts" beforeDir="false" afterPath="$PROJECT_DIR$/src/background/agent.ts" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/src/background/js-inject.ts" beforeDir="false" afterPath="$PROJECT_DIR$/src/background/js-inject.ts" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/src/background/settings.ts" beforeDir="false" afterPath="$PROJECT_DIR$/src/background/settings.ts" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/src/content/App.tsx" beforeDir="false" afterPath="$PROJECT_DIR$/src/content/App.tsx" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/src/content/components/SettingsPanel.tsx" beforeDir="false" afterPath="$PROJECT_DIR$/src/content/components/SettingsPanel.tsx" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/src/content/hooks/useChat.ts" beforeDir="false" afterPath="$PROJECT_DIR$/src/content/hooks/useChat.ts" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/src/content/pageTools.ts" beforeDir="false" afterPath="$PROJECT_DIR$/src/content/pageTools.ts" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/src/content/styles.css" beforeDir="false" afterPath="$PROJECT_DIR$/src/content/styles.css" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/src/shared/settings.ts" beforeDir="false" afterPath="$PROJECT_DIR$/src/shared/settings.ts" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/src/background/pta-scripts.ts" beforeDir="false" afterPath="$PROJECT_DIR$/src/background/pta-scripts.ts" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/src/shared/tools.ts" beforeDir="false" afterPath="$PROJECT_DIR$/src/shared/tools.ts" afterDir="false" />
     </list>
     <option name="SHOW_DIALOG" value="false" />
@@ -86,7 +75,7 @@
       <option name="number" value="Default" />
       <option name="presentableId" value="Default" />
       <updated>1791974303115</updated>
-      <workItem from="1791974303980" duration="10186000" />
+      <workItem from="1791974303980" duration="10874000" />
     </task>
     <servers />
   </component>

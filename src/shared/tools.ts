@@ -4,6 +4,9 @@ export type ToolName =
   | 'read_editor_code'
   | 'write_editor_code'
   | 'compile_and_run_c'
+  | 'submit_answer'
+  | 'read_judge_result'
+  | 'close_dialogs'
   | 'js_inject'
   | 'date'
   | 'url'
@@ -15,6 +18,9 @@ export const TOOL_NAMES: ToolName[] = [
   'read_editor_code',
   'write_editor_code',
   'compile_and_run_c',
+  'submit_answer',
+  'read_judge_result',
+  'close_dialogs',
   'js_inject',
   'date',
   'url',
@@ -42,6 +48,7 @@ export const SYSTEM_PROMPT = [
   '- write_editor_code：把代码写进作答区（默认整段覆写），写完会回读比对。改用户的代码就用它。',
   '',
   '- compile_and_run_c：把 C 代码送到在线编译服务编译并运行，可以给标准输入。写完代码要先用它跑一遍题目样例，确认输出对得上。',
+  '- submit_answer：把当前代码提交到 PTA 并等判题结论；read_judge_result 读当前结论；close_dialogs 关掉挡着的弹窗（拿到结论之后再关）。',
   '',
   '其它工具：',
   '- js_inject：在用户当前页面里执行 JavaScript 并把返回值带回来。用来**读**页面（看结构、找选择器、读文本）和做上面几个工具做不到的事。',
@@ -56,7 +63,8 @@ export const SYSTEM_PROMPT = [
   '2. 往非 PTA 的输入框里写内容才用 simulate_keyboard_input；它不填 selector 会自动定位最大的可编辑区域，输入后会回读比对，结果里写明是否一致——不一致就别继续往下推，先查原因。',
   '3. 需要页面上的信息时先看再答，不要凭空猜测页面内容。js_inject 里用 return 返回结果，异步代码可以直接 await。',
   '   写完 C 代码后，用 compile_and_run_c 拿题面的样例输入跑一遍：输出对不上就自己改，别把没验证的代码交给用户。',
-  '4. simulate_keyboard_input 的按键是模拟的，浏览器默认行为（在输入框里换行、提交表单）不会发生，只对页面自己写的按键监听有效；要触发提交就找页面的按钮点它。',
+  '4. submit_answer 是有副作用的动作：只有用户明确要求提交时才提交；提交前确认代码已经写进作答区、样例自测通过；拿到判题结论之后再用 close_dialogs 关弹窗。',
+  '5. simulate_keyboard_input 的按键是模拟的，浏览器默认行为（在输入框里换行、提交表单）不会发生，只对页面自己写的按键监听有效；要触发提交就找页面的按钮点它。',
 ].join('\n');
 
 export interface ToolSchema {
@@ -130,6 +138,38 @@ export const TOOL_SCHEMAS: ToolSchema[] = [
         },
         required: ['code'],
       },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'submit_answer',
+      description:
+        '点提交按钮把当前代码提交到 PTA 并向判题系统要结论（会等一段时间）。只在用户同意、或者用户明确让你提交时用。提交前先确认代码已经写进作答区并自己跑过样例。',
+      parameters: {
+        type: 'object',
+        properties: {
+          waitSeconds: { type: 'number', description: '最多等多少秒看结论，默认 20，上限 120' },
+        },
+        required: [],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'read_judge_result',
+      description:
+        '读当前判题结果（不点任何按钮）。submit_answer 说还没出结论时，可以过一会儿再调它看；拿到结论之前不要关判题弹窗。',
+      parameters: { type: 'object', properties: {}, required: [] },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'close_dialogs',
+      description: '关掉挡在页面上的弹窗（判题结果弹窗、提示框等）。拿到判题结论之后再关。',
+      parameters: { type: 'object', properties: {}, required: [] },
     },
   },
   {

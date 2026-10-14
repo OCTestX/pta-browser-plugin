@@ -7,6 +7,8 @@ export interface InjectResult {
 }
 
 const EXECUTE_TIMEOUT_MS = 15_000;
+/** 等判题的脚本要在页面里跑很久，允许调用方放宽 */
+const MAX_EXECUTE_TIMEOUT_MS = 180_000;
 
 /**
  * 注入到页面里执行的函数。会被序列化后送进页面，所以不能引用外部作用域的任何东西。
@@ -57,7 +59,9 @@ export async function injectScript(
   tabId: number,
   source: string,
   args?: unknown,
+  timeoutMs = EXECUTE_TIMEOUT_MS,
 ): Promise<InjectResult> {
+  const timeout = Math.min(Math.max(timeoutMs, 1000), MAX_EXECUTE_TIMEOUT_MS);
   let lastError = '';
   // 参数以 __args 的形式注入，脚本里直接用
   const withArgs =
@@ -69,7 +73,7 @@ export async function injectScript(
         target: { tabId },
         world,
         func: runInPage,
-        args: [withArgs, EXECUTE_TIMEOUT_MS],
+        args: [withArgs, timeout],
       });
       const result = results[0]?.result;
       if (!result) return { ok: false, output: '页面没有返回结果', world };

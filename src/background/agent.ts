@@ -11,8 +11,11 @@ import type { ApiMessage } from '../shared/types';
 import { compileAndRun } from './compile';
 import { createDebuggerIo, detach, pressKey } from './debugger-input';
 import {
+  CLOSE_DIALOGS_SCRIPT,
   READ_EDITOR_SCRIPT,
+  READ_JUDGE_SCRIPT,
   READ_PROBLEM_SCRIPT,
+  SUBMIT_ANSWER_SCRIPT,
   WRITE_EDITOR_SCRIPT,
 } from './pta-scripts';
 import { describeTypist, runTypist } from './typist';
@@ -100,6 +103,15 @@ export async function runAgent(options: RunAgentOptions): Promise<void> {
   events.onNotice(`已经连续调用 ${MAX_TOOL_ROUNDS} 轮工具了，先停在这里。可以让我继续。`);
 }
 
+const PTA_SCRIPTS: Record<string, string> = {
+  read_problem: READ_PROBLEM_SCRIPT,
+  read_editor_code: READ_EDITOR_SCRIPT,
+  write_editor_code: WRITE_EDITOR_SCRIPT,
+  submit_answer: SUBMIT_ANSWER_SCRIPT,
+  read_judge_result: READ_JUDGE_SCRIPT,
+  close_dialogs: CLOSE_DIALOGS_SCRIPT,
+};
+
 async function runTool(
   name: string,
   rawArguments: string,
@@ -141,14 +153,12 @@ async function runTool(
     }
   }
 
-  // PTA 三件套：都在页面主世界跑（编辑器实例挂在页面自己的 JS 对象上）
-  if (name === 'read_problem' || name === 'read_editor_code' || name === 'write_editor_code') {
-    const scripts = {
-      read_problem: READ_PROBLEM_SCRIPT,
-      read_editor_code: READ_EDITOR_SCRIPT,
-      write_editor_code: WRITE_EDITOR_SCRIPT,
-    };
-    const result = await injectScript(tabId, scripts[name], args);
+  // PTA 相关动作都在页面主世界跑（编辑器实例、判题弹窗都是页面自己的东西）
+  if (PTA_SCRIPTS[name]) {
+    const waitSeconds = Math.min(Math.max(Number(args.waitSeconds) || 20, 5), 120);
+    // 等判题的脚本要在页面里跑很久，给它留够时间
+    const timeout = name === 'submit_answer' ? (waitSeconds + 20) * 1000 : undefined;
+    const result = await injectScript(tabId, PTA_SCRIPTS[name], args, timeout);
     return { output: result.output, isError: !result.ok };
   }
 
