@@ -12,13 +12,58 @@ export interface ResetPanelLayoutMessage {
   type: 'panel/reset-layout';
 }
 
+/** 改动前后两段文本，工具卡片左右对照展示 */
+export interface DiffPayload {
+  left: string;
+  right: string;
+  leftLabel: string;
+  rightLabel: string;
+}
+
+/** token 用量：接口在流式最后一帧回传，面板顶栏实时显示 */
+export interface TokenUsage {
+  promptTokens: number;
+  completionTokens: number;
+  totalTokens: number;
+}
+
 export type BackgroundEvent =
   | TogglePanelMessage
   | ResetPanelLayoutMessage
   | { type: 'chat/delta'; requestId: string; text: string }
-  | { type: 'chat/tool-start'; requestId: string; callId: string; name: string; args: string }
-  | { type: 'chat/tool-end'; requestId: string; callId: string; result: string; isError: boolean }
+  | {
+      type: 'chat/tool-start';
+      requestId: string;
+      callId: string;
+      name: string;
+      args: string;
+    }
+  | {
+      type: 'chat/tool-end';
+      requestId: string;
+      callId: string;
+      result: string;
+      isError: boolean;
+      /** diff 工具带这个字段，卡片才会左右对照显示 */
+      diff?: DiffPayload;
+    }
+  /** ask 工具：把选择题发给面板，等用户点选后用 chat/ask-answer 回来 */
+  | {
+      type: 'chat/ask';
+      requestId: string;
+      callId: string;
+      question: string;
+      options: string[];
+    }
   | { type: 'chat/notice'; requestId: string; text: string }
+  /** 每轮请求结束后上报的累计 token 用量，面板顶栏实时显示 */
+  | {
+      type: 'chat/usage';
+      requestId: string;
+      promptTokens: number;
+      completionTokens: number;
+      totalTokens: number;
+    }
   | { type: 'chat/done'; requestId: string; aborted: boolean }
   | { type: 'chat/error'; requestId: string; message: string };
 
@@ -53,6 +98,8 @@ export interface RunToolRequest {
 export type ContentRequest =
   | { type: 'chat/start'; requestId: string; messages: ApiMessage[] }
   | { type: 'chat/stop'; requestId: string }
+  /** 用户在 ask 工具的卡片上点了一个选项 */
+  | { type: 'chat/ask-answer'; requestId: string; callId: string; choice: string }
   | { type: 'settings/get' }
   | { type: 'settings/save'; patch: Partial<Settings> }
   /** 设置页的「模拟输入测试」：按指定方法往作答区写一次文本 */
@@ -67,6 +114,7 @@ export function isContentRequest(message: unknown): message is ContentRequest {
     isRecord(message) &&
     (message.type === 'chat/start' ||
       message.type === 'chat/stop' ||
+      message.type === 'chat/ask-answer' ||
       message.type === 'settings/get' ||
       message.type === 'settings/save' ||
       message.type === 'tool/test-input' ||

@@ -42,6 +42,9 @@ export function App() {
     if (await chat.inputCode(draft)) setDraft('');
   };
 
+  // 顶栏 token：接口回传的精确值 + 正在流式输出的实时估算
+  const tokenText = formatTokenUsage(chat.usage, chat.liveOutputTokens);
+
   return (
     <div
       className="panel"
@@ -75,7 +78,10 @@ export function App() {
         ) : (
           <>
             <span className="panel__title">PTA 助手</span>
-            <span className="panel__badge">v1.0-beta</span>
+            <span className="panel__badge">v1.0</span>
+            <span className="panel__usage" title="本轮对话累计消耗的 token（接口回传精确值，流式过程中按字数实时估算）">
+              {tokenText}
+            </span>
           </>
         )}
         <div className="panel__actions">
@@ -114,7 +120,11 @@ export function App() {
         <SettingsPanel view={settings.view} onSave={settings.save} onBack={() => setView('chat')} />
       ) : (
         <>
-          <MessageList messages={chat.messages} />
+          {/* 干活时（生成 / 等用户回答 / 写作答区）顶上有一条来回跑的进度条 */}
+          {(chat.busy || chat.writing) && (
+            <div className="panel__progress" role="progressbar" aria-label="正在工作" />
+          )}
+          <MessageList messages={chat.messages} onAnswer={chat.answerAsk} />
           {chat.notice && (
             <div className="notice">
               <span className="notice__text">{chat.notice.text}</span>
@@ -151,4 +161,17 @@ export function App() {
       />
     </div>
   );
+}
+
+/**
+ * 顶栏的 token 文案。
+ * 接口回传 usage 时显示精确值（每轮请求结束更新一次）；
+ * 有些兼容接口不回传，就退化成按字数实时估算当前这一轮的输出。
+ */
+function formatTokenUsage(
+  usage: { promptTokens: number; completionTokens: number } | null,
+  liveOutput: number,
+): string {
+  if (usage) return `Token ${usage.promptTokens + usage.completionTokens}（输入 ${usage.promptTokens} / 输出 ${usage.completionTokens}）`;
+  return liveOutput > 0 ? `Token ≈ ${liveOutput}` : '';
 }

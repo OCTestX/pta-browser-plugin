@@ -1,9 +1,12 @@
+import type { TokenUsage } from '../shared/messages';
 import type { ToolSchema } from '../shared/tools';
 import type { ApiMessage, ToolCall } from '../shared/types';
 
 export interface StreamChatResult {
   content: string;
   toolCalls: ToolCall[];
+  /** 接口在最后一帧回传的 token 用量（有些兼容接口不回传，这时是 undefined） */
+  usage?: TokenUsage;
 }
 
 interface StreamChatOptions {
@@ -33,6 +36,8 @@ export async function streamChat(options: StreamChatOptions): Promise<StreamChat
         model,
         messages,
         stream: true,
+        // 让兼容接口在最后一帧回传 token 用量（DeepSeek / 硅基流动都认这个字段）
+        stream_options: { include_usage: true },
         ...(tools && tools.length > 0 ? { tools } : {}),
       }),
       signal,
@@ -74,6 +79,11 @@ export async function streamChat(options: StreamChatOptions): Promise<StreamChat
 interface StreamState {
   content: string;
   calls: Map<number, { id: string; name: string; args: string }>;
+  usage?: TokenUsage;
+}
+
+function numberOrZero(value: unknown): number {
+  return typeof value === 'number' && Number.isFinite(value) ? value : 0;
 }
 
 interface ChunkPayload {
@@ -88,6 +98,11 @@ interface ChunkPayload {
     };
   }[];
   error?: { message?: unknown };
+  usage?: {
+    prompt_tokens?: unknown;
+    completion_tokens?: unknown;
+    total_tokens?: unknown;
+  };
 }
 
 function consume(
@@ -105,6 +120,18 @@ function consume(
 
   if (typeof parsed.error?.message === 'string') {
     throw new Error(`${model} 返回错误：${parsed.error.message}`);
+  }
+
+  // token 用量通常在最后一帧单独发一帧（choices 为空）
+  if (parsed.usage) {
+    const promptTokens = numberOrZero(parsed.usage.prompt_tokens);
+    const completionTokens = numberOrZero(parsed.usage.completion_tokens);
+    const totalTokens = numberOrZero(parsed.usage.total_tokens);
+    state.usage = {
+      promptTokens,
+      completionTokens,
+      totalTokens: totalTokens || promptTokens + completionTokens,
+    };
   }
 
   const delta = parsed.choices?.[0]?.delta;
@@ -136,7 +163,7 @@ function toResult(state: StreamState): StreamChatResult {
     }))
     .filter((call) => call.function.name);
 
-  return { content: state.content, toolCalls };
+  return { content: state.content, toolCalls, usage: state.usage };
 }
 
 /** 返回该行的 data 内容；空串表示这行没有内容，null 表示流结束 */

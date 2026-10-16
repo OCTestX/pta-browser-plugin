@@ -19,6 +19,58 @@ const RESET_PANEL_LAYOUT: BackgroundEvent = { type: 'panel/reset-layout' };
 /** requestId -> AbortController，用于「停止生成」 */
 const runningRequests = new Map<string, AbortController>();
 
+/** callId -> 等用户点选的 ask 工具：面板点完选项用 chat/ask-answer 回来兑现 */
+interface PendingAsk {
+  requestId: string;
+  settle: (choice: string) => void;
+  timer: number;
+}
+const pendingAsks = new Map<string, PendingAsk>();
+
+/** 等太久用户就当卡死了：超时后按「用户没有作答」继续，agent loop 不再挂着 */
+const ASK_TIMEOUT_MS = 120_000;
+
+/**
+ * ask 工具：把选择题发给面板并等用户点选。
+ * 超时、用户点「停止」、或者这一轮结束时都会解掉等待。
+ */
+function askUserInTab(
+  requestId: string,
+  tabId: number,
+  callId: string,
+  question: string,
+  options: string[],
+  signal: AbortSignal,
+): Promise<string> {
+  if (signal.aborted) return Promise.resolve('用户已停止，没有作答');
+
+  return new Promise<string>((resolve) => {
+    const settle = (choice: string) => {
+      const pending = pendingAsks.get(callId);
+      if (!pending) return;
+      clearTimeout(pending.timer);
+      pendingAsks.delete(callId);
+      resolve(choice);
+    };
+    const timer = setTimeout(() => {
+      settle(`用户 ${ASK_TIMEOUT_MS / 1000} 秒内没有作答，按「没有作答」继续`);
+      sendToTab(tabId, { type: 'chat/notice', requestId, text: '这次提问等太久了，已经按「没有作答」继续' });
+    }, ASK_TIMEOUT_MS);
+
+    pendingAsks.set(callId, { requestId, settle, timer });
+    signal.addEventListener('abort', () => settle('用户已停止这次提问，没有作答'), { once: true });
+
+    sendToTab(tabId, { type: 'chat/ask', requestId, callId, question, options });
+  });
+}
+
+/** 一轮结束（正常收尾或中止）时把还没答的 ask 全部解掉 */
+function releaseAsks(requestId: string): void {
+  for (const pending of [...pendingAsks.values()]) {
+    if (pending.requestId === requestId) pending.settle('用户没有选择，这一轮结束了');
+  }
+}
+
 /** 两次图标点击间隔在这个毫秒数内就算双击（双击图标 = 恢复位置与大小的默认） */
 const DOUBLE_CLICK_MS = 400;
 const lastIconClick = new Map<number, number>();
@@ -91,6 +143,17 @@ ext.runtime.onMessage.addListener((message: unknown, sender, sendResponse) => {
         return;
       case 'chat/stop': {
         runningRequests.get(message.requestId)?.abort();
+        releaseAsks(message.requestId);
+        sendResponse({ ok: true } satisfies StartChatResponse);
+        return;
+      }
+      case 'chat/ask-answer': {
+        const pending = pendingAsks.get(message.callId);
+        if (!pending || pending.requestId !== message.requestId) {
+          sendResponse({ ok: false, message: '这次提问已经结束了' } satisfies StartChatResponse);
+          return;
+        }
+        pending.settle(message.choice);
         sendResponse({ ok: true } satisfies StartChatResponse);
         return;
       }
@@ -170,10 +233,12 @@ async function startChat(
               name: call.name,
               args: call.args,
             }),
-          onToolEnd: (callId, result, isError) =>
-            sendToTab(tabId, { type: 'chat/tool-end', requestId, callId, result, isError }),
+          onToolEnd: (callId, result, isError, diff) =>
+            sendToTab(tabId, { type: 'chat/tool-end', requestId, callId, result, isError, diff }),
           onNotice: (text) => sendToTab(tabId, { type: 'chat/notice', requestId, text }),
+          onUsage: (usage) => sendToTab(tabId, { type: 'chat/usage', requestId, ...usage }),
           runPageTool: (name, args) => runToolInTab(tabId, name, args),
+          askUser: (callId, question, options) => askUserInTab(requestId, tabId, callId, question, options, controller.signal),
         },
       });
       sendToTab(tabId, { type: 'chat/done', requestId, aborted: false });
@@ -184,6 +249,7 @@ async function startChat(
         sendToTab(tabId, { type: 'chat/error', requestId, message: toErrorMessage(error) });
       }
     } finally {
+      releaseAsks(requestId);
       runningRequests.delete(requestId);
     }
   })();

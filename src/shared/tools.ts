@@ -11,7 +11,9 @@ export type ToolName =
   | 'date'
   | 'url'
   | 'write_document'
-  | 'simulate_keyboard_input';
+  | 'simulate_keyboard_input'
+  | 'ask'
+  | 'diff';
 
 export const TOOL_NAMES: ToolName[] = [
   'read_problem',
@@ -26,6 +28,8 @@ export const TOOL_NAMES: ToolName[] = [
   'url',
   'write_document',
   'simulate_keyboard_input',
+  'ask',
+  'diff',
 ];
 
 /** 一次对话最多跑几轮工具，防止模型来回刷 */
@@ -51,6 +55,8 @@ export const SYSTEM_PROMPT = [
   '- submit_answer：把当前代码提交到 PTA 并等判题结论；read_judge_result 等判题结论（会一直等到出结论，默认 60 秒）；close_dialogs 关掉挡着的弹窗（拿到结论之后再关）。',
   '',
   '其它工具：',
+  '- ask：向用户提问并等对方选一个选项（会阻塞到用户点选）。**改用户代码前必须先问**，用不用由用户拍板。',
+  '- diff：把改动前后两段文本左右对照展示给用户，标出哪一行新增、哪一行改过、哪一行删了。改完代码一定要调用一次。',
   '- js_inject：在用户当前页面里执行 JavaScript 并把返回值带回来。用来**读**页面（看结构、找选择器、读文本）和做上面几个工具做不到的事。',
   '- simulate_keyboard_input：非 PTA 编辑器、或需要**真按键**（Enter/Tab/方向键）时才用。',
   '- url：拿到用户当前所在页面的地址。',
@@ -65,6 +71,15 @@ export const SYSTEM_PROMPT = [
   '   写完 C 代码后，用 compile_and_run_c 拿题面的样例输入跑一遍：输出对不上就自己改，别把没验证的代码交给用户。',
   '4. submit_answer 是有副作用的动作：只有用户明确要求提交时才提交；提交前确认代码已经写进作答区、样例自测通过；拿到判题结论之后再用 close_dialogs 关弹窗。',
   '5. simulate_keyboard_input 的按键是模拟的，浏览器默认行为（在输入框里换行、提交表单）不会发生，只对页面自己写的按键监听有效；要触发提交就找页面的按钮点它。',
+  '',
+  '动用户代码的两条硬规矩（重要）：',
+  '6. **改代码前先问**：除非用户在提问里已经明确说了「帮我改 / 修一下 / 写代码」这类要求，否则在 write_editor_code 之前',
+  '   必须先用 ask 工具问一句（例如「要不要我直接改作答区？」，选项给「改」「先别改，只讲思路」）。',
+  '   用户选了「先别改」就停下，用文字讲清楚该怎么改，不要再动他的代码。',
+  '7. **改完必须让用户看见改了什么**：write_editor_code 之后立刻用 diff 工具把改动前后对照展示出来',
+  '   （left 是改之前的代码，right 是改之后的），不要只在回答里用文字描述。',
+  '8. **尽量不对用户代码做大改**：能做局部修补就别整段重写；保留用户原来的变量名、注释和写法风格，',
+  '   他写错的地方只改错的那几行。如果确实需要大改，先用 ask 说明理由并征得同意。',
 ].join('\n');
 
 export interface ToolSchema {
@@ -255,6 +270,44 @@ export const TOOL_SCHEMAS: ToolSchema[] = [
           content: { type: 'string', description: '文件内容（markdown 或纯文本）' },
         },
         required: ['filename', 'content'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'ask',
+      description:
+        '向用户提一个只能选答案的问题，会一直等用户点选才返回。选项要短、要互斥、包含用户可能的真实意图（比如「要不要我直接改作答区？」给「改」「先别改，只讲思路」）。要改用户代码而用户没明说的时候，必须先调用它。',
+      parameters: {
+        type: 'object',
+        properties: {
+          question: { type: 'string', description: '要问用户的问题，一句话说清楚' },
+          options: {
+            type: 'array',
+            items: { type: 'string' },
+            description: '可选的答案，2 到 4 个，第一个是推荐项',
+          },
+        },
+        required: ['question', 'options'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'diff',
+      description:
+        '把改动前后的两段文本左右对照展示给用户（新增/修改/删除的行会分色标出），让用户一眼看出你把代码改成了什么样。改完 write_editor_code 必须调用一次。',
+      parameters: {
+        type: 'object',
+        properties: {
+          left: { type: 'string', description: '改动之前的内容（原文）' },
+          right: { type: 'string', description: '改动之后的内容' },
+          leftLabel: { type: 'string', description: '左列标题，默认「改动前」' },
+          rightLabel: { type: 'string', description: '右列标题，默认「改动后」' },
+        },
+        required: ['left', 'right'],
       },
     },
   },

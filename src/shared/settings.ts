@@ -19,7 +19,7 @@ export const DEFAULT_SETTINGS: Settings = {
 };
 
 /** 设置页「教程」按钮跳到的地址（作者自己的站点，讲清楚怎么配 Key 怎么用） */
-export const TUTORIAL_URL = 'http://octest.top/pta-assist-plugin';
+export const TUTORIAL_URL = 'http://octestpi.top/pta-assist-plugin';
 
 export function normalizeBaseURL(baseURL: string): string {
   return baseURL.trim().replace(/\/+$/, '');

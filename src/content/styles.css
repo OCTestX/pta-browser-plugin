@@ -78,6 +78,18 @@
   font-size: 11px;
 }
 
+.panel__usage {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  color: var(--pta-text-muted);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .panel__actions {
   display: flex;
   gap: 2px;
@@ -319,7 +331,7 @@
 /* ---------- 工具调用卡片 ---------- */
 
 .tool {
-  margin-bottom: 12px;
+  margin-bottom: 8px;
   border: 1px solid var(--pta-border);
   border-left: 3px solid var(--pta-text-muted);
   border-radius: 10px;
@@ -343,8 +355,9 @@
   display: flex;
   align-items: center;
   gap: 8px;
-  padding: 7px 10px;
+  padding: 4px 10px;
   font-size: 12px;
+  line-height: 1.4;
 }
 
 .tool__name {
@@ -378,16 +391,17 @@
   color: var(--pta-danger);
 }
 
+/* 工具卡片默认收起，展开后的代码也只占一小块高度，滚动看剩下的 */
 .tool__code,
 .tool__result {
-  max-height: 220px;
+  max-height: 140px;
   margin: 0;
-  padding: 8px 10px;
+  padding: 6px 10px;
   overflow: auto;
   border-top: 1px solid var(--pta-border);
   font-family: 'SFMono-Regular', Consolas, Menlo, monospace;
-  font-size: 12px;
-  line-height: 1.55;
+  font-size: 11.5px;
+  line-height: 1.45;
   white-space: pre-wrap;
   word-break: break-word;
 }
@@ -762,7 +776,284 @@
 
 .tool__code,
 .tool__result {
-  padding-top: 26px;
+  padding-top: 24px;
+}
+
+/* ---------- ask 工具：卡片上的选择题 ---------- */
+
+.ask {
+  padding: 8px 10px 10px;
+  border-top: 1px solid var(--pta-border);
+}
+
+.ask__question {
+  margin-bottom: 8px;
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.ask__options {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.ask__option {
+  padding: 5px 12px;
+  border: 1px solid var(--pta-accent);
+  border-radius: 999px;
+  background: var(--pta-surface);
+  color: var(--pta-accent);
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.ask__option:hover {
+  background: var(--pta-accent);
+  color: #ffffff;
+}
+
+.ask__chosen {
+  color: var(--pta-ok);
+  font-size: 12px;
+}
+
+/* ---------- diff 工具：左右两列 + 中间一条道（照 IDEA 的 diff） ---------- */
+
+.diff {
+  font-family: 'SFMono-Regular', Consolas, Menlo, monospace;
+  font-size: 11.5px;
+  line-height: 1.5;
+}
+
+.diff__head {
+  display: grid;
+  grid-template-columns: 1fr 22px 1fr;
+  border-top: 1px solid var(--pta-border);
+  background: var(--pta-surface);
+  color: var(--pta-text-muted);
+}
+
+.diff__head-cell {
+  padding: 4px 8px;
+}
+
+.diff__head-cell--right {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.diff__copy {
+  flex: none;
+  padding: 1px 8px;
+  border: 1px solid var(--pta-border);
+  border-radius: 6px;
+  background: var(--pta-surface);
+  color: var(--pta-text-muted);
+  font: inherit;
+  font-size: 11px;
+  cursor: pointer;
+}
+
+.diff__copy:hover {
+  color: var(--pta-text);
+}
+
+.diff__head-gutter {
+  border-left: 1px solid var(--pta-border);
+  border-right: 1px solid var(--pta-border);
+}
+
+.diff__body {
+  max-height: 260px;
+  overflow: auto;
+  background: var(--pta-surface);
+}
+
+
+/* 一行：左格 + 中间道 + 右格，行行对齐。
+   不许折行（折行会让左右两列看着错位），太长的行在格子里横向截断，悬停能看到全文 */
+.diff__row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 22px minmax(0, 1fr);
+  align-items: stretch;
+}
+
+.diff__cell {
+  display: flex;
+  gap: 6px;
+  padding: 0 6px 0 0;
+  overflow: hidden;
+  white-space: pre;
+}
+
+.diff__cell--blank {
+  background: transparent;
+}
+
+.diff__no {
+  flex: none;
+  min-width: 26px;
+  padding-right: 4px;
+  color: var(--pta-text-muted);
+  text-align: right;
+  user-select: none;
+}
+
+/* 没动的地方压暗，一眼先看到改了什么 */
+.diff__row--equal {
+  color: var(--pta-text-muted);
+  opacity: 0.72;
+}
+
+.diff__row--fence {
+  border-top: 1px solid var(--pta-border);
+}
+
+/* 中间那条道：行号夹在两边，箭头 + 竖线把一次改动圈起来 */
+.diff__gutter {
+  position: relative;
+  border-left: 1px solid var(--pta-border);
+  border-right: 1px solid var(--pta-border);
+  background: var(--pta-surface-alt);
+  color: var(--pta-accent);
+  font-size: 12px;
+  font-weight: 700;
+  line-height: 1.5;
+  text-align: center;
+  user-select: none;
+}
+
+.diff__hunk .diff__gutter:not(.diff__gutter--start, .diff__gutter--end) {
+  background-image: linear-gradient(var(--pta-accent), var(--pta-accent));
+  background-repeat: no-repeat;
+  background-size: 2px 100%;
+  background-position: center;
+}
+
+.diff__hunk > .diff__row:first-child .diff__gutter {
+  background-image: linear-gradient(var(--pta-accent), var(--pta-accent));
+  background-repeat: no-repeat;
+  background-size: 2px 45%;
+  background-position: center bottom;
+}
+
+.diff__hunk > .diff__row:last-child .diff__gutter {
+  background-image: linear-gradient(var(--pta-accent), var(--pta-accent));
+  background-repeat: no-repeat;
+  background-size: 2px 45%;
+  background-position: center top;
+}
+
+/* 改动块头尾的横线（IDEA 里那一道白缝） */
+.diff__hunk {
+  border-bottom: 1px solid var(--pta-border);
+}
+
+.diff__row--add .diff__cell--right {
+  background: #e6f6ed;
+}
+
+.diff__row--del .diff__cell--left {
+  background: #fdecec;
+}
+
+.diff__row--mod .diff__cell--left {
+  background: #fdecec;
+}
+
+.diff__row--mod .diff__cell--right {
+  background: #e8f0ff;
+}
+
+/* 行内被改掉的词，再深一档 */
+.diff__word {
+  border-radius: 3px;
+  background: #ffd7a8;
+  color: #7a3c00;
+}
+
+.diff__row--del .diff__word {
+  background: #f8b9b9;
+  color: #8c1d1d;
+}
+
+.diff__more {
+  display: block;
+  width: 100%;
+  padding: 2px 8px;
+  border: none;
+  background: var(--pta-surface-alt);
+  color: var(--pta-text-muted);
+  font: inherit;
+  font-size: 11px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.diff__more:hover {
+  color: var(--pta-accent);
+}
+
+.diff__legend {
+  display: flex;
+  gap: 8px;
+  padding: 6px 10px;
+  border-top: 1px solid var(--pta-border);
+  background: var(--pta-surface-alt);
+  color: var(--pta-text-muted);
+  font-family: inherit;
+  font-size: 11px;
+}
+
+.diff__tag--add {
+  color: #14663f;
+}
+
+.diff__tag--mod {
+  color: #1f4bb8;
+}
+
+.diff__tag--del {
+  color: #a33;
+}
+
+
+/* ---------- 干活时的进度条（无限循环） ---------- */
+
+.panel__progress {
+  position: relative;
+  height: 4px;
+  flex: none;
+  overflow: hidden;
+  background: var(--pta-accent-soft);
+}
+
+.panel__progress::after {
+  content: '';
+  position: absolute;
+  inset: 0 auto 0 0;
+  width: 45%;
+  background: linear-gradient(90deg, rgba(47, 107, 255, 0), #2f6bff 50%, rgba(47, 107, 255, 0));
+  animation: pta-progress 1s linear infinite;
+}
+
+@keyframes pta-progress {
+  from {
+    transform: translateX(-100%);
+  }
+  to {
+    transform: translateX(250%);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .panel__progress::after {
+    animation-duration: 3s;
+  }
 }
 
 /* ---------- 设置页的模拟输入测试 ---------- */

@@ -25,19 +25,27 @@ const DEFAULT_PER_CHAR_DELAY_MS = 8;
 import { streamChat } from './deepseek';
 import { injectScript } from './js-inject';
 import { loadSettings } from './settings';
+import { diffLines, diffStats } from '../shared/diff';
+import type { DiffPayload, TokenUsage } from '../shared/messages';
 
 export interface ToolOutcome {
   output: string;
   isError: boolean;
+  /** diff 工具带这个，卡片左右对照显示 */
+  diff?: DiffPayload;
 }
 
 export interface AgentEvents {
   onDelta: (text: string) => void;
   onToolStart: (call: { callId: string; name: string; args: string }) => void;
-  onToolEnd: (callId: string, result: string, isError: boolean) => void;
+  onToolEnd: (callId: string, result: string, isError: boolean, diff?: DiffPayload) => void;
   onNotice: (text: string) => void;
+  /** 每轮结束把累计 token 用量报给面板（接口没回传 usage 时不报） */
+  onUsage: (usage: TokenUsage) => void;
   /** 需要页面上下文才能执行的工具（url / write_document），交给 content script 做 */
   runPageTool: (name: string, args: Record<string, unknown>) => Promise<ToolOutcome>;
+  /** ask 工具：把选择题发给面板，等用户点选 */
+  askUser: (callId: string, question: string, options: string[]) => Promise<string>;
 }
 
 interface RunAgentOptions {
@@ -58,9 +66,11 @@ export async function runAgent(options: RunAgentOptions): Promise<void> {
     { role: 'system', content: SYSTEM_PROMPT },
     ...messages,
   ];
+  // 一轮对话往往要多次请求模型，用量累加起来才是这一轮真实花掉的 token
+  const usage: TokenUsage = { promptTokens: 0, completionTokens: 0, totalTokens: 0 };
 
   for (let round = 0; round < MAX_TOOL_ROUNDS; round += 1) {
-    const { content, toolCalls } = await streamChat({
+    const { content, toolCalls, usage: roundUsage } = await streamChat({
       apiKey: settings.apiKey,
       baseURL: settings.baseURL,
       model: settings.model,
@@ -69,6 +79,13 @@ export async function runAgent(options: RunAgentOptions): Promise<void> {
       signal,
       onDelta: events.onDelta,
     });
+
+    if (roundUsage) {
+      usage.promptTokens += roundUsage.promptTokens;
+      usage.completionTokens += roundUsage.completionTokens;
+      usage.totalTokens += roundUsage.totalTokens;
+      events.onUsage({ ...usage });
+    }
 
     if (toolCalls.length === 0) return;
 
@@ -86,10 +103,12 @@ export async function runAgent(options: RunAgentOptions): Promise<void> {
       });
       const outcome = await runTool(call.function.name, call.function.arguments, {
         tabId,
+        callId: call.id,
         signal,
         runPageTool: events.runPageTool,
+        askUser: events.askUser,
       });
-      events.onToolEnd(call.id, outcome.output, outcome.isError);
+      events.onToolEnd(call.id, outcome.output, outcome.isError, outcome.diff);
       // 工具执行期间用户点了「停止」：不再喂下一轮，直接按中止收尾
       if (signal.aborted) throw new DOMException('用户停止了生成', 'AbortError');
       conversation.push({
@@ -114,8 +133,11 @@ const PTA_SCRIPTS: Record<string, string> = {
 
 export interface ToolContext {
   tabId: number;
+  /** 当前这次工具调用的 id：ask 要用它把问题和面板上的卡片对上 */
+  callId: string;
   signal: AbortSignal;
   runPageTool: (name: string, args: Record<string, unknown>) => Promise<ToolOutcome>;
+  askUser: (callId: string, question: string, options: string[]) => Promise<string>;
 }
 
 /** 单次执行一个工具（agent loop 用它，设置页的模拟输入测试也用它，保证两条路完全一致） */
@@ -134,6 +156,34 @@ export async function runTool(
   const args = parsed.args;
 
   if (name === 'date') return { output: describeNow(), isError: false };
+
+  if (name === 'ask') {
+    const question = typeof args.question === 'string' ? args.question.trim() : '';
+    const options = Array.isArray(args.options)
+      ? args.options
+          .filter((option): option is string => typeof option === 'string' && option.trim().length > 0)
+          .map((option) => option.trim())
+          .slice(0, 6)
+      : [];
+    if (!question || options.length < 2) {
+      return { output: 'ask 需要一个 question 和至少两个 options', isError: true };
+    }
+    const choice = await context.askUser(context.callId, question, options);
+    return { output: `用户选择了「${choice}」`, isError: false };
+  }
+
+  if (name === 'diff') {
+    const left = typeof args.left === 'string' ? args.left : '';
+    const right = typeof args.right === 'string' ? args.right : '';
+    const leftLabel = typeof args.leftLabel === 'string' && args.leftLabel ? args.leftLabel : '改动前';
+    const rightLabel = typeof args.rightLabel === 'string' && args.rightLabel ? args.rightLabel : '改动后';
+    const stats = diffStats(diffLines(left, right));
+    return {
+      output: `差异：新增 ${stats.added} 行，修改 ${stats.changed} 行，删除 ${stats.removed} 行（左右对照已展示给用户）`,
+      isError: false,
+      diff: { left, right, leftLabel, rightLabel },
+    };
+  }
 
   if (name === 'js_inject') {
     const code = typeof args.code === 'string' ? args.code : '';

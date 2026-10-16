@@ -1,5 +1,6 @@
 import { useState } from 'react';
 import type { ChatMessage } from '../../shared/types';
+import { DiffView } from './DiffView';
 
 const STATUS_LABEL: Record<NonNullable<ChatMessage['toolStatus']>, string> = {
   running: '执行中',
@@ -7,10 +8,19 @@ const STATUS_LABEL: Record<NonNullable<ChatMessage['toolStatus']>, string> = {
   error: '失败',
 };
 
-export function ToolCard({ message }: { message: ChatMessage }) {
+interface ToolCardProps {
+  message: ChatMessage;
+  onAnswer?: (callId: string, choice: string) => void;
+}
+
+export function ToolCard({ message, onAnswer }: ToolCardProps) {
   const status = message.toolStatus ?? 'running';
-  const [collapsed, setCollapsed] = useState(false);
   const [copied, setCopied] = useState<string | null>(null);
+
+  // ask 要能选、diff 要看得见，这两种卡片默认展开；其它工具默认收起，少占高度
+  const [expanded, setExpanded] = useState(false);
+  const mustOpen = Boolean(message.toolQuestion) || Boolean(message.toolDiff);
+  const open = mustOpen || expanded;
 
   const copy = (text: string, label: string) => {
     copyText(text);
@@ -18,24 +28,58 @@ export function ToolCard({ message }: { message: ChatMessage }) {
     setTimeout(() => setCopied(null), 1200);
   };
 
+  const callId = message.toolCallId;
+
   return (
     <div className={`tool tool--${status}`}>
       <div className="tool__header">
         <button
           type="button"
           className="tool__toggle"
-          title={collapsed ? '展开' : '折叠'}
-          onClick={() => setCollapsed((value) => !value)}
+          title={open ? '折叠' : '展开'}
+          onClick={() => setExpanded(!open)}
         >
-          {collapsed ? '▸' : '▾'}
+          {open ? '▾' : '▸'}
         </button>
         <span className="tool__name">{message.toolName}</span>
         {message.toolArgs && <span className="tool__args">{message.toolArgs}</span>}
         <span className="tool__status">{STATUS_LABEL[status]}</span>
       </div>
 
-      {!collapsed && (
+      {open && (
         <>
+          {message.toolQuestion && callId && (
+            <div className="ask">
+              <div className="ask__question">{message.toolQuestion}</div>
+              {message.toolChoice ? (
+                <div className="ask__chosen">已选择：{message.toolChoice}</div>
+              ) : (
+                <div className="ask__options">
+                  {(message.toolOptions ?? []).map((option) => (
+                    <button
+                      key={option}
+                      type="button"
+                      className="ask__option"
+                      onClick={() => onAnswer?.(callId, option)}
+                    >
+                      {option}
+                    </button>
+                  ))}
+                </div>
+              )}
+            </div>
+          )}
+
+          {message.toolDiff && (
+            <div className="tool__block">
+              <DiffView
+                {...message.toolDiff}
+                onCopy={() => copy(message.toolDiff?.right ?? '', 'diff')}
+                copied={copied === 'diff'}
+              />
+            </div>
+          )}
+
           {message.toolCode && (
             <div className="tool__block">
               <button type="button" className="tool__copy" onClick={() => copy(message.toolCode ?? '', 'code')}>
@@ -44,6 +88,7 @@ export function ToolCard({ message }: { message: ChatMessage }) {
               <pre className="tool__code">{message.toolCode}</pre>
             </div>
           )}
+
           {message.content && (
             <div className="tool__block">
               <button

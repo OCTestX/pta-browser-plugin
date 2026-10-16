@@ -16,7 +16,8 @@
     "esModuleInterop": true,
     "skipLibCheck": true,
     "forceConsistentCasingInFileNames": true,
-    "types": ["chrome", "vite/client", "node"]
+    // src 里全是浏览器代码，不引 node 类型：不然全局 setTimeout 会变成 Node 的 Timeout
+    "types": ["chrome", "vite/client"]
   },
-  "include": ["src", "vite.config.ts"]
+  "include": ["src"]
 }

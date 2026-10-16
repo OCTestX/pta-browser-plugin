@@ -5,6 +5,8 @@ import type { ChatMessage } from '../../shared/types';
 
 interface MessageListProps {
   messages: ChatMessage[];
+  /** ask 工具的卡片上用户点了某个选项 */
+  onAnswer?: (callId: string, choice: string) => void;
 }
 
 const ROLE_LABEL: Record<ChatMessage['role'], string> = {
@@ -17,7 +19,7 @@ const ROLE_LABEL: Record<ChatMessage['role'], string> = {
 /** 离底部这么近就算「还在底部」，继续自动跟随 */
 const STICK_THRESHOLD = 40;
 
-export function MessageList({ messages }: MessageListProps) {
+export function MessageList({ messages, onAnswer }: MessageListProps) {
   const scrollRef = useRef<HTMLDivElement>(null);
   const [atBottom, setAtBottom] = useState(true);
 
@@ -43,7 +45,9 @@ export function MessageList({ messages }: MessageListProps) {
     <div className="messages-wrap">
       <div className="messages" ref={scrollRef} onScroll={handleScroll}>
         {messages.map((message) => {
-          if (message.role === 'tool') return <ToolCard key={message.id} message={message} />;
+          if (message.role === 'tool') {
+            return <ToolCard key={message.id} message={message} onAnswer={onAnswer} />;
+          }
 
           // 只承载 tool_calls、没有文字的气泡不用画出来
           if (message.role === 'assistant' && !message.content.trim() && !message.streaming) {

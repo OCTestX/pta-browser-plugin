@@ -16,3 +16,5 @@ yarn-error.log*
 /public/engine/sysroot22.tar
 
 .vscode/*
+# IDE 本地状态，不进版本库
+.idea/

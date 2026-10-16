@@ -17,6 +17,12 @@ export interface ChatMessage {
   toolStatus?: 'running' | 'ok' | 'error';
   /** role === 'tool' 且是 js_inject 时，代码原文（渲染用） */
   toolCode?: string;
+  /** role === 'tool' 且是 ask 时：问题、选项、用户选中的答案 */
+  toolQuestion?: string;
+  toolOptions?: string[];
+  toolChoice?: string;
+  /** role === 'tool' 且是 diff 时：左右两栏原文 */
+  toolDiff?: { left: string; right: string; leftLabel: string; rightLabel: string };
 }
 
 export interface ToolCall {

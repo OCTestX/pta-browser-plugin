@@ -42,6 +42,7 @@ scripts/
   fetch-engine.mjs      下载编译器的三大资源（约 91MB，build 前自动跑一次）
   gen-icons.py           生成 public/icons 下的图标
   package-firefox.mjs    把 dist/firefox 打成无签名的 xpi（npm run package:firefox）
+  test-diff.mjs          diff 引擎：行配对、行号、颜色分类、超大输入降级
   test-compile.mjs       内置 C 编译器：真实引擎编译运行 + 样例比对
   test-deepseek.mjs      假的 fetch 跑 SSE 解析与错误映射
   smoke.mjs              jsdom 冒烟测试：清单完整性、悬浮窗、流式对话、设置页
@@ -54,7 +55,7 @@ npm install
 npm run build      # 类型检查 + 产出 dist/chrome、dist/firefox
 npm run test       # SSE 解析校验 + 冒烟测试（冒烟测试需要先 build）
 npm run icons      # 重新生成图标（需要 python3 + Pillow）
-npm run package:firefox   # 构建 Firefox 版并打成 dist/pta-assistant-v1.0-beta.xpi（无签名）
+npm run package:firefox   # 构建 Firefox 版并打成 dist/pta-assistant-v1.0.xpi（无签名）
 ```
 
 需要 Node 22.18+（`scripts/test-deepseek.mjs` 直接跑 TS 用的类型擦除）。
@@ -67,7 +68,7 @@ npm run package:firefox   # 构建 Firefox 版并打成 dist/pta-assistant-v1.0-
 
 - Chrome：`chrome://extensions` -> 打开「开发者模式」-> 「加载已解压的扩展程序」-> 选择 `dist/chrome`
 - Firefox（开发）：`about:debugging#/runtime/this-firefox` -> 「临时载入附加组件」-> 选择 `dist/firefox/manifest.json`
-- Firefox（发给别人）：`npm run package:firefox` 打成 `dist/pta-assistant-v1.0-beta.xpi`（无签名），
+- Firefox（发给别人）：`npm run package:firefox` 打成 `dist/pta-assistant-v1.0.xpi`（无签名），
   对方同样在「临时载入附加组件」里选这个 xpi 文件即可。产物名跟面板徽标一致，而清单里的 `version`
   仍是数字 `1.0.0`（Chrome 不允许清单版本号带 `alpha` 后缀）
 
@@ -166,7 +167,7 @@ npm run package:firefox   # 构建 Firefox 版并打成 dist/pta-assistant-v1.0-
   - **恢复默认有两条路**：双击标题栏，或**双击工具栏的插件图标**（两次点击间隔 ≤400ms 算双击；第二下只发复位消息、不再开关面板，所以窗口不会开完又关掉）
 - **智能滚动**：用户往上翻看的时候不再把视图拽回底部（以前每来一个流式字符都会跳到底部）；离开底部时右下角出现「↓ 回到底部」
 - **工具卡片**：可以折叠/展开（长代码、长输出不再一直占屏），代码与结果各有「复制」按钮（用 `execCommand` 复制，不需要额外权限）
-- **设置页的「模拟输入测试」（v1.0-beta 起默认隐藏，代码保留）**：一个文本框 + **一种写入方法一个按钮**（共 17 种，按四组排布），点哪个就用哪种方式把文本框内容写进当前页面的作答区（覆盖内容、不提交）。结果回显含三件事：回读比对（一致/第几行不一致）、**页面是否弹了「禁止粘贴」这类提示**、用的哪种方法。测试成功后该按钮会标 ✅ 并记进 storage，旁边显示「当前可用方法」
+- **设置页的「模拟输入测试」（v1.0 起默认隐藏，代码保留）**：一个文本框 + **一种写入方法一个按钮**（共 17 种，按四组排布），点哪个就用哪种方式把文本框内容写进当前页面的作答区（覆盖内容、不提交）。结果回显含三件事：回读比对（一致/第几行不一致）、**页面是否弹了「禁止粘贴」这类提示**、用的哪种方法。测试成功后该按钮会标 ✅ 并记进 storage，旁边显示「当前可用方法」
   - **CDP 那几个方法不需要设置页开关**，一律直接尝试，挂不上调试器就如实报错
   - **实测结论（2026-10-14，PTA 真实页面）**：只有「**整段 dispatch**」成功，其余（CDP 逐字真按键 / CDP keyDown+text / CDP 整段插入 / CDP 点击后按键 / execCommand / 手工输入事件 / 改 DOM / 输入法事件链 / paste 事件 / value setter / 剪贴板+Ctrl+V / 剪贴板+execCommand(paste)）都被页面拦下并弹「禁止粘贴」。`write_editor_code` 工具走的正是「整段 dispatch」
   - 17 种方法分组：**编辑器状态（CM6 API）**：整段 dispatch / 先 focus 再 dispatch / dispatch + 标注输入 / replaceSelection / 逐行 dispatch；**CDP 真实输入**：CDP 逐字真实按键 / CDP 真实点击 + 逐字按键 / CDP keyDown+text 逐字 / CDP 整段插入；**DOM 与事件**：execCommand / 手工派发 beforeinput+input / 改 DOM + 派发 input / 模拟输入法事件链 / 手工派发 paste 事件 / 原生 value setter；**剪贴板**：剪贴板 + 真 Ctrl+V / 剪贴板 + execCommand(paste)
@@ -208,6 +209,67 @@ npm run package:firefox   # 构建 Firefox 版并打成 dist/pta-assistant-v1.0-
 汇报文案沿用原来那套：编译错误原样带回 clang 诊断（含行列）、运行区分「崩溃 / 非零退出 / 超时」、输出过长会截断。
 版本号同步到 0.9.0。
 
+## ask / diff：改代码前先问，改完给你看
+
+### ask 工具（选择题）
+
+模型需要用户拍板时调用 `ask(question, options)`：面板的工具卡片上直接出选择题，点一下就回传给模型，
+这一轮会一直挂在等作答（面板顶上同时有进度条）。选项点了之后卡片变成「已选择：…」。
+
+- 消息链路：`chat/ask`（后台 → 面板）+ `chat/ask-answer`（面板 → 后台），用 `callId` 对上号
+- 用户点「停止」或者这一轮结束时，后台会把没答完的 ask 解掉（返回「用户已停止这次提问」），
+  不会把 agent loop 挂死
+- 系统提示里的硬规矩：**用户没有明确要求改代码时，`write_editor_code` 之前必须先 ask 一次**；
+  用户选了「先别改」就停下讲思路，不许再动他的代码
+
+### diff 工具（左右两列对照）
+
+模型把改动前后的文本交给 `diff(left, right)`，工具卡片里渲染成左右两列，行级配色：
+
+| 类型 | 表现 |
+|---|---|
+| 相同 | 灰色，两列都在 |
+| 修改 | 左列红底删除线、右列蓝底 |
+| 新增 | 只在右列，绿底 |
+| 删除 | 只在左列，红底 + 删除线 |
+
+- 逐行 LCS 比较（`src/shared/diff.ts`）：先掐掉公共前后缀，中间段做动态规划，
+  连续的「删除 + 新增」两两配对成「修改」；改动规模超过 600×600 行时降级成整体增删，别把界面卡住
+- **界面照 IDEA 的 diff 做**（`src/content/components/DiffView.tsx`）：
+  - 左右两列 + **中间一条道**：行号夹在两边，改动块的头尾画 `»` / `«`，中间一条竖线把一次改动圈成一团
+  - 改动聚成一块一块（`segmentDiff`），没动的上下文压暗；超过 6 行的上下文先折叠成「⋯ 还有 N 行没改动，点开」
+  - 颜色：新增只在右列绿底、删除只在左列红底、修改左红右蓝；再配一行**词级高亮**（`markWordChanges`，
+    例如 `scanf("%d", a);` → `scanf("%d", &a);` 只把 `&` 标出来），整行都被重写时不做词级高亮（会糊成一片）
+  - 左右行不许折行（折行会让两列看着错位），面板太窄时横向截断，悬停能看到整行
+  - 卡片标题行显示「新增 N · 修改 N · 删除 N」，右上角有「复制新代码」
+- 工具返回给模型的是同一份统计（模型据此在回答里复述），两栏原文只在面板里显示
+- 系统提示里的硬规矩：**改完代码必须调用 diff**，不要只在回答里用文字描述改了什么
+
+### 顶栏的 token 计数
+
+- 请求体带 `stream_options: { include_usage: true }`（DeepSeek / 硅基流动这类 OpenAI 兼容接口认），
+  最后一帧回传的 `usage` 在 **agent loop 里累加**（一轮对话往往要多次请求模型），每轮结束推给面板
+- 标题栏右侧常驻显示 `Token 总数（输入 x / 输出 y）`；接口不回传 usage 的兼容实现会退化成
+  `Token ≈ n`，按中英文字符粗估**当前这一轮**的输出（中日韩字符算 1 个，其余 4 个字符算 1 个），流式过程中数字会动
+- 「新会话」会把计数清零
+
+### ask 的超时与「选了却没反应」
+
+ask 以前没有超时：用户不点，这一轮就永远挂着；而且点完选项只是本地标记，后台若已经不等了（超时、
+点了「新会话」、上一轮已结束），用户会看到「选了，但模型再也没说话」。现在三件事：
+
+- **120 秒超时**：等不到作答就按「用户没有作答」继续这一轮，并在聊天区提示一句，不把 agent loop 挂死
+- **作答要后台确认**：面板点选项后等后台回执；被拒绝就把卡片恢复成可点并提示「这次提问已经结束」，
+  不再假装选上了
+- **空输出兜底**：模型整轮一个字都没吐时给提示（原来空气泡不渲染，看起来就是卡死）
+
+### 进度条与更矮的工具卡片
+
+- 生成中（包括等用户回答 ask）、正在写作答区时，面板顶部有一条 4px 的无限循环进度条；
+  `prefers-reduced-motion` 下放慢到 3 秒
+- 工具卡片**默认收起**，只有一行（工具名 + 参数摘要 + 状态）；展开后代码区最高 140px、字号 11.5px、
+  行高 1.45，减少滚动。`ask` 与 `diff` 两种卡片默认展开（不然没法选、也看不见改了什么）
+
 ## 面板快捷通道：「输入」与「新会话」
 
 两个不走 AI 的即时通道，都是用户直接点的按钮：
@@ -231,16 +293,16 @@ npm run package:firefox   # 构建 Firefox 版并打成 dist/pta-assistant-v1.0-
 - 还在生成时点它，会先给后台发 `chat/stop` 把那一轮掐掉；那一轮迟到的流式增量因为请求号已失效，不会再冒出来
 - API Key 与所有设置不受影响
 
-## v1.0-beta：默认接口、面板尺寸与设置页
+## v1.0：默认接口、面板尺寸与设置页
 
 - **设置页顶部作者卡片**：圆角矩形卡片，左边是矩形圆角头像（`public/avata.jpg`，跟着构建进 dist 并加进
   `web_accessible_resources`，设置页用 `ext.runtime.getURL` 取），右边是大字昵称 `OCTest`、
-  下面一行小字邮箱 `octestwx@qq.com`，再下面是可点的网站链接 `octest.top`（点开走后台开新标签页）
+  下面一行小字邮箱 `octestwx@qq.com`，再下面是可点的网站链接 `octestpi.top`（点开走后台开新标签页）
 - **默认接口换成硅基流动**：`https://api.siliconflow.cn/v1` + `deepseek-ai/DeepSeek-V4.1-Flash`（`manifest` 的 `host_permissions` 已放行该域名；DeepSeek 的权限保留，切回去只要改设置页）
 - **「教程」按钮**：接口地址输入框右侧，下面写着「怎么配 Key、怎么用，看教程」；点它由后台开新标签页去
-  `http://octest.top/pta-assist-plugin`（content script 没有开标签页的权限；后台只放行 `http(s)`，
+  `http://octestpi.top/pta-assist-plugin`（content script 没有开标签页的权限；后台只放行 `http(s)`，
   不让它变成任意开页面的入口）
-- **版本号**：标题栏徽标 `v1.0-beta`（manifest 的 `version` 仍是数字 `1.0.0`——Chrome 的清单版本号不允许带后缀，带了装不上）
+- **版本号**：标题栏徽标 `v1.0`（manifest 的 `version` 仍是数字 `1.0.0`——Chrome 的清单版本号不允许带后缀，带了装不上）
 - **面板能改大小了**：右下角把手拖拽调整，宽高与位置一起存（`pta-assistant-panel-layout`），刷新还在，夹在 360×320 与视口之间；老版本只存过位置的 key 会顺手删掉
 - **双击插件图标恢复默认位置与大小**：后台把间隔 ≤400ms 的两次点击认成双击，第二下只发 `panel/reset-layout` 而不再开关面板
 - **删掉「用调试器发送真实按键」开关**：`simulate_keyboard_input` 一律走调试器（attach 失败照旧退回模拟事件）。旧版本存过的这个字段在读设置时会被丢掉

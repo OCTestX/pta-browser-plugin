@@ -10,9 +10,9 @@
     "build:firefox": "ENTRY=background TARGET=firefox vite build && ENTRY=content TARGET=firefox vite build",
     "package:firefox": "npm run build:firefox && node scripts/package-firefox.mjs",
     "fetch-engine": "node scripts/fetch-engine.mjs",
-    "typecheck": "tsc --noEmit",
+    "typecheck": "tsc --noEmit && tsc --noEmit -p tsconfig.node.json",
     "pretest": "npm run build",
-    "test": "node scripts/test-typist.mjs && node scripts/test-pta-tools.mjs && node scripts/test-compile.mjs && node scripts/test-deepseek.mjs && node scripts/test-background.mjs chrome && node scripts/test-background.mjs firefox && npm run smoke",
+    "test": "node scripts/test-typist.mjs && node scripts/test-diff.mjs && node scripts/test-pta-tools.mjs && node scripts/test-compile.mjs && node scripts/test-deepseek.mjs && node scripts/test-background.mjs chrome && node scripts/test-background.mjs firefox && npm run smoke",
     "smoke": "node scripts/smoke.mjs chrome && node scripts/smoke.mjs firefox",
     "icons": "python3 scripts/gen-icons.py"
   },

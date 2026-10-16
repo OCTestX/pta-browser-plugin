@@ -1,7 +1,15 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { ext } from '../../shared/browser';
-import { isChatEvent, type StartChatResponse, type ToolRunResponse } from '../../shared/messages';
+import {
+  isChatEvent,
+  type DiffPayload,
+  type StartChatResponse,
+  type TokenUsage,
+  type ToolRunResponse,
+} from '../../shared/messages';
 import { createId, toApiMessages, type ChatMessage, type ToolCall } from '../../shared/types';
+import { diffLines, diffStats } from '../../shared/diff';
+
 
 const WELCOME = '你好，我是 PTA 助手。点击浏览器工具栏的插件图标可以开关这个悬浮窗。';
 
@@ -18,6 +26,10 @@ export function useChat(hasApiKey: boolean) {
   const [writing, setWriting] = useState(false);
   const [notice, setNotice] = useState<ChatNotice | null>(null);
   const requestRef = useRef<string | null>(null);
+  // 收尾时要知道「这一轮到底吐没吐字」，state 更新是异步的，所以留一份同镜像
+  const messagesRef = useRef<ChatMessage[]>(messages);
+  messagesRef.current = messages;
+  const [usage, setUsage] = useState<TokenUsage | null>(null);
   // 当前正在写的 assistant 气泡；为 null 表示下一段文字要新起一个气泡
   const assistantRef = useRef<string | null>(null);
 
@@ -34,7 +46,17 @@ export function useChat(hasApiKey: boolean) {
           startTool(message.callId, message.name, message.args);
           return;
         case 'chat/tool-end':
-          endTool(message.callId, message.result, message.isError);
+          endTool(message.callId, message.result, message.isError, message.diff);
+          return;
+        case 'chat/ask':
+          showAsk(message.callId, message.question, message.options);
+          return;
+        case 'chat/usage':
+          setUsage({
+            promptTokens: message.promptTokens,
+            completionTokens: message.completionTokens,
+            totalTokens: message.totalTokens,
+          });
           return;
         case 'chat/notice':
           appendSystem(message.text);
@@ -136,11 +158,25 @@ export function useChat(hasApiKey: boolean) {
     });
   }, []);
 
-  const endTool = useCallback((callId: string, result: string, isError: boolean) => {
+  const endTool = useCallback(
+    (callId: string, result: string, isError: boolean, diff?: DiffPayload) => {
+      setMessages((prev) =>
+        prev.map((message) =>
+          message.role === 'tool' && message.toolCallId === callId
+            ? { ...message, content: result, toolStatus: isError ? 'error' : 'ok', toolDiff: diff }
+            : message,
+        ),
+      );
+    },
+    [],
+  );
+
+  /** ask 工具：把问题挂到对应的卡片上，等用户点选 */
+  const showAsk = useCallback((callId: string, question: string, options: string[]) => {
     setMessages((prev) =>
       prev.map((message) =>
         message.role === 'tool' && message.toolCallId === callId
-          ? { ...message, content: result, toolStatus: isError ? 'error' : 'ok' }
+          ? { ...message, toolQuestion: question, toolOptions: options }
           : message,
       ),
     );
@@ -156,11 +192,20 @@ export function useChat(hasApiKey: boolean) {
   const finish = useCallback(() => {
     const currentId = assistantRef.current;
     if (currentId) {
+      // 模型这一轮一个字都没吐：空气泡不渲染，用户会以为卡死了，所以留个提示
+      const produced = messagesRef.current
+        .find((message) => message.id === currentId)?.content.trim();
       setMessages((prev) =>
         prev.map((message) =>
           message.id === currentId ? { ...message, streaming: false } : message,
         ),
       );
+      if (!produced) {
+        setNotice({
+          text: '模型这一轮没有输出内容（可以再问一次，或点「新会话」重新开始）',
+          needsApiKey: false,
+        });
+      }
     }
     assistantRef.current = null;
     requestRef.current = null;
@@ -252,6 +297,44 @@ export function useChat(hasApiKey: boolean) {
     [streaming, writing],
   );
 
+  /**
+   * 用户在 ask 卡片上点了某个选项：把答案回给后台，卡片显示「已选择」。
+   * 后台确认收到才算数——如果那一轮已经结束（超时、点了「新会话」），
+   * 要把卡片恢复成可点并提示用户，否则用户会以为选上了却看不到模型继续输出。
+   */
+  const answerAsk = useCallback(async (callId: string, choice: string) => {
+    const requestId = requestRef.current;
+    if (!requestId) {
+      setNotice({ text: '这一轮已经结束，这个选择没有送出去', needsApiKey: false });
+      return;
+    }
+    const mark = (picked?: string) =>
+      setMessages((prev) =>
+        prev.map((message) =>
+          message.role === 'tool' && message.toolCallId === callId
+            ? { ...message, toolChoice: picked }
+            : message,
+        ),
+      );
+
+    mark(choice);
+    try {
+      const response = (await ext.runtime.sendMessage({
+        type: 'chat/ask-answer',
+        requestId,
+        callId,
+        choice,
+      })) as StartChatResponse | undefined;
+      if (response?.ok === false) {
+        mark(undefined);
+        setNotice({ text: response.message ?? '这次提问已经结束，模型没有收到你的选择', needsApiKey: false });
+      }
+    } catch {
+      mark(undefined);
+      setNotice({ text: '插件后台没有响应，这次提问的答案没送出去', needsApiKey: false });
+    }
+  }, []);
+
   /** 「新会话」：掐掉还在生成的一轮，回到只剩欢迎语的干净上下文 */
   const reset = useCallback(() => {
     const requestId = requestRef.current;
@@ -260,20 +343,41 @@ export function useChat(hasApiKey: boolean) {
     assistantRef.current = null;
     setStreaming(false);
     setNotice(null);
+    setUsage(null);
     setMessages([{ id: 'welcome', role: 'system', content: WELCOME, createdAt: 0 }]);
   }, []);
 
   return {
     messages,
     streaming,
+    /** 后台还有活没干完（生成中——含等用户回答 ask 的那段时间、或正在写作答区） */
+    busy: streaming || writing,
     writing,
+    usage,
+    /** 接口没回传 usage 时也要让数字动起来：按中英文字符粗估**当前这一轮**的输出 */
+    liveOutputTokens: streaming
+      ? estimateTokens(
+          messagesRef.current.find((message) => message.id === assistantRef.current)?.content ?? '',
+        )
+      : 0,
     notice,
     dismissNotice: useCallback(() => setNotice(null), []),
     send,
     stop,
     inputCode,
+    answerAsk,
     reset,
   };
+}
+
+/** 粗估 token 数：中日韩字符约 1 个 token，其余约 4 个字符 1 个 token（接口没回 usage 时兜底） */
+function estimateTokens(text: string): number {
+  let cjk = 0;
+  for (const char of text) {
+    const code = char.codePointAt(0) ?? 0;
+    if (code >= 0x3000 && code <= 0x9fff) cjk += 1;
+  }
+  return Math.ceil(cjk + (text.length - cjk) / 4);
 }
 
 /** 工具卡片上要显示什么：js_inject 把代码完整放出来，write_document 只给个摘要 */
@@ -299,6 +403,16 @@ function summarizeArgs(name: string, rawArgs: string): { code?: string; summary?
     if (typeof parsed.press === 'string' && parsed.press) parts.push(`按下 ${parsed.press}`);
     if (parsed.clear === true) parts.push('先清空');
     return { summary: parts.join(' · ') };
+  }
+  if (name === 'ask' && typeof parsed.question === 'string') {
+    const options = Array.isArray(parsed.options) ? parsed.options.filter((o) => typeof o === 'string') : [];
+    return { summary: options.length > 0 ? `选项：${options.join(' / ')}` : undefined };
+  }
+  if (name === 'diff') {
+    const left = typeof parsed.left === 'string' ? parsed.left : '';
+    const right = typeof parsed.right === 'string' ? parsed.right : '';
+    const stats = diffStats(diffLines(left, right));
+    return { summary: `新增 ${stats.added} · 修改 ${stats.changed} · 删除 ${stats.removed}` };
   }
   const summary = rawArgs.trim();
   return { summary: summary === '{}' || summary === '' ? undefined : summary };

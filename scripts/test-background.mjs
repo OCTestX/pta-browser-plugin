@@ -201,8 +201,8 @@ check('旧版本存过的调试器开关被丢掉', !('useDebuggerInput' in lega
 
 /* ---------- 教程按钮开新标签页 ---------- */
 
-const opened = await respond2({ type: 'ui/open-url', url: 'http://octest.top/pta-assist-plugin' });
-check('点教程会开新标签页去教程页', opened.ok === true && state.createdTabs.at(-1).url === 'http://octest.top/pta-assist-plugin');
+const opened = await respond2({ type: 'ui/open-url', url: 'http://octestpi.top/pta-assist-plugin' });
+check('点教程会开新标签页去教程页', opened.ok === true && state.createdTabs.at(-1).url === 'http://octestpi.top/pta-assist-plugin');
 const refused = await respond2({ type: 'ui/open-url', url: 'javascript:alert(1)' });
 check('只放行 http/https 链接', refused.ok === false);
 
@@ -238,6 +238,76 @@ check('点停止能立刻结束这次生成（不必等页面里的轮询结束�
 check('卡住的工具也收到收尾通知（面板上的工具卡片不会一直转）', state.tabEvents.some((e) => e.type === 'chat/tool-end' && e.result === '已停止'));
 check('中止时往页面里置了取消标记，页面里的轮询循环能自己退出', state.abortFlags >= 1);
 state.hangJudge = false;
+
+/* ---------- ask：等用户点选；diff：把左右两栏交给面板 ---------- */
+
+// 模型先问一句「要不要改」，这一轮会一直挂在等用户点选上
+state.sse = [
+  `data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"c3","function":{"name":"ask","arguments":"{\\"question\\":\\"要不要我直接改作答区？\\",\\"options\\":[\\"改\\",\\"先别改，只讲思路\\"]}"}}]}}]}\n\ndata: [DONE]\n\n`,
+  `data: {"choices":[{"delta":{"content":"好的，先不动你的代码。"}}]}\n\ndata: [DONE]\n\n`,
+];
+state.tabEvents.length = 0;
+// fetch 桩按累计调用次数回放 SSE，新场景先归零，否则拿到的是上一段剧本的回答
+state.modelCalls.length = 0;
+await respond2({ type: 'chat/start', requestId: 'r4', messages: [{ role: 'user', content: 'hi' }] }, { tab: { id: 7 } });
+await tick(50);
+const asked = state.tabEvents.find((e) => e.type === 'chat/ask');
+check('ask 把问题与选项发给面板', asked?.question === '要不要我直接改作答区？' && asked.options.length === 2);
+check('用户还没点选时这一轮挂着（没有 done）', !state.tabEvents.some((e) => e.type === 'chat/done'));
+
+await respond2({ type: 'chat/ask-answer', requestId: 'r4', callId: asked.callId, choice: '先别改，只讲思路' });
+await tick(50);
+check(
+  '用户的回答作为工具结果回灌给模型',
+  state.tabEvents.some((e) => e.type === 'chat/tool-end' && e.callId === asked.callId && e.result.includes('先别改，只讲思路')),
+);
+check('拿到回答后这一轮继续跑完', state.tabEvents.some((e) => e.type === 'chat/done'));
+
+// 用户点了「停止」，还没答的 ask 不能把后台挂死
+state.sse = [
+  `data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"c4","function":{"name":"ask","arguments":"{\\"question\\":\\"要提交吗？\\",\\"options\\":[\\"提交\\",\\"不提交\\"]}"}}]}}]}\n\ndata: [DONE]\n\n`,
+  `data: {"choices":[{"delta":{"content":"好。"}}]}\n\ndata: [DONE]\n\n`,
+];
+state.tabEvents.length = 0;
+state.modelCalls.length = 0;
+await respond2({ type: 'chat/start', requestId: 'r5', messages: [{ role: 'user', content: 'hi' }] }, { tab: { id: 7 } });
+await tick(50);
+check('第二个 ask 也发出去了', state.tabEvents.some((e) => e.type === 'chat/ask' && e.question === '要提交吗？'));
+await respond2({ type: 'chat/stop', requestId: 'r5' });
+await tick(50);
+check('停止会解掉没答完的 ask 并正常收尾', state.tabEvents.some((e) => e.type === 'chat/done' && e.aborted === true));
+
+// 已经超时的提问（或者已经结束的那一轮）再作答：要如实说没收到，别假装收到了
+const late = await respond2({ type: 'chat/ask-answer', requestId: 'r5', callId: 'call_never', choice: '提交' });
+check('对已经结束的提问作答会被拒绝', late.ok === false);
+
+// diff：把左右两栏交给面板，同时给模型一句统计
+state.sse = [
+  `data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"c5","function":{"name":"diff","arguments":"{\\"left\\":\\"int b = 2;\\",\\"right\\":\\"int b = 3;\\\\nprintf(1);\\"}"}}]}}]}\n\ndata: [DONE]\n\n`,
+  `data: {"choices":[{"delta":{"content":"改好了。"}}]}\n\ndata: [DONE]\n\n`,
+];
+state.tabEvents.length = 0;
+state.modelCalls.length = 0;
+await respond2({ type: 'chat/start', requestId: 'r6', messages: [{ role: 'user', content: 'hi' }] }, { tab: { id: 7 } });
+await tick(50);
+const diffEnd = state.tabEvents.find((e) => e.type === 'chat/tool-end' && e.callId === 'c5');
+check('diff 把改动前后两栏传给面板', diffEnd?.diff?.left === 'int b = 2;' && diffEnd?.diff?.right.startsWith('int b = 3;'));
+check('diff 的列标题有默认值', diffEnd?.diff?.leftLabel === '改动前' && diffEnd?.diff?.rightLabel === '改动后');
+check('diff 的工具结果带行数统计', diffEnd?.result.includes('新增 1 行') && diffEnd.result.includes('修改 1 行'));
+
+// token 用量：接口在最后一帧回传 usage 时，面板要收到累计值
+state.sse = [
+  `data: {"choices":[{"delta":{"content":"好。"}}]}\n\ndata: {"choices":[],"usage":{"prompt_tokens":1234,"completion_tokens":56,"total_tokens":1290}}\n\ndata: [DONE]\n\n`,
+];
+state.tabEvents.length = 0;
+state.modelCalls.length = 0;
+await respond2({ type: 'chat/start', requestId: 'r7', messages: [{ role: 'user', content: 'hi' }] }, { tab: { id: 7 } });
+await tick(50);
+const usageEvent = state.tabEvents.find((e) => e.type === 'chat/usage');
+check(
+  '接口回传 usage 时上报给面板',
+  usageEvent?.promptTokens === 1234 && usageEvent?.completionTokens === 56 && usageEvent?.totalTokens === 1290,
+);
 
 /* ---------- 「输入」按钮：面板输入框 → 作答区（PTA 禁粘贴时的快捷通道） ---------- */
 

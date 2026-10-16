@@ -204,7 +204,8 @@ check(
 );
 check('聊天区存在', Boolean(withKey.find('.messages')));
 check('输入框存在', Boolean(withKey.find('.composer__input')));
-check('标题栏版本号是 v1.0-beta', withKey.find('.panel__badge')?.textContent === 'v1.0-beta');
+check('标题栏版本号是 v1.0', withKey.find('.panel__badge')?.textContent === 'v1.0');
+check('没聊过时顶栏不显示 token', withKey.find('.panel__usage').textContent === '');
 
 withKey.setValue(withKey.find('.composer__input'), '帮我看看这道题');
 await tick();
@@ -276,6 +277,21 @@ check(
   withKey.find('.bubble__content--md').querySelectorAll('.katex-error').length === 0,
 );
 
+check('流式过程中顶栏按字数实时估算 token', /^Token ≈ \d+$/.test(withKey.find('.panel__usage').textContent));
+
+withKey.emit({
+  type: 'chat/usage',
+  requestId,
+  promptTokens: 1024,
+  completionTokens: 86,
+  totalTokens: 1110,
+});
+await tick();
+check(
+  '接口回传用量后显示精确的输入/输出',
+  withKey.find('.panel__usage').textContent === 'Token 1110（输入 1024 / 输出 86）',
+);
+
 withKey.emit({ type: 'chat/done', requestId, aborted: false });
 await tick();
 check('生成结束后按钮变回发送', withKey.find('.composer__send').textContent === '发送');
@@ -301,12 +317,12 @@ check('邮箱显示在昵称下面', authorCard.querySelector('.author__email').
 check('作者信息只在顶部出现一次', withKey.find('.settings').textContent.split('octestwx@qq.com').length === 2);
 
 const siteLink = authorCard.querySelector('.author__site');
-check('网站链接显示 octest.top', siteLink.textContent === 'octest.top');
+check('网站链接显示 octestpi.top', siteLink.textContent === 'octestpi.top');
 siteLink.click();
 await tick();
 check(
-  '点网站链接让后台打开 octest.top',
-  withKey.requests.filter((r) => r.type === 'ui/open-url').map((r) => r.url).includes('https://octest.top'),
+  '点网站链接让后台打开 octestpi.top',
+  withKey.requests.filter((r) => r.type === 'ui/open-url').map((r) => r.url).includes('http://octestpi.top'),
 );
 
 const tutorialButton = [...withKey.shadow().querySelectorAll('.field__jump')][0];
@@ -316,7 +332,7 @@ tutorialButton.click();
 await tick();
 check(
   '点教程让后台打开教程页面',
-  withKey.requests.some((r) => r.type === 'ui/open-url' && r.url === 'http://octest.top/pta-assist-plugin'),
+  withKey.requests.some((r) => r.type === 'ui/open-url' && r.url === 'http://octestpi.top/pta-assist-plugin'),
 );
 
 withKey.setValue(withKey.find('.field__input[type="password"]'), 'sk-test-key');
@@ -403,7 +419,10 @@ tools.emit({
 await tick();
 check('工具卡片出现在对话里', Boolean(tools.find('.tool')));
 check('工具卡片显示执行中', Boolean(tools.find('.tool--running')));
-check('js_inject 的代码完整显示出来', tools.find('.tool__code')?.textContent === 'return document.title');
+check('工具卡片默认收起（少占高度）', !tools.find('.tool__code') && !tools.find('.tool__result'));
+tools.find('.tool__toggle').click();
+await tick();
+check('展开后 js_inject 的代码完整显示出来', tools.find('.tool__code')?.textContent === 'return document.title');
 check('只承载 tool_calls 的空助手气泡不渲染', tools.find('.bubble--assistant') === null);
 
 tools.emit({ type: 'chat/tool-end', requestId: toolRequestId, callId: 'call_1', result: '题目 - PTA', isError: false });
@@ -698,14 +717,16 @@ ui.emit({
   args: '{"code":"return 1"}',
 });
 await tick();
-check('工具卡片默认展示代码', Boolean(ui.find('.tool__code')));
+check('工具卡片默认收起', !ui.find('.tool__code'));
 
 ui.find('.tool__toggle').click();
 await tick();
-check('点折叠后代码收起来', !ui.find('.tool__code'));
+check('点一下展开代码', Boolean(ui.find('.tool__code')));
 ui.find('.tool__toggle').click();
 await tick();
-check('再点一下又展开', Boolean(ui.find('.tool__code')));
+check('再点一下收起来', !ui.find('.tool__code'));
+ui.find('.tool__toggle').click();
+await tick();
 
 const copied = [];
 ui.window.document.execCommand = (command) => {
@@ -781,10 +802,15 @@ shortcut.emit({ type: 'chat/delta', requestId: shortcutRequestId, text: '好的�
 await tick();
 check('新一轮上下文已建立', shortcut.find('.bubble--user').textContent.includes('帮我看看这道题'));
 
+shortcut.emit({ type: 'chat/usage', requestId: shortcutRequestId, promptTokens: 300, completionTokens: 12, totalTokens: 312 });
+await tick();
+check('顶栏显示这一轮的 token 用量', shortcut.find('.panel__usage').textContent === 'Token 312（输入 300 / 输出 12）');
+
 shortcut.find('.panel__new-chat').click();
 await tick();
 check('「新会话」把对话清回只剩欢迎语', !shortcut.find('.bubble--user') && !shortcut.find('.bubble--assistant'));
 check('「新会话」顺带清掉提示条', shortcut.find('.notice') === null);
+check('「新会话」顺带清掉 token 计数', shortcut.find('.panel__usage').textContent === '');
 check('「新会话」不刷新页面也能重开一轮', shortcut.find('.composer__send').textContent === '发送');
 
 // 上一轮还在生成时点「新会话」：先把后台那一轮掐掉，旧增量不能再冒出来
@@ -802,5 +828,167 @@ check(
 shortcut.emit({ type: 'chat/delta', requestId: abortedRequestId, text: '迟到的回答' });
 await tick();
 check('掐掉后迟到的增量不会再写进对话', !shortcut.find('.messages').textContent.includes('迟到的回答'));
+
+/* ---------- 场景八：ask 提问、diff 对照、进度条 ---------- */
+
+const tools2 = boot({ hasApiKey: true });
+await tick();
+tools2.toggle();
+await tick();
+check('空闲时不显示进度条', !tools2.find('.panel__progress'));
+
+tools2.setValue(tools2.find('.composer__input'), '帮我改一下这段代码');
+await tick();
+tools2.find('.composer__send').click();
+await tick();
+const askId = tools2.requests.find((r) => r.type === 'chat/start')?.requestId;
+check('开始生成后出现进度条', Boolean(tools2.find('.panel__progress')));
+
+// ask：模型抛出一个选择题，卡片上直接能选
+tools2.emit({
+  type: 'chat/tool-start',
+  requestId: askId,
+  callId: 'call_ask',
+  name: 'ask',
+  args: '{"question":"要不要我直接改作答区？","options":["改","先别改，只讲思路"]}',
+});
+tools2.emit({
+  type: 'chat/ask',
+  requestId: askId,
+  callId: 'call_ask',
+  question: '要不要我直接改作答区？',
+  options: ['改', '先别改，只讲思路'],
+});
+await tick();
+const askCard = tools2.shadow().querySelector('.tool');
+check('ask 卡片默认展开', Boolean(askCard.querySelector('.ask')));
+check('ask 卡片显示问题', askCard.querySelector('.ask__question').textContent === '要不要我直接改作答区？');
+check('ask 卡片列出两个选项', askCard.querySelectorAll('.ask__option').length === 2);
+
+askCard.querySelectorAll('.ask__option')[1].click();
+await tick();
+check(
+  '点选项把答案交给后台',
+  tools2.requests.some(
+    (r) => r.type === 'chat/ask-answer' && r.callId === 'call_ask' && r.choice === '先别改，只讲思路',
+  ),
+);
+check('选中后卡片显示用户的选择', askCard.querySelector('.ask__chosen').textContent === '已选择：先别改，只讲思路');
+check('选中后选项按钮消失', askCard.querySelectorAll('.ask__option').length === 0);
+
+tools2.emit({
+  type: 'chat/tool-end',
+  requestId: askId,
+  callId: 'call_ask',
+  result: '用户选择了「先别改，只讲思路」',
+  isError: false,
+});
+await tick();
+
+// diff：左右两列对照，按行标出新增/修改/删除
+tools2.emit({
+  type: 'chat/tool-start',
+  requestId: askId,
+  callId: 'call_diff',
+  name: 'diff',
+  args: JSON.stringify({
+    left: 'int a = 1;\nint b = 2;\nreturn 0;',
+    right: 'int a = 1;\nint b = 3;\nprintf("%d", a);\nreturn 0;',
+  }),
+});
+tools2.emit({
+  type: 'chat/tool-end',
+  requestId: askId,
+  callId: 'call_diff',
+  result: '差异：新增 1 行，修改 1 行，删除 0 行（左右对照已展示给用户）',
+  isError: false,
+  diff: {
+    left: 'int a = 1;\nint b = 2;\nreturn 0;',
+    right: 'int a = 1;\nint b = 3;\nprintf("%d", a);\nreturn 0;',
+    leftLabel: '改动前',
+    rightLabel: '改动后',
+  },
+});
+await tick();
+const diffCard = [...tools2.shadow().querySelectorAll('.tool')].at(-1);
+check('diff 逐行渲染左右两列', diffCard.querySelectorAll('.diff__row').length === 6);
+check('没动的行标成相同', diffCard.querySelectorAll('.diff__row--equal').length === 2);
+check('改过的那一行左右同行显示', diffCard.querySelectorAll('.diff__row--mod').length === 1);
+check('新增的那一行标成 add', diffCard.querySelectorAll('.diff__row--add').length === 1);
+check('没删东西时不出现删除行', diffCard.querySelectorAll('.diff__row--del').length === 0);
+check(
+  '左右两列表头都有标题',
+  [...diffCard.querySelectorAll('.diff__head-cell')]
+    .map((n) => n.textContent.replace('复制新代码', '').replace('已复制', ''))
+    .join(',') === '改动前,改动后',
+);
+check('表头右侧有复制按钮', Boolean(diffCard.querySelector('.diff__copy')));
+check('改动聚成一个块', diffCard.querySelectorAll('.diff__hunk').length === 1);
+check('中间那条道给改动块画了头尾箭头', diffCard.querySelector('.diff__gutter--start').textContent === '»' && diffCard.querySelector('.diff__gutter--end').textContent === '«');
+check('每一行都有中间道', diffCard.querySelectorAll('.diff__row .diff__gutter').length === diffCard.querySelectorAll('.diff__row').length);
+check('行内被改的符号被高亮', diffCard.querySelectorAll('.diff__word').length >= 2);
+check('改动前那一行标了删除色', diffCard.querySelector('.diff__row--mod .diff__cell--left').textContent.includes('int b = 2;'));
+check('改动后那一行标了新增色', diffCard.querySelector('.diff__row--mod .diff__cell--right').textContent.includes('int b = 3;'));
+check('没改动的大段会折叠成一行', Boolean(diffCard.querySelector('.diff__more')) ||
+  diffCard.querySelectorAll('.diff__row--equal').length === 2);
+check(
+  '底部统计新增/修改/删除',
+  diffCard.querySelector('.diff__legend').textContent.includes('新增 1') &&
+    diffCard.querySelector('.diff__legend').textContent.includes('修改 1') &&
+    diffCard.querySelector('.diff__legend').textContent.includes('删除 0'),
+);
+
+tools2.emit({ type: 'chat/done', requestId: askId, aborted: false });
+await tick();
+check('这一轮结束后进度条消失', !tools2.find('.panel__progress'));
+
+// 模型这一轮一个字都没吐：必须给用户一个说法，否则看起来就是卡死
+tools2.setValue(tools2.find('.composer__input'), '这次别出声');
+await tick();
+tools2.find('.composer__send').click();
+await tick();
+// 每一轮 send 都会生成新的 requestId，事件要跟着当轮走
+const emptyRoundId = tools2.requests.filter((r) => r.type === 'chat/start').at(-1).requestId;
+tools2.emit({ type: 'chat/done', requestId: emptyRoundId, aborted: false });
+await tick();
+check(
+  '模型空输出会给出提示而不是一片空白',
+  (tools2.find('.notice__text')?.textContent ?? '').includes('没有输出内容'),
+);
+
+// 下一轮重新开始，token 计数从零算
+tools2.setValue(tools2.find('.composer__input'), '再试一次');
+await tick();
+tools2.find('.composer__send').click();
+await tick();
+const retryRoundId = tools2.requests.filter((r) => r.type === 'chat/start').at(-1).requestId;
+tools2.emit({ type: 'chat/usage', requestId: retryRoundId, promptTokens: 80, completionTokens: 4, totalTokens: 84 });
+await tick();
+check('新一轮的 token 单独计数', tools2.find('.panel__usage').textContent === 'Token 84（输入 80 / 输出 4）');
+
+
+// 生成中点「新会话」：没答的 ask 不该把界面留在等待状态
+tools2.setValue(tools2.find('.composer__input'), '再来一次');
+await tick();
+tools2.find('.composer__send').click();
+await tick();
+tools2.emit({
+  type: 'chat/tool-start',
+  requestId: askId,
+  callId: 'call_ask2',
+  name: 'ask',
+  args: '{"question":"要提交吗？","options":["提交","不提交"]}',
+});
+tools2.emit({
+  type: 'chat/ask',
+  requestId: askId,
+  callId: 'call_ask2',
+  question: '要提交吗？',
+  options: ['提交', '不提交'],
+});
+await tick();
+tools2.find('.panel__new-chat').click();
+await tick();
+check('「新会话」把没答完的 ask 一起清掉', !tools2.find('.messages').textContent.includes('要提交吗？'));
 
 console.log(`\n${target} 冒烟测试通过`);
