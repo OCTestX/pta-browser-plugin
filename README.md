@@ -1,4 +1,4 @@
-这是一个支持 Chrome 浏览器和 Firefox 浏览器的浏览器插件。
+这是一个 Chrome / Edge / Firefox / Zen 等浏览器都能装的插件（Chromium 系与 Gecko 系都支持，见下面的安装教程）。
 它需要内置C或C++语言编译环境。
 内置一个自定义的agent loop循环。
 当浏览器点击插件图标的时候，会弹出一个附加在页面上方的悬浮窗, 上面是聊天区域，下面是输入框。
@@ -16,6 +16,67 @@
 9. url 获取当前页面的url
 
 注意，只有当用户说可以发版时才可以使用v0.1等标签标记commit
+
+## 怎么安装（Chrome / Edge / Firefox / Zen / Brave …）
+
+插件**没有签名**，所以每个浏览器的装法都不一样。先记住三条铁律：
+
+1. **Chromium 系（Chrome / Edge / Brave / Vivaldi / Opera）只认「文件夹」**：把 `pta-assistant-v1.0.zip`
+   **先解压**，再在扩展管理页里「加载已解压的扩展程序」选那个文件夹。直接选 zip 会报「无法加载清单」。
+2. **Gecko 系（Firefox / Zen）可以直接选 xpi**：`about:debugging` → 临时载入附加组件 → 选
+   `pta-assistant-v1.0.xpi`。临时载入**关掉浏览器就没了**，再开一次要再载一遍。
+3. **一定要选对文件夹层级**：解压后要选**里面有 `manifest.json` 的那一层**。别选到套了两层目录的，
+   也别选项目根目录——Chrome 会先报「无法为脚本加载 content.js」，再报「无法加载清单」。
+
+### Firefox（以及 Zen Browser）
+
+Zen 是基于 Firefox（Gecko）做的浏览器，这套步骤完全一样。
+
+1. 下载 [Release 里的 `pta-assistant-v1.0.xpi`](https://github.com/OCTestX/pta-browser-plugin/releases/tag/v1.0)
+2. 地址栏打开 `about:debugging#/runtime/this-firefox`
+3. 右上角点「临时载入附加组件…」，选择刚下载的 `.xpi`（或先解压再选里面的 `manifest.json`）
+4. 浏览器工具栏出现拼图图标，点它找到「PTA 助手」并**固定**到工具栏；之后点图标就能开关悬浮窗
+5. 关掉浏览器就失效，下次启动要重新载入；想省这一步就把它长期装上（见下）
+
+长期安装（只用官方签名版本）：把 xpi 拖进 Firefox 窗口即可。没有官方签名包时，需要在
+`about:config` 里把 `xpinstall.signatures.required` 改成 `false`，再把 xpi 放进 profile 目录的
+`extensions/`（profile 目录在 `about:support` 里查），重启浏览器。
+
+### Chrome
+
+1. 下载 `pta-assistant-v1.0.zip` 并**解压**（Windows 右键「全部解压缩」；macOS 双击会自动解压出一个文件夹）
+2. 地址栏打开 `chrome://extensions`
+3. 右上角打开「开发者模式」
+4. 点「加载已解压的扩展程序」，选中**解压出来、里面有 `manifest.json` 的那个文件夹**
+5. 成功后卡片上会出现「PTA 助手」；点浏览器右上角拼图图标，把它**固定**到工具栏
+
+以后升级：重新解压新版 zip，在扩展卡片上点「刷新」图标即可（内容脚本有时要刷新页面才生效）。
+
+### Edge
+
+和 Chrome 完全一样，只是地址换成 `edge://extensions`：
+
+1. 解压 `pta-assistant-v1.0.zip`
+2. 打开 `edge://extensions` → 左下角「开发人员模式」
+3. 点「加载解压缩的扩展」→ 选解压出来的文件夹
+4. 在「扩展」图标菜单里把「PTA 助手」固定到工具栏
+
+### Brave / Vivaldi / Opera 等其它 Chromium 内核浏览器
+
+同 Chrome，只是管理页地址不同：`brave://extensions`、`vivaldi://extensions`、`opera://extensions`
+（Opera 在扩展管理页里点「扩展」标签）。步骤一个字都不用改。
+
+### Zen Browser / LibreWolf / Waterfox 等其它 Gecko 内核浏览器
+
+同 Firefox：`about:debugging` → 临时载入附加组件 → 选 xpi。LibreFox / Waterfox 这类纯净浏览器默认会拦截
+部分扩展 API，如果悬浮窗打不开，多半是隐私设置把站点权限挡了。
+
+### 装完之后
+
+- **点图标没反应**：页面是在装插件之前打开的，刷新一下页面；`chrome://` 这类浏览器内部页面不允许注入，属正常
+- **图标不在工具栏**：它默认不固定，点拼图图标 → 找到「PTA 助手」→ 点图钉
+- **想换位置/大小**：拖标题栏移动、拉右下角改大小，位置与尺寸会被记住；**双击标题栏或双击工具栏图标**恢复默认
+- **第一次用**：点右上角齿轮填 API Key（默认接硅基流动），接口地址旁边有「教程」按钮
 
 ## 工程结构
 
