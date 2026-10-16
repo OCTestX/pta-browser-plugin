@@ -57,7 +57,7 @@ Zen 是基于 Firefox（Gecko）做的浏览器，这套步骤完全一样。
 和 Chrome 完全一样，只是地址换成 `edge://extensions`：
 
 1. 解压 `pta-assistant-v1.0.zip`
-2. 打开 `edge://extensions` → 左下角「开发人员模式」
+2. 打开 `edge://extensions` → 打开「开发人员模式」开关（左侧栏底部）
 3. 点「加载解压缩的扩展」→ 选解压出来的文件夹
 4. 在「扩展」图标菜单里把「PTA 助手」固定到工具栏
 
