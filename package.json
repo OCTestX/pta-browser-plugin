@@ -9,6 +9,8 @@
     "build:chrome": "ENTRY=background TARGET=chrome vite build && ENTRY=content TARGET=chrome vite build",
     "build:firefox": "ENTRY=background TARGET=firefox vite build && ENTRY=content TARGET=firefox vite build",
     "package:firefox": "npm run build:firefox && node scripts/package-firefox.mjs",
+    "package:chrome": "npm run build:chrome && node scripts/package-chrome.mjs",
+    "package": "npm run package:chrome && npm run package:firefox",
     "fetch-engine": "node scripts/fetch-engine.mjs",
     "typecheck": "tsc --noEmit && tsc --noEmit -p tsconfig.node.json",
     "pretest": "npm run build",

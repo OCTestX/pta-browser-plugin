@@ -42,6 +42,8 @@ scripts/
   fetch-engine.mjs      下载编译器的三大资源（约 91MB，build 前自动跑一次）
   gen-icons.py           生成 public/icons 下的图标
   package-firefox.mjs    把 dist/firefox 打成无签名的 xpi（npm run package:firefox）
+  package-chrome.mjs     把 dist/chrome 打成 zip（npm run package:chrome）
+  zip.mjs                两个打包脚本共用的手写 zip 实现（固定时间戳，可复现打包）
   test-diff.mjs          diff 引擎：行配对、行号、颜色分类、超大输入降级
   test-compile.mjs       内置 C 编译器：真实引擎编译运行 + 样例比对
   test-deepseek.mjs      假的 fetch 跑 SSE 解析与错误映射
@@ -55,7 +57,9 @@ npm install
 npm run build      # 类型检查 + 产出 dist/chrome、dist/firefox
 npm run test       # SSE 解析校验 + 冒烟测试（冒烟测试需要先 build）
 npm run icons      # 重新生成图标（需要 python3 + Pillow）
-npm run package:firefox   # 构建 Firefox 版并打成 dist/pta-assistant-v1.0.xpi（无签名）
+npm run package            # 两个浏览器各打一个包（dist/pta-assistant-v1.0.xpi 与 .zip）
+npm run package:firefox   # 只打 Firefox 的 xpi（无签名）
+npm run package:chrome    # 只打 Chrome 的 zip（上传应用商店 / 给用户手动解压安装）
 ```
 
 需要 Node 22.18+（`scripts/test-deepseek.mjs` 直接跑 TS 用的类型擦除）。
@@ -69,8 +73,12 @@ npm run package:firefox   # 构建 Firefox 版并打成 dist/pta-assistant-v1.0.
 - Chrome：`chrome://extensions` -> 打开「开发者模式」-> 「加载已解压的扩展程序」-> 选择 `dist/chrome`
 - Firefox（开发）：`about:debugging#/runtime/this-firefox` -> 「临时载入附加组件」-> 选择 `dist/firefox/manifest.json`
 - Firefox（发给别人）：`npm run package:firefox` 打成 `dist/pta-assistant-v1.0.xpi`（无签名），
-  对方同样在「临时载入附加组件」里选这个 xpi 文件即可。产物名跟面板徽标一致，而清单里的 `version`
-  仍是数字 `1.0.0`（Chrome 不允许清单版本号带 `alpha` 后缀）
+  对方同样在「临时载入附加组件」里选这个 xpi 文件即可
+- Chrome（发给别人）：`npm run package:chrome` 打成 `dist/pta-assistant-v1.0.zip`。**Chrome 不允许直接加载
+  压缩包**，要先解压，再在开发者模式里「加载已解压的扩展程序」选那个文件夹；想让用户一键安装只能上传
+  Chrome 应用商店（需要自己的开发者账号 + 5 美元注册费），zip 里 manifest.json 就在根目录，符合商店要求
+
+产物名跟面板徽标一致，而清单里的 `version` 仍是数字 `1.0.0`（Chrome 不允许清单版本号带 `alpha`/`beta` 后缀）
 
 **要加载的只有构建产物目录**（`dist/chrome`、`dist/firefox`），不要选项目根目录：根目录里没有 `content.js`、`background.js`，Chrome 会先报「无法为脚本加载 content.js」，再报「无法加载清单」。
 
