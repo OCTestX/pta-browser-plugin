@@ -1,3 +1,5 @@
+> **本项目完全使用 AI 开发，作者只起到充钱和测试的作用。**
+
 这是一个 Chrome / Edge / Firefox / Zen 等浏览器都能装的插件（Chromium 系与 Gecko 系都支持，见下面的安装教程）。
 它需要内置C或C++语言编译环境。
 内置一个自定义的agent loop循环。
