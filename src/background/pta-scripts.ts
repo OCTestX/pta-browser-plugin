@@ -131,6 +131,20 @@ const HELPERS = `
   const shortText = (node) => textOf(node).slice(0, 200);
   const buttonLabel = (node) => ((node && (node.innerText || node.textContent || node.value || '')) + '').trim();
 
+  // 用户点「停止」时后台会往页面里置这个标记，轮询循环靠它退出（executeScript 撤不回来）
+  const aborted = () => globalThis.__ptaAborted === true;
+
+  // 可被「停止」打断的等待：最多 100ms 一醒，醒来先看取消标记
+  const sleepOrAbort = (ms) => new Promise((resolve) => {
+    if (aborted()) { resolve(); return; }
+    const deadline = Date.now() + ms;
+    const wake = () => {
+      if (aborted() || Date.now() >= deadline) { resolve(); return; }
+      setTimeout(wake, Math.min(100, Math.max(deadline - Date.now(), 0)));
+    };
+    wake();
+  });
+
   const normalizeLines = (value) => {
     const lines = String(value).replace(/\\r\\n/g, '\\n').split('\\n').map((l) => l.replace(/[ \\t]+$/, ''));
     while (lines.length > 0 && lines[lines.length - 1] === '') lines.pop();
@@ -181,6 +195,28 @@ const HELPERS = `
     const lines = (document.body.innerText || '').split('\\n').map((line) => line.trim()).filter(Boolean);
     const hit = lines.find((line) => judgeStatus(line));
     return { text: hit || joined.slice(0, 400), status: hit ? judgeStatus(hit) : null };
+  };
+
+  // 判题弹窗随时可能被用户关掉，一关掉 DOM 上就再也读不到了 —— 而模型往往是在弹窗消失之后才来读结果的。
+  // 所以把每次读到的判题文字记在页面全局里，并且挂一个观察器持续更新，弹窗没了还能回看最后一次见到的结论。
+  const rememberJudge = (now) => {
+    if (now && now.text) globalThis.__ptaJudgeSnapshot = { text: now.text, status: now.status, at: Date.now() };
+    return now;
+  };
+
+  const watchJudge = () => {
+    if (globalThis.__ptaJudgeWatch) return;
+    globalThis.__ptaJudgeWatch = true;
+    let trailing = 0;
+    const observer = new MutationObserver(() => {
+      // 一串 DOM 变化的开头立刻读一次，不能被防抖挡住：判题结论可能只活几十毫秒
+      // 就被下一次渲染或关弹窗顶掉，漏读会让快照里留着上一次的旧结论（错报比不报更糟）
+      try { rememberJudge(readJudgeText()); } catch (e) {}
+      // 尾部再补一次读，把这一串变化收尾后的状态也记上
+      if (trailing) return;
+      trailing = setTimeout(() => { trailing = 0; try { rememberJudge(readJudgeText()); } catch (e) {} }, 300);
+    });
+    observer.observe(document.documentElement, { childList: true, subtree: true, characterData: true });
   };
 
   // 分三级找提交按钮：真按钮精确匹配 → 真按钮包含匹配 → 退到 a/[role=button]/class 含 btn 的元素。
@@ -393,6 +429,9 @@ export const SUBMIT_ANSWER_SCRIPT = `${HELPERS}
 const waitSeconds = Math.min(Math.max(Number(__args.waitSeconds) || 20, 5), 120);
 const pollMs = Math.min(Math.max(Number(__args.pollMs) || 2000, 10), 5000);
 
+// 边提交边记快照：判题弹窗一旦被关掉，DOM 上就再也读不到这次的结论了
+watchJudge();
+
 // 先读一次旧结论、关掉上一次留下的弹窗：弹窗盖着编辑器和提交按钮，不关掉点不到
 const before = readJudgeText();
 const closed = dismissOverlays();
@@ -404,12 +443,15 @@ if (!found) {
 }
 if (found.node.scrollIntoView) found.node.scrollIntoView({ block: 'center' });
 found.node.click();
+// 上一次提交留下的结论不能当成这一次的：清掉快照，重新记这次的
+globalThis.__ptaJudgeSnapshot = null;
 
 const deadline = Date.now() + waitSeconds * 1000;
 let latest = { text: '', status: null };
 while (Date.now() < deadline) {
-  await new Promise((resolve) => setTimeout(resolve, pollMs));
-  const now = readJudgeText();
+  await sleepOrAbort(pollMs);
+  if (aborted()) return '已按用户要求停止等待判题结论';
+  const now = rememberJudge(readJudgeText());
   latest = now;
   // 结论要同时满足：文字非空 ∧ 与提交前不同 ∧ 能归一化成状态码
   // （只看「变了」会把「评测中」当成结论，然后把还在评测的弹窗关掉，这次结果永远等不到）
@@ -421,11 +463,55 @@ while (Date.now() < deadline) {
 return '已点击提交（' + found.how + '）。\\n等了 ' + waitSeconds + ' 秒还没出结论，当前页面上看到的是：' + (latest.text || '（没读到判题文字）') + '\\n可以稍后再调 read_judge_result 看结果（拿到结论之前不要关弹窗）。';
 `;
 
-/** 读当前判题结果（不点任何东西） */
+/**
+ * 读当前判题结果（不点任何东西），一直读到能归一化成状态码的结论为止。
+ *
+ * 为什么不只读一次：PTA 的结论是在弹窗里逐字蹦出来的，模型在提交后隔几秒才调这个工具很常见，
+ * 读一次只会得到「评测中」。而且用户完全可能在结论出来之后、模型来读之前就把弹窗关掉 ——
+ * 这时 DOM 上什么都不剩，所以这里既能实时轮询，也能回看页面上留着的判题快照。
+ */
 export const READ_JUDGE_SCRIPT = `${HELPERS}
-const now = readJudgeText();
-if (!now.text) return '页面上没读到判题文字（可能还没有提交过，或者弹窗已经关了）';
-return (now.status ? '判题结论：' + now.status + '\\n' : '还没出结论（或读到的不是结论）。\\n') + '原文：' + now.text.slice(0, 400);
+// 注意 Number(x) || 60 这种写法会把显式传的 0 当成没传，这里老老实实判断
+const askedWait = Number(__args.waitSeconds);
+const waitSeconds = Math.min(Math.max(Number.isFinite(askedWait) ? askedWait : 60, 0), 120);
+const askedPoll = Number(__args.pollMs);
+const pollMs = Math.min(Math.max(Number.isFinite(askedPoll) ? askedPoll : 300, 50), 5000);
+
+watchJudge();
+
+const describe = (hit, source) => {
+  const head = hit.status ? '判题结论：' + hit.status + '\\n' : '还没出结论（页面上只有中间状态）。\\n';
+  return head + source + '原文：' + hit.text.slice(0, 400);
+};
+
+const deadline = Date.now() + waitSeconds * 1000;
+let latest = rememberJudge(readJudgeText());
+if (latest.status && latest.text) return describe(latest, '');
+
+// 快照只在「弹窗已经不在页面上了」时才用来兜底：页面上还有判题文字就说明这次还在评测，
+// 这时返回上一条旧结论比不返回更糟
+const snapshot = globalThis.__ptaJudgeSnapshot;
+if (!latest.text && snapshot && snapshot.status && snapshot.text) {
+  return describe(snapshot, '（判题弹窗现在不在页面上了，这是页面留下的判题记录）\\n');
+}
+
+while (Date.now() < deadline) {
+  await sleepOrAbort(pollMs);
+  if (aborted()) {
+    return '已按用户要求停止等待判题结论。停止前页面上看到的是：' + (latest.text || '（没读到判题文字）');
+  }
+  latest = rememberJudge(readJudgeText());
+  if (latest.status && latest.text) return describe(latest, '');
+  // 弹窗在等待过程中被关掉了：改用快照收尾，别再空等
+  if (!latest.text) {
+    const late = globalThis.__ptaJudgeSnapshot;
+    if (late && late.status && late.text) {
+      return describe(late, '（判题弹窗在等待过程中被关掉了，这是页面留下的判题记录）\\n');
+    }
+  }
+}
+
+return '等了 ' + waitSeconds + ' 秒还没读到能归一化成状态码的判题结论。\\n页面上现在看到的是：' + (latest.text || '（没读到判题文字，弹窗可能已经被关掉了）');
 `;
 
 /** 关掉挡在前面的弹窗 */

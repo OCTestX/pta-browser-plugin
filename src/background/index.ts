@@ -10,20 +10,36 @@ import type {
 import type { ApiMessage } from '../shared/types';
 import { runAgent, type ToolOutcome } from './agent';
 import { DEFAULT_INPUT_METHOD, findInputMethod } from '../shared/input-methods';
-import { runInputMethod } from './input-methods';
+import { runInputMethod, writeEditorCode } from './input-methods';
 import { loadSettings, saveSettings, toSettingsView } from './settings';
 
 const TOGGLE_PANEL: BackgroundEvent = { type: 'toggle-panel' };
+const RESET_PANEL_LAYOUT: BackgroundEvent = { type: 'panel/reset-layout' };
 
 /** requestId -> AbortController，用于「停止生成」 */
 const runningRequests = new Map<string, AbortController>();
 
+/** 两次图标点击间隔在这个毫秒数内就算双击（双击图标 = 恢复位置与大小的默认） */
+const DOUBLE_CLICK_MS = 400;
+const lastIconClick = new Map<number, number>();
+
 // 点击工具栏图标 -> 通知当前标签页里的 content script 开/关悬浮窗
 ext.action.onClicked.addListener((tab) => {
-  if (tab.id === undefined) return;
+  const tabId = tab.id;
+  if (tabId === undefined) return;
   // 排查「点图标没反应」时，可以在扩展详情页点 service worker 打开控制台看这行日志
-  console.log(`[PTA 助手] 图标被点击，切换标签页 ${tab.id} 上的悬浮窗`);
-  void toggleInTab(tab.id);
+  console.log(`[PTA 助手] 图标被点击，切换标签页 ${tabId} 上的悬浮窗`);
+
+  const now = Date.now();
+  const previous = lastIconClick.get(tabId);
+  if (previous !== undefined && now - previous <= DOUBLE_CLICK_MS) {
+    // 第二下不再开关面板，只把位置与大小复位（否则开→关，窗口直接没了）
+    lastIconClick.delete(tabId);
+    sendToTab(tabId, RESET_PANEL_LAYOUT);
+    return;
+  }
+  lastIconClick.set(tabId, now);
+  void toggleInTab(tabId);
 });
 
 async function toggleInTab(tabId: number): Promise<void> {
@@ -56,6 +72,20 @@ ext.runtime.onMessage.addListener((message: unknown, sender, sendResponse) => {
       case 'settings/save':
         sendResponse(toSettingsView(await saveSettings(message.patch)));
         return;
+      case 'ui/open-url': {
+        // 设置页的「教程」按钮：只放行 http(s)，避免变成任意开页面的入口
+        if (!/^https?:\/\//.test(message.url)) {
+          sendResponse({ ok: false, message: '只允许打开 http/https 链接' } satisfies StartChatResponse);
+          return;
+        }
+        try {
+          await ext.tabs.create({ url: message.url });
+          sendResponse({ ok: true } satisfies StartChatResponse);
+        } catch (error) {
+          sendResponse({ ok: false, message: toErrorMessage(error) } satisfies StartChatResponse);
+        }
+        return;
+      }
       case 'chat/start':
         sendResponse(await startChat(message.requestId, message.messages, tabId));
         return;
@@ -81,6 +111,20 @@ ext.runtime.onMessage.addListener((message: unknown, sender, sendResponse) => {
           result: `【${method.label}】${outcome.output}`,
           method: method.id,
         } satisfies TestInputResponse);
+        return;
+      }
+      case 'code/input': {
+        // 输入框的「输入」按钮：走写入工具同一条链路（默认实现 → 清空 → 备用实现依次重试），
+        // PTA 禁粘贴时用它把整段代码塞进作答区
+        if (tabId === undefined) {
+          sendResponse({ ok: false, result: '当前页面不支持（请刷新页面后重试）' } satisfies ToolRunResponse);
+          return;
+        }
+        const outcome = await writeEditorCode({ tabId, code: message.code });
+        sendResponse({
+          ok: !outcome.isError,
+          result: outcome.isError ? `写入作答区失败：${outcome.output}` : `已写入作答区：${outcome.output}`,
+        } satisfies ToolRunResponse);
         return;
       }
     }

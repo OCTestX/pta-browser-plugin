@@ -5,8 +5,10 @@ const STORAGE_KEY = 'pta-assistant-settings';
 
 export async function loadSettings(): Promise<Settings> {
   const stored = await ext.storage.local.get(STORAGE_KEY);
-  const saved = stored[STORAGE_KEY] as Partial<Settings> | undefined;
-  return { ...DEFAULT_SETTINGS, ...saved };
+  const saved = stored[STORAGE_KEY] as (Partial<Settings> & { useDebuggerInput?: unknown }) | undefined;
+  // useDebuggerInput（用调试器发送真实按键）这个开关已经删掉，旧版本存过的值在这里顺手丢掉
+  const { useDebuggerInput: _legacy, ...rest } = saved ?? {};
+  return { ...DEFAULT_SETTINGS, ...rest };
 }
 
 export async function saveSettings(patch: Partial<Settings>): Promise<Settings> {
@@ -15,7 +17,6 @@ export async function saveSettings(patch: Partial<Settings>): Promise<Settings> 
   next.apiKey = next.apiKey.trim();
   next.baseURL = normalizeBaseURL(next.baseURL) || DEFAULT_SETTINGS.baseURL;
   next.model = next.model.trim() || DEFAULT_SETTINGS.model;
-  next.useDebuggerInput = next.useDebuggerInput === true;
   await ext.storage.local.set({ [STORAGE_KEY]: next });
   return next;
 }
@@ -25,6 +26,5 @@ export function toSettingsView(settings: Settings): SettingsView {
     baseURL: settings.baseURL,
     model: settings.model,
     hasApiKey: settings.apiKey.length > 0,
-    useDebuggerInput: settings.useDebuggerInput,
   };
 }

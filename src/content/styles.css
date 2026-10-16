@@ -35,6 +35,25 @@
     sans-serif;
 }
 
+/* 右下角的缩放把手：拉它改面板大小（布局存在 storage 里，刷新还在） */
+.panel__resize {
+  position: absolute;
+  right: 0;
+  bottom: 0;
+  width: 20px;
+  height: 20px;
+  cursor: nwse-resize;
+  touch-action: none;
+  background: linear-gradient(
+    135deg,
+    transparent 0 50%,
+    var(--pta-border) 50% 60%,
+    transparent 60% 70%,
+    var(--pta-text-muted) 70% 80%,
+    transparent 80%
+  );
+}
+
 /* ---------- header ---------- */
 
 .panel__header {
@@ -63,6 +82,23 @@
   display: flex;
   gap: 2px;
   margin-left: auto;
+}
+
+.panel__new-chat {
+  padding: 3px 10px;
+  border: 1px solid var(--pta-border);
+  border-radius: 999px;
+  background: var(--pta-surface);
+  color: var(--pta-text-muted);
+  font: inherit;
+  font-size: 12px;
+  line-height: 1.5;
+  cursor: pointer;
+}
+
+.panel__new-chat:hover {
+  border-color: var(--pta-accent);
+  color: var(--pta-accent);
 }
 
 .panel__close {
@@ -407,6 +443,62 @@
   background: var(--pta-surface);
 }
 
+/* ---------- 设置页顶部的作者卡片 ---------- */
+
+.author {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 16px;
+  padding: 12px;
+  border: 1px solid var(--pta-border);
+  border-radius: 12px;
+  background: var(--pta-surface-alt);
+}
+
+/* 矩形圆角头像（不是正圆） */
+.author__avatar {
+  flex: none;
+  width: 64px;
+  height: 64px;
+  border-radius: 10px;
+  object-fit: cover;
+  background: var(--pta-border);
+}
+
+.author__info {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.author__name {
+  font-size: 20px;
+  font-weight: 600;
+  line-height: 1.2;
+}
+
+.author__email {
+  color: var(--pta-text-muted);
+  font-size: 12px;
+}
+
+.author__site {
+  align-self: flex-start;
+  margin-top: 4px;
+  padding: 0;
+  border: none;
+  background: none;
+  color: var(--pta-accent);
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.author__site:hover {
+  text-decoration: underline;
+}
+
 .field {
   display: block;
   margin-bottom: 14px;
@@ -442,6 +534,25 @@
   color: var(--pta-text-muted);
   font-size: 12px;
   line-height: 1.5;
+}
+
+.field__row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.field__row .field__input {
+  flex: 1;
+  min-width: 0;
+}
+
+.field__jump {
+  flex: none;
+  margin-left: 0;
+  padding: 6px 10px;
+  font-size: 12px;
+  white-space: nowrap;
 }
 
 .settings__actions {
@@ -524,6 +635,32 @@
   font-size: 12px;
 }
 
+.composer__actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.composer__write {
+  padding: 6px 14px;
+  border: 1px solid var(--pta-border);
+  border-radius: 8px;
+  background: var(--pta-surface);
+  color: var(--pta-text);
+  font: inherit;
+  cursor: pointer;
+}
+
+.composer__write:hover:not(:disabled) {
+  border-color: var(--pta-accent);
+  color: var(--pta-accent);
+}
+
+.composer__write:disabled {
+  color: var(--pta-text-muted);
+  cursor: not-allowed;
+}
+
 .composer__send {
   padding: 6px 16px;
   border: none;
@@ -546,19 +683,6 @@
 
 .composer__input:disabled {
   color: var(--pta-text-muted);
-}
-
-/* ---------- 设置里的开关 ---------- */
-
-.field--switch {
-  display: flex;
-  gap: 8px;
-  align-items: flex-start;
-}
-
-.field--switch input {
-  margin-top: 2px;
-  flex: none;
 }
 
 /* ---------- v0.8：拖动、回到底部、工具卡片按钮 ---------- */

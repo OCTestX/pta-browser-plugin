@@ -19,7 +19,7 @@
     }
   },
   "permissions": ["storage", "activeTab", "scripting", "debugger", "offscreen"],
-  "host_permissions": ["https://api.deepseek.com/*"],
+  "host_permissions": ["https://api.siliconflow.cn/*", "https://api.deepseek.com/*"],
   "content_security_policy": {
     "extension_pages": "script-src 'self' 'wasm-unsafe-eval'; object-src 'self'"
   },
@@ -35,7 +35,7 @@
   ],
   "web_accessible_resources": [
     {
-      "resources": ["katex-fonts/*"],
+      "resources": ["katex-fonts/*", "avata.jpg"],
       "matches": ["<all_urls>"]
     }
   ]

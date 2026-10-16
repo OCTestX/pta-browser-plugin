@@ -7,8 +7,14 @@ export interface TogglePanelMessage {
   type: 'toggle-panel';
 }
 
+/** 双击插件图标：把悬浮窗的位置与大小恢复默认 */
+export interface ResetPanelLayoutMessage {
+  type: 'panel/reset-layout';
+}
+
 export type BackgroundEvent =
   | TogglePanelMessage
+  | ResetPanelLayoutMessage
   | { type: 'chat/delta'; requestId: string; text: string }
   | { type: 'chat/tool-start'; requestId: string; callId: string; name: string; args: string }
   | { type: 'chat/tool-end'; requestId: string; callId: string; result: string; isError: boolean }
@@ -18,6 +24,10 @@ export type BackgroundEvent =
 
 export function isTogglePanelMessage(message: unknown): message is TogglePanelMessage {
   return isRecord(message) && message.type === 'toggle-panel';
+}
+
+export function isResetPanelLayoutMessage(message: unknown): message is ResetPanelLayoutMessage {
+  return isRecord(message) && message.type === 'panel/reset-layout';
 }
 
 export function isChatEvent(
@@ -46,7 +56,11 @@ export type ContentRequest =
   | { type: 'settings/get' }
   | { type: 'settings/save'; patch: Partial<Settings> }
   /** 设置页的「模拟输入测试」：按指定方法往作答区写一次文本 */
-  | { type: 'tool/test-input'; text: string; method?: string };
+  | { type: 'tool/test-input'; text: string; method?: string }
+  /** 输入框的「输入」按钮：把面板输入框里的文本写进作答区（PTA 禁粘贴时的快捷通道） */
+  | { type: 'code/input'; code: string }
+  /** 设置页的「一键跳转硅基流动」：让后台开一个新标签页 */
+  | { type: 'ui/open-url'; url: string };
 
 export function isContentRequest(message: unknown): message is ContentRequest {
   return (
@@ -55,7 +69,9 @@ export function isContentRequest(message: unknown): message is ContentRequest {
       message.type === 'chat/stop' ||
       message.type === 'settings/get' ||
       message.type === 'settings/save' ||
-      message.type === 'tool/test-input')
+      message.type === 'tool/test-input' ||
+      message.type === 'code/input' ||
+      message.type === 'ui/open-url')
   );
 }
 

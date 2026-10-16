@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { ext } from '../../shared/browser';
-import { isChatEvent, type StartChatResponse } from '../../shared/messages';
+import { isChatEvent, type StartChatResponse, type ToolRunResponse } from '../../shared/messages';
 import { createId, toApiMessages, type ChatMessage, type ToolCall } from '../../shared/types';
 
 const WELCOME = '你好，我是 PTA 助手。点击浏览器工具栏的插件图标可以开关这个悬浮窗。';
@@ -15,6 +15,7 @@ export function useChat(hasApiKey: boolean) {
     { id: 'welcome', role: 'system', content: WELCOME, createdAt: 0 },
   ]);
   const [streaming, setStreaming] = useState(false);
+  const [writing, setWriting] = useState(false);
   const [notice, setNotice] = useState<ChatNotice | null>(null);
   const requestRef = useRef<string | null>(null);
   // 当前正在写的 assistant 气泡；为 null 表示下一段文字要新起一个气泡
@@ -222,13 +223,56 @@ export function useChat(hasApiKey: boolean) {
     void ext.runtime.sendMessage({ type: 'chat/stop', requestId });
   }, []);
 
+  /**
+   * 「输入」按钮：把输入框里的文本整段写进作答区（PTA 禁粘贴时的快捷通道）。
+   * 走后台写入工具同一条链路，成功返回 true，调用方据此清空输入框。
+   */
+  const inputCode = useCallback(
+    async (code: string): Promise<boolean> => {
+      if (!code.trim() || writing || streaming) return false;
+
+      setWriting(true);
+      try {
+        const response = (await ext.runtime.sendMessage({
+          type: 'code/input',
+          code,
+        })) as ToolRunResponse | undefined;
+        setNotice({
+          text: response?.result ?? '插件后台没有响应，请在扩展管理页重新加载插件',
+          needsApiKey: false,
+        });
+        return response?.ok === true;
+      } catch {
+        setNotice({ text: '插件后台没有响应，请在扩展管理页重新加载插件', needsApiKey: false });
+        return false;
+      } finally {
+        setWriting(false);
+      }
+    },
+    [streaming, writing],
+  );
+
+  /** 「新会话」：掐掉还在生成的一轮，回到只剩欢迎语的干净上下文 */
+  const reset = useCallback(() => {
+    const requestId = requestRef.current;
+    if (requestId) void ext.runtime.sendMessage({ type: 'chat/stop', requestId });
+    requestRef.current = null;
+    assistantRef.current = null;
+    setStreaming(false);
+    setNotice(null);
+    setMessages([{ id: 'welcome', role: 'system', content: WELCOME, createdAt: 0 }]);
+  }, []);
+
   return {
     messages,
     streaming,
+    writing,
     notice,
     dismissNotice: useCallback(() => setNotice(null), []),
     send,
     stop,
+    inputCode,
+    reset,
   };
 }
 

@@ -307,7 +307,68 @@ const notPassed = createJudgePage();
 notPassed.__setJudgeText('未通过 部分测试点答案错误');
 check('「未通过」不会被当成通过', (await runScript(notPassed, READ_JUDGE_SCRIPT, {})).includes('未通过'));
 
-check('页面上没有判题文字时如实告知', (await runScript(createPage({ withView: false }), READ_JUDGE_SCRIPT, {})).includes('没读到判题文字'));
+check(
+  '页面上没有判题文字时如实告知',
+  (await runScript(createPage({ withView: false }), READ_JUDGE_SCRIPT, { waitSeconds: 0 })).includes('没读到判题文字'),
+);
+
+// read_judge_result 会一直等到出结论：先只有「评测中」，几百毫秒后才变成结论
+const pollingPage = createJudgePage();
+setTimeout(() => pollingPage.__setJudgeText('答案正确'), 120);
+const startedAt = Date.now();
+const polled = await runScript(pollingPage, READ_JUDGE_SCRIPT, { pollMs: 50 });
+check('read_judge_result 会轮询到结论出现为止', polled.includes('AC'));
+check('轮询到结论就立刻返回，不会白等到超时', Date.now() - startedAt < 3000);
+
+// 用户在结论出来之后、模型来读之前把弹窗关掉了：靠页面上的判题快照还能读到结论
+const closedPage = createJudgePage();
+closedPage.__setJudgeText('答案正确');
+await runScript(closedPage, READ_JUDGE_SCRIPT, { pollMs: 50 });
+closedPage.document.querySelector('.judge-panel').remove();
+const afterClose = await runScript(closedPage, READ_JUDGE_SCRIPT, { pollMs: 50 });
+check('弹窗被关掉后仍能读到这次结论', afterClose.includes('AC') && afterClose.includes('判题记录'));
+
+// 结论只闪几十毫秒就被关掉时，观察器也必须把它记下来（不能只靠防抖读，否则快照里留的是上一次的旧结论）
+const flashPage = createJudgePage();
+await runScript(flashPage, READ_JUDGE_SCRIPT, { pollMs: 50 }); // 先让快照里存上「评测中」
+flashPage.__setJudgeText('答案正确');
+await new Promise((resolve) => setTimeout(resolve, 20));
+flashPage.document.querySelector('.judge-panel').remove();
+await new Promise((resolve) => setTimeout(resolve, 400)); // 等观察器补读
+check('一闪而过的结论不会被漏掉、也不会退回旧结论', (await runScript(flashPage, READ_JUDGE_SCRIPT, { pollMs: 50 })).includes('AC'));
+
+// 前一次 DOM 变化的防抖还没到点时出现的新结论，同样要立刻记下来（不能被防抖挡住开头那次读）
+const burstPage = createJudgePage();
+await runScript(burstPage, READ_JUDGE_SCRIPT, { pollMs: 50 });
+burstPage.__setJudgeText('编译错误');
+burstPage.__setJudgeText('答案错误');
+await new Promise((resolve) => setTimeout(resolve, 20));
+burstPage.document.querySelector('.judge-panel').remove();
+await new Promise((resolve) => setTimeout(resolve, 400));
+check('防抖期间的连续变化不会漏掉最后一次结论', (await runScript(burstPage, READ_JUDGE_SCRIPT, { pollMs: 50 })).includes('WA'));
+
+// 页面还挂着「评测中」时不能拿快照里的旧结论交差：这次还在评测就得继续等
+const stalePage = createJudgePage();
+stalePage.__setJudgeText('答案正确');
+await runScript(stalePage, READ_JUDGE_SCRIPT, { pollMs: 50 });
+stalePage.__setJudgeText('评测中');
+const stillJudging = await runScript(stalePage, READ_JUDGE_SCRIPT, { waitSeconds: 0, pollMs: 50 });
+check('页面上还在评测时不返回快照里的旧结论', !stillJudging.includes('AC'));
+
+// 重新提交要作废上一次的判题记录：面板空着时不能再把旧的结论报成本次的
+const resubmitPage = createJudgePage();
+resubmitPage.__setJudgeText('答案正确');
+await runScript(resubmitPage, READ_JUDGE_SCRIPT, { pollMs: 50 });
+resubmitPage.document.querySelector('.judge-panel').remove();
+await runScript(resubmitPage, SUBMIT_ANSWER_SCRIPT, { waitSeconds: 5, pollMs: 10 });
+const afterResubmit = await runScript(resubmitPage, READ_JUDGE_SCRIPT, { waitSeconds: 0, pollMs: 50 });
+check('重新提交后不会再把上一次的结论当成本次的', !afterResubmit.includes('AC') && afterResubmit.includes('还没读到'));
+
+// 「停止」置上的取消标记要能让等待立刻收工
+const abortPage = createJudgePage();
+abortPage.__ptaAborted = true;
+const aborted = await runScript(abortPage, READ_JUDGE_SCRIPT, { waitSeconds: 60, pollMs: 50 });
+check('取消标记能让等待中的读取立刻收工', aborted.includes('已按用户要求停止'));
 
 // 轮询到结论后立刻返回
 const slowPage = createJudgePage();

@@ -1,11 +1,30 @@
 import { useEffect, useState } from 'react';
 import { ext } from '../../shared/browser';
-import { DEFAULT_SETTINGS, type Settings, type SettingsView } from '../../shared/settings';
+import {
+  DEFAULT_SETTINGS,
+  TUTORIAL_URL,
+  type Settings,
+  type SettingsView,
+} from '../../shared/settings';
 import { INPUT_METHODS, INPUT_METHOD_GROUPS, inputMethodIndex } from '../../shared/input-methods';
 import { SYSTEM_PROMPT } from '../../shared/tools';
 import type { TestInputResponse } from '../../shared/messages';
 
 const METHOD_OK_KEY = 'pta-assistant-input-method-ok';
+
+/** 作者信息：顶部作者卡片与底部署名共用 */
+const AUTHOR_NAME = 'OCTest';
+const AUTHOR_EMAIL = 'octestwx@qq.com';
+const AUTHOR_SITE_LABEL = 'octest.top';
+const AUTHOR_SITE_URL = 'https://octest.top';
+/** 头像放在 public/ 里随构建进 dist，设置页用扩展自己的地址去取（页面 CSP 不管用） */
+const AVATAR_URL = ext.runtime.getURL('avata.jpg');
+
+/**
+ * 「模拟输入测试」整块对普通用户隐藏：那是排查 PTA 禁粘贴时用的调试按钮组，
+ * 用户不需要接触。代码留着（`runTest`、方法分组、结果回显都还在），改回 true 就恢复显示。
+ */
+const SHOW_INPUT_METHOD_TESTS = false;
 
 /** 这次测试算不算「成功」：内容回读一致，而且页面没弹「禁止粘贴」这类提示 */
 export function isMethodTestSuccess(ok: boolean, result: string): boolean {
@@ -22,9 +41,6 @@ export function SettingsPanel({ view, onSave, onBack }: SettingsPanelProps) {
   const [apiKey, setApiKey] = useState('');
   const [baseURL, setBaseURL] = useState(view?.baseURL ?? DEFAULT_SETTINGS.baseURL);
   const [model, setModel] = useState(view?.model ?? DEFAULT_SETTINGS.model);
-  const [useDebuggerInput, setUseDebuggerInput] = useState(
-    view?.useDebuggerInput ?? DEFAULT_SETTINGS.useDebuggerInput,
-  );
   const [status, setStatus] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
   // 模拟输入测试：默认拿系统提示词当测试文本，方便对照回读结果是不是一字不差
@@ -84,39 +100,63 @@ export function SettingsPanel({ view, onSave, onBack }: SettingsPanelProps) {
 
   // 输入框留空表示不修改已保存的 Key
   const saveCurrent = () => {
-    const patch: Partial<Settings> = {
-      baseURL,
-      model,
-      useDebuggerInput,
-    };
+    const patch: Partial<Settings> = { baseURL, model };
     if (apiKey.trim()) patch.apiKey = apiKey.trim();
     return save(patch, '已保存');
   };
 
+  // 跳转链接（硅基流动邀请页、作者网站）：开新标签页必须由后台来，content script 没这个权限
+  const openLink = async (url: string) => {
+    try {
+      await ext.runtime.sendMessage({ type: 'ui/open-url', url });
+    } catch {
+      setStatus(`没能打开浏览器，请手动访问 ${url}`);
+    }
+  };
+
   return (
     <div className="settings">
+      <section className="author">
+        <img className="author__avatar" src={AVATAR_URL} alt={`${AUTHOR_NAME} 的头像`} width={64} height={64} />
+        <div className="author__info">
+          <span className="author__name">{AUTHOR_NAME}</span>
+          <span className="author__email">{AUTHOR_EMAIL}</span>
+          <button
+            type="button"
+            className="author__site"
+            title={AUTHOR_SITE_URL}
+            onClick={() => void openLink(AUTHOR_SITE_URL)}
+          >
+            {AUTHOR_SITE_LABEL}
+          </button>
+        </div>
+      </section>
+
       <label className="field">
         <span className="field__label">API Key</span>
         <input
           className="field__input"
           type="password"
           value={apiKey}
-          placeholder={view?.hasApiKey ? '已保存，留空表示不修改' : '填 DeepSeek 的 API Key'}
+          placeholder={view?.hasApiKey ? '已保存，留空表示不修改' : '填硅基流动的 API Key'}
           onChange={(event) => setApiKey(event.target.value)}
         />
       </label>
 
       <label className="field">
         <span className="field__label">接口地址</span>
-        <input
-          className="field__input"
-          type="text"
-          value={baseURL}
-          onChange={(event) => setBaseURL(event.target.value)}
-        />
-        <span className="field__hint">
-          换成其它地址时，要同时把该域名加进 manifest 的 host_permissions，否则请求会被浏览器拦掉。
+        <span className="field__row">
+          <input
+            className="field__input"
+            type="text"
+            value={baseURL}
+            onChange={(event) => setBaseURL(event.target.value)}
+          />
+          <button type="button" className="button button--ghost field__jump" onClick={() => void openLink(TUTORIAL_URL)}>
+            教程
+          </button>
         </span>
+        <span className="field__hint">怎么配 Key、怎么用，看教程</span>
       </label>
 
       <label className="field">
@@ -129,62 +169,50 @@ export function SettingsPanel({ view, onSave, onBack }: SettingsPanelProps) {
         />
       </label>
 
-      <label className="field field--switch">
-        <input
-          type="checkbox"
-          checked={useDebuggerInput}
-          onChange={(event) => setUseDebuggerInput(event.target.checked)}
-        />
-        <span>
-          用调试器发送真实按键
+      {SHOW_INPUT_METHOD_TESTS && (
+        <label className="field">
+          <span className="field__label">模拟输入测试（一种方法一个按钮）</span>
+          <textarea
+            className="field__input field__input--area"
+            rows={3}
+            value={testText}
+            onChange={(event) => setTestText(event.target.value)}
+          />
           <span className="field__hint">
-            开启后 simulate_keyboard_input 走 chrome.debugger 发 CDP 事件，按键是可信的，编辑器和浏览器默认行为（换行、提交）都会响应；代价是输入的那几秒标签页顶部会出现「正在调试此浏览器」横幅，且该标签页此时不能打开开发者工具。
+            用下面的文本逐个试每种写入方法（会覆盖作答区内容、不提交）。CDP 那几个方法要调试器权限，一律直接试；
+            哪个成功就会标上 ✅ 并记下来。实测结论：只有 <b>整段 dispatch</b> 能写进去，其余都被页面拦。
           </span>
-        </span>
-      </label>
+          {workingMethod && (
+            <span className="field__hint">
+              当前可用方法：<b>{INPUT_METHODS[inputMethodIndex(workingMethod)].label}</b>
+              （`write_editor_code` 工具走的正是这一种）
+            </span>
+          )}
 
-      <label className="field">
-        <span className="field__label">模拟输入测试（一种方法一个按钮）</span>
-        <textarea
-          className="field__input field__input--area"
-          rows={3}
-          value={testText}
-          onChange={(event) => setTestText(event.target.value)}
-        />
-        <span className="field__hint">
-          用下面的文本逐个试每种写入方法（会覆盖作答区内容、不提交）。CDP 那几个方法不看「用调试器发送真实按键」开关，一律直接试；
-          哪个成功就会标上 ✅ 并记下来。实测结论：只有 <b>整段 dispatch</b> 能写进去，其余都被页面拦。
-        </span>
-        {workingMethod && (
-          <span className="field__hint">
-            当前可用方法：<b>{INPUT_METHODS[inputMethodIndex(workingMethod)].label}</b>
-            （`write_editor_code` 工具走的正是这一种）
-          </span>
-        )}
-
-        {INPUT_METHOD_GROUPS.map((group) => (
-          <div className="method-group" key={group}>
-            <span className="method-group__title">{group}</span>
-            <div className="method-buttons">
-              {INPUT_METHODS.filter((item) => item.group === group).map((item) => (
-                <button
-                  key={item.id}
-                  type="button"
-                  className={`method-button${workingMethod === item.id ? ' method-button--ok' : ''}`}
-                  title={item.hint}
-                  disabled={testing !== null}
-                  onClick={() => void runTest(item.id)}
-                >
-                  {testing === item.id ? '输入中…' : item.label}
-                  {workingMethod === item.id ? ' ✅' : ''}
-                </button>
-              ))}
+          {INPUT_METHOD_GROUPS.map((group) => (
+            <div className="method-group" key={group}>
+              <span className="method-group__title">{group}</span>
+              <div className="method-buttons">
+                {INPUT_METHODS.filter((item) => item.group === group).map((item) => (
+                  <button
+                    key={item.id}
+                    type="button"
+                    className={`method-button${workingMethod === item.id ? ' method-button--ok' : ''}`}
+                    title={item.hint}
+                    disabled={testing !== null}
+                    onClick={() => void runTest(item.id)}
+                  >
+                    {testing === item.id ? '输入中…' : item.label}
+                    {workingMethod === item.id ? ' ✅' : ''}
+                  </button>
+                ))}
+              </div>
             </div>
-          </div>
-        ))}
+          ))}
 
-        {testResult && <pre className="settings__result">{testResult}</pre>}
-      </label>
+          {testResult && <pre className="settings__result">{testResult}</pre>}
+        </label>
+      )}
 
       <div className="settings__actions">
         <button type="button" className="button button--ghost" onClick={onBack}>

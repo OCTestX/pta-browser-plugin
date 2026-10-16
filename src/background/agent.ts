@@ -25,7 +25,6 @@ const DEFAULT_PER_CHAR_DELAY_MS = 8;
 import { streamChat } from './deepseek';
 import { injectScript } from './js-inject';
 import { loadSettings } from './settings';
-import type { Settings } from '../shared/settings';
 
 export interface ToolOutcome {
   output: string;
@@ -87,10 +86,12 @@ export async function runAgent(options: RunAgentOptions): Promise<void> {
       });
       const outcome = await runTool(call.function.name, call.function.arguments, {
         tabId,
-        settings,
+        signal,
         runPageTool: events.runPageTool,
       });
       events.onToolEnd(call.id, outcome.output, outcome.isError);
+      // 工具执行期间用户点了「停止」：不再喂下一轮，直接按中止收尾
+      if (signal.aborted) throw new DOMException('用户停止了生成', 'AbortError');
       conversation.push({
         role: 'tool',
         tool_call_id: call.id,
@@ -113,7 +114,7 @@ const PTA_SCRIPTS: Record<string, string> = {
 
 export interface ToolContext {
   tabId: number;
-  settings: Settings;
+  signal: AbortSignal;
   runPageTool: (name: string, args: Record<string, unknown>) => Promise<ToolOutcome>;
 }
 
@@ -123,7 +124,7 @@ export async function runTool(
   rawArguments: string,
   context: ToolContext,
 ): Promise<ToolOutcome> {
-  const { tabId, settings, runPageTool } = context;
+  const { tabId, signal, runPageTool } = context;
   if (!isToolName(name)) {
     return { output: `没有名为 ${name} 的工具，可用工具：${TOOL_NAMES.join('、')}`, isError: true };
   }
@@ -137,7 +138,7 @@ export async function runTool(
   if (name === 'js_inject') {
     const code = typeof args.code === 'string' ? args.code : '';
     if (!code.trim()) return { output: '缺少 code 参数', isError: true };
-    const result = await injectScript(tabId, code);
+    const result = await injectScript(tabId, code, undefined, undefined, signal);
     return { output: result.output, isError: !result.ok };
   }
 
@@ -181,15 +182,21 @@ export async function runTool(
 
   // PTA 相关动作都在页面主世界跑（编辑器实例、判题弹窗都是页面自己的东西）
   if (PTA_SCRIPTS[name]) {
-    const waitSeconds = Math.min(Math.max(Number(args.waitSeconds) || 20, 5), 120);
-    // 等判题的脚本要在页面里跑很久，给它留够时间
-    const timeout = name === 'submit_answer' ? (waitSeconds + 20) * 1000 : undefined;
-    const result = await injectScript(tabId, PTA_SCRIPTS[name], args, timeout);
+    // 这两条会轮询到出结论为止，页面里的等待时间必须比页面超时留得久
+    const defaults: Record<string, number> = { submit_answer: 20, read_judge_result: 60 };
+    const fallback = defaults[name];
+    const asked = Number(args.waitSeconds);
+    const waitSeconds = fallback === undefined
+      ? undefined
+      : Math.min(Math.max(Number.isFinite(asked) && asked > 0 ? asked : fallback, name === 'submit_answer' ? 5 : 0), 120);
+    const timeout = waitSeconds === undefined ? undefined : (waitSeconds + 20) * 1000;
+    const result = await injectScript(tabId, PTA_SCRIPTS[name], args, timeout, signal);
     if (!result.ok) return { output: result.output, isError: true };
     return { output: result.output, isError: false };
   }
 
-  if (name === 'simulate_keyboard_input' && settings.useDebuggerInput) {
+  if (name === 'simulate_keyboard_input') {
+    // 不再受任何开关管制：要真按键就直接用调试器，attach 失败由 typeWithDebugger 自己兜底
     return typeWithDebugger(args, tabId, runPageTool);
   }
 

@@ -46,8 +46,6 @@ console.log('✓ 脚本里没有会让 Chrome 拒绝加载的 Unicode 非字符'
 /* ---------- 测试脚手架 ---------- */
 
 const code = readFileSync(`${outDir}/content.js`, 'utf8');
-// 和 src/shared/input-methods.ts 保持同步的按钮数量（改了那边这里也要改）
-const INPUT_METHODS_COUNT = 4;
 
 // React 的渲染是异步的，固定 sleep 在机器忙的时候会偶发失败。
 // 这里改成等 DOM 安静下来：有新改动就重新计时，直到安静 quietMs。
@@ -77,7 +75,7 @@ const check = (label, ok) => {
   console.log(`✓ ${label}`);
 };
 
-function boot({ hasApiKey }) {
+function boot({ hasApiKey, store }) {
   const dom = new JSDOM('<!doctype html><html><body><p>题目页面</p></body></html>', {
     url: 'https://pintia.cn/problem-sets/1/problems/1',
     runScripts: 'dangerously',
@@ -91,15 +89,29 @@ function boot({ hasApiKey }) {
 
   // 打桩的 background：只实现 content script 依赖的那几个消息
   const storageWrites = [];
-  // 测试按钮的返回值可以按需换，用来验证「成功才记进 storage」这类逻辑
-  let testInputResult = '已逐字敲入 3 行（12 个字符）；回读比对：与目标一致';
+  // 真的存一份：布局恢复、跨 boot 读设置这类断言都要靠它
+  const stored = { ...(store ?? {}) };
+  // 「输入」按钮打回后台的写入结果，失败路径要能换
+  let inputResult = { ok: true, result: '已写入作答区：写入成功（先 focus 再 dispatch）' };
 
   window.chrome = {
     storage: {
       local: {
-        get: async () => ({}),
-        set: async (patch) => storageWrites.push(patch),
-        remove: async () => {},
+        get: async (keys) => {
+          const names = Array.isArray(keys) ? keys : [keys];
+          const found = {};
+          for (const name of names) {
+            if (name in stored) found[name] = stored[name];
+          }
+          return found;
+        },
+        set: async (patch) => {
+          Object.assign(stored, patch);
+          storageWrites.push(patch);
+        },
+        remove: async (keys) => {
+          for (const name of Array.isArray(keys) ? keys : [keys]) delete stored[name];
+        },
       },
     },
     runtime: {
@@ -122,8 +134,10 @@ function boot({ hasApiKey }) {
               : { ok: false, message: '尚未配置 API Key，点右上角齿轮填入后即可开始对话' };
           case 'chat/stop':
             return { ok: true };
-          case 'tool/test-input':
-            return { ok: true, result: testInputResult };
+          case 'code/input':
+            return inputResult;
+          case 'ui/open-url':
+            return { ok: true };
           default:
             return undefined;
         }
@@ -132,8 +146,8 @@ function boot({ hasApiKey }) {
   };
 
   const view = () => ({
-    baseURL: 'https://api.deepseek.com',
-    model: 'deepseek-v4.1-flash',
+    baseURL: 'https://api.siliconflow.cn/v1',
+    model: 'deepseek-ai/DeepSeek-V4.1-Flash',
     hasApiKey: keySet,
   });
 
@@ -143,8 +157,9 @@ function boot({ hasApiKey }) {
     window,
     requests,
     storageWrites,
-    setTestInputResult: (value) => {
-      testInputResult = value;
+    stored,
+    setInputResult: (value) => {
+      inputResult = value;
     },
     shadow: () => window.document.getElementById('pta-assistant-host')?.shadowRoot,
     toggle: () => listeners.forEach((fn) => fn({ type: 'toggle-panel' })),
@@ -189,6 +204,7 @@ check(
 );
 check('聊天区存在', Boolean(withKey.find('.messages')));
 check('输入框存在', Boolean(withKey.find('.composer__input')));
+check('标题栏版本号是 v1.0-beta', withKey.find('.panel__badge')?.textContent === 'v1.0-beta');
 
 withKey.setValue(withKey.find('.composer__input'), '帮我看看这道题');
 await tick();
@@ -269,7 +285,39 @@ check('输入框恢复可用', !withKey.find('.composer__input').disabled);
 withKey.find('.panel__close[title="设置"]').click();
 await tick();
 check('齿轮进入设置页', Boolean(withKey.find('.settings')));
-check('设置页带上了已保存的接口地址', withKey.find('.field__input[type="text"]').value === 'https://api.deepseek.com');
+check('设置页带上了已保存的接口地址', withKey.find('.field__input[type="text"]').value === 'https://api.siliconflow.cn/v1');
+check('设置页显示的是硅基流动的模型名', [...withKey.shadow().querySelectorAll('.field__input[type="text"]')][1].value === 'deepseek-ai/DeepSeek-V4.1-Flash');
+check('设置页里有 OCTest 署名', withKey.find('.settings').textContent.includes('OCTest'));
+check('「用调试器发送真实按键」开关已移除', !withKey.find('.settings').textContent.includes('用调试器发送真实按键'));
+check('接口地址不再提示改 host_permissions', !withKey.find('.settings').textContent.includes('host_permissions'));
+
+// 顶部的作者卡片：头像 + 昵称 + 邮箱 + 可点的网站
+const authorCard = withKey.find('.author');
+check('设置页顶部有作者卡片', Boolean(authorCard));
+check('作者卡片在最前面', authorCard === withKey.find('.settings').firstElementChild);
+check('头像是扩展里的 avata.jpg', authorCard.querySelector('.author__avatar').getAttribute('src').endsWith('/avata.jpg'));
+check('昵称用大字显示', authorCard.querySelector('.author__name').textContent === 'OCTest');
+check('邮箱显示在昵称下面', authorCard.querySelector('.author__email').textContent === 'octestwx@qq.com');
+check('作者信息只在顶部出现一次', withKey.find('.settings').textContent.split('octestwx@qq.com').length === 2);
+
+const siteLink = authorCard.querySelector('.author__site');
+check('网站链接显示 octest.top', siteLink.textContent === 'octest.top');
+siteLink.click();
+await tick();
+check(
+  '点网站链接让后台打开 octest.top',
+  withKey.requests.filter((r) => r.type === 'ui/open-url').map((r) => r.url).includes('https://octest.top'),
+);
+
+const tutorialButton = [...withKey.shadow().querySelectorAll('.field__jump')][0];
+check('接口地址旁边有「教程」按钮', tutorialButton?.textContent === '教程');
+check('按钮旁边提示去看教程', withKey.find('.settings').textContent.includes('怎么配 Key、怎么用，看教程'));
+tutorialButton.click();
+await tick();
+check(
+  '点教程让后台打开教程页面',
+  withKey.requests.some((r) => r.type === 'ui/open-url' && r.url === 'http://octest.top/pta-assist-plugin'),
+);
 
 withKey.setValue(withKey.find('.field__input[type="password"]'), 'sk-test-key');
 await tick();
@@ -282,45 +330,10 @@ const saved = withKey.requests.find((r) => r.type === 'settings/save');
 check('保存设置会把 Key 交给 background', saved?.patch?.apiKey === 'sk-test-key');
 check('保存后 Key 输入框被清空', withKey.find('.field__input[type="password"]').value === '');
 
-// 设置页的「模拟输入测试」：把测试文本按工具同一条链路打到作答区
-const testArea = [...withKey.shadow().querySelectorAll('.field__input--area')][0];
-check('设置页有模拟输入测试的文本框', Boolean(testArea));
-check('测试文本默认是助手的系统提示词', testArea.value.startsWith('你是「PTA 助手」'));
-const methodButtons = [...withKey.shadow().querySelectorAll('.method-button')];
-check('每种输入方法一个按钮', methodButtons.length === INPUT_METHODS_COUNT);
-check('按钮按分组显示', withKey.find('.settings').textContent.includes('编辑器状态（CM6 API）') &&
-  withKey.find('.settings').textContent.includes('CDP 真实输入'));
-const dispatchButton = methodButtons.find((el) => el.textContent.startsWith('整段 dispatch'));
-check('有「整段 dispatch」按钮', Boolean(dispatchButton));
-dispatchButton.click();
-await tick();
-const testRequest = withKey.requests.find((r) => r.type === 'tool/test-input');
-check('点按钮会把测试文本与该方法发给后台', testRequest?.text === testArea.value && testRequest.method === 'dispatch');
-check(
-  '测试结果回显在设置页（含回读比对）',
-  withKey.find('.settings__result')?.textContent.includes('回读比对'),
-);
-check('成功后该方法按钮标上 ✅', dispatchButton.textContent.includes('✅'));
-check(
-  '设置页显示当前可用方法',
-  withKey.find('.settings').textContent.includes('当前可用方法') &&
-    withKey.find('.settings').textContent.includes('整段 dispatch'),
-);
-check(
-  '可用方法记进了 storage',
-  withKey.storageWrites.some((patch) => patch['pta-assistant-input-method-ok'] === 'dispatch'),
-);
-
-// 另一种方法：成功的话同样会记成「可用」并覆盖旧记录
-withKey.setTestInputResult('【replaceSelection】方法：view.state.replaceSelection 后 dispatch；回读比对：与目标一致');
-const replaceButton = methodButtons.find((el) => el.textContent.startsWith('replaceSelection'));
-replaceButton.click();
-await tick();
-check(
-  '换一种方法成功后会更新可用方法记录',
-  withKey.storageWrites.some((patch) => patch['pta-assistant-input-method-ok'] === 'replaceSelection') &&
-    replaceButton.textContent.includes('✅'),
-);
+// 「模拟输入测试」整块对用户隐藏（代码留着，普通用户看不到这组调试按钮）
+check('设置页不显示「模拟输入测试」区域', !withKey.find('.settings').textContent.includes('模拟输入测试'));
+check('设置页不渲染写入方法的调试按钮', withKey.shadow().querySelectorAll('.method-button').length === 0);
+check('隐藏后不发测试请求', !withKey.requests.some((r) => r.type === 'tool/test-input'));
 
 withKey.find('.panel__back').click();
 await tick();
@@ -602,15 +615,74 @@ ui.toggle();
 await tick();
 const uiHeader = ui.find('.panel__header');
 
+// jsdom 不做布局，元素量不出矩形；给一个假的，才能验证拖动/缩放的算式
+const uiPanel = ui.find('.panel');
+const setRect = (node, rect) => {
+  node.getBoundingClientRect = () => ({ right: rect.left + rect.width, bottom: rect.top + rect.height, ...rect });
+};
+setRect(uiPanel, { left: 16, top: 16, width: 420, height: 620 });
+
 // 拖动：pointerdown 后移动，面板改为按 left/top 定位，并写进 storage
 uiHeader.dispatchEvent(new ui.window.MouseEvent('pointerdown', { bubbles: true, clientX: 100, clientY: 20 }));
 ui.window.dispatchEvent(new ui.window.MouseEvent('pointermove', { bubbles: true, clientX: 300, clientY: 120 }));
 ui.window.dispatchEvent(new ui.window.MouseEvent('pointerup', { bubbles: true }));
 await tick();
 const movedPanel = ui.find('.panel');
-check('拖动后改成了 left/top 定位', Boolean(movedPanel.style.left) && movedPanel.style.right === 'auto');
-check('拖动结束后把位置存进了 storage', ui.storageWrites.some((patch) => patch['pta-assistant-panel-position']));
+check('拖动后改成了 left/top 定位', movedPanel.style.left === '216px' && movedPanel.style.top === '116px');
+check('拖动结束后把位置和尺寸一起存进 storage', (() => {
+  const saved = ui.stored['pta-assistant-panel-layout'];
+  return saved?.x === 216 && saved?.y === 116 && saved?.width === 420 && saved?.height === 620;
+})());
 check('面板没被拖出视口', Number.parseInt(movedPanel.style.left, 10) >= 0);
+
+// 缩放：拉右下角把手，宽高跟着变，超出视口会被夹住
+const resizeHandle = ui.find('.panel__resize');
+check('面板右下角有缩放把手', Boolean(resizeHandle));
+resizeHandle.dispatchEvent(new ui.window.MouseEvent('pointerdown', { bubbles: true, clientX: 436, clientY: 636 }));
+ui.window.dispatchEvent(new ui.window.MouseEvent('pointermove', { bubbles: true, clientX: 636, clientY: 786 }));
+ui.window.dispatchEvent(new ui.window.MouseEvent('pointerup', { bubbles: true }));
+await tick();
+const grownPanel = ui.find('.panel');
+check('拉把手把面板改大', grownPanel.style.width === '620px' && grownPanel.style.height === '752px');
+check('高度超出视口被夹住', grownPanel.style.height === `${768 - 16}px`);
+check('改完大小也记进 storage', ui.stored['pta-assistant-panel-layout']?.width === 620);
+
+// 缩到比最小尺寸还小：夹住，不能把内容挤没
+setRect(grownPanel, { left: 216, top: 116, width: 620, height: 752 });
+grownPanel
+  .querySelector('.panel__resize')
+  .dispatchEvent(new ui.window.MouseEvent('pointerdown', { bubbles: true, clientX: 636, clientY: 786 }));
+ui.window.dispatchEvent(new ui.window.MouseEvent('pointermove', { bubbles: true, clientX: 100, clientY: 100 }));
+ui.window.dispatchEvent(new ui.window.MouseEvent('pointerup', { bubbles: true }));
+await tick();
+check('缩得太小时夹在最小尺寸', ui.find('.panel').style.width === '360px' && ui.find('.panel').style.height === '320px');
+
+// 重新挂载（等价于刷新页面）：记住的布局要恢复
+const savedLayout = ui.stored['pta-assistant-panel-layout'];
+const restored = boot({ hasApiKey: true, store: ui.stored });
+await tick();
+restored.toggle();
+await tick();
+check('刷新后恢复记住的位置', restored.find('.panel').style.left === `${savedLayout.x}px`);
+check('刷新后恢复记住的大小', restored.find('.panel').style.width === `${savedLayout.width}px`);
+
+// 双击插件图标（后台发来的复位消息）：位置与大小一起回默认
+restored.emit({ type: 'panel/reset-layout' });
+await tick();
+const resetPanel = restored.find('.panel');
+check('双击插件图标后位置回默认', resetPanel.style.left === '' && resetPanel.style.right === '');
+check('双击插件图标后大小回默认', resetPanel.style.width === '' && resetPanel.style.height === '');
+check('复位后布局记录被删掉', restored.stored['pta-assistant-panel-layout'] === undefined);
+
+// 双击标题栏同样复位
+setRect(ui.find('.panel'), { left: 16, top: 16, width: 420, height: 620 });
+ui.find('.panel__header').dispatchEvent(new ui.window.MouseEvent('pointerdown', { bubbles: true, clientX: 100, clientY: 20 }));
+ui.window.dispatchEvent(new ui.window.MouseEvent('pointermove', { bubbles: true, clientX: 300, clientY: 120 }));
+ui.window.dispatchEvent(new ui.window.MouseEvent('pointerup', { bubbles: true }));
+await tick();
+ui.find('.panel__header').dispatchEvent(new ui.window.MouseEvent('dblclick', { bubbles: true }));
+await tick();
+check('双击标题栏也能复位', ui.find('.panel').style.left === '');
 
 // 工具卡片：折叠 / 展开 / 复制
 ui.setValue(ui.find('.composer__input'), '看下页面');
@@ -655,5 +727,80 @@ check('往上翻之后出现「回到底部」按钮', Boolean(ui.find('.message
 ui.find('.messages__jump').click();
 await tick();
 check('点回到底部后按钮消失', !ui.find('.messages__jump'));
+
+/* ---------- 场景七：「输入」与「新会话」快捷通道 ---------- */
+
+const shortcut = boot({ hasApiKey: true });
+await tick();
+shortcut.toggle();
+await tick();
+
+check('「输入」按钮在发送按钮左边', (() => {
+  const footer = shortcut.find('.composer__footer');
+  const buttons = [...footer.querySelectorAll('button')];
+  return buttons[0].classList.contains('composer__write') && buttons[1].classList.contains('composer__send');
+})());
+check('输入框为空时「输入」按钮不可点', shortcut.find('.composer__write').disabled);
+
+shortcut.setValue(shortcut.find('.composer__input'), 'int main() { return 0; }');
+await tick();
+check('输入框有文本后「输入」按钮可用', !shortcut.find('.composer__write').disabled);
+shortcut.find('.composer__write').click();
+await tick();
+check(
+  '点「输入」把输入框文本交给后台写进作答区',
+  shortcut.requests.find((r) => r.type === 'code/input')?.code === 'int main() { return 0; }',
+);
+check('写成功后清空输入框', shortcut.find('.composer__input').value === '');
+check('写入结果回显在提示条上', shortcut.find('.notice__text').textContent.includes('已写入作答区'));
+check('走的是写入工具那条链路，不经过对话', shortcut.requests.every((r) => r.type !== 'chat/start'));
+check('写进作答区不会留下对话气泡', shortcut.find('.messages').textContent.includes('我是 PTA 助手'));
+
+// 写失败时输入框要留着文本，用户才能改完再试
+shortcut.setInputResult({ ok: false, result: '写入作答区失败：四种写入方法全部失败' });
+shortcut.setValue(shortcut.find('.composer__input'), 'int main() { return 1; }');
+await tick();
+shortcut.find('.composer__write').click();
+await tick();
+check('写入失败时输入框内容保留', shortcut.find('.composer__input').value === 'int main() { return 1; }');
+check('写入失败原因显示出来', shortcut.find('.notice__text').textContent.includes('四种写入方法全部失败'));
+check('提示条不带「去设置」（不是 Key 的问题）', shortcut.find('.notice__action') === null);
+
+// 空格文本不触发写入
+shortcut.setValue(shortcut.find('.composer__input'), '   \n  ');
+await tick();
+check('只有空白时「输入」按钮不可点', shortcut.find('.composer__write').disabled);
+
+// 新会话：先聊一轮，再清空
+shortcut.setValue(shortcut.find('.composer__input'), '帮我看看这道题');
+await tick();
+shortcut.find('.composer__send').click();
+await tick();
+const shortcutRequestId = shortcut.requests.find((r) => r.type === 'chat/start')?.requestId;
+shortcut.emit({ type: 'chat/delta', requestId: shortcutRequestId, text: '好的，先读题面。' });
+await tick();
+check('新一轮上下文已建立', shortcut.find('.bubble--user').textContent.includes('帮我看看这道题'));
+
+shortcut.find('.panel__new-chat').click();
+await tick();
+check('「新会话」把对话清回只剩欢迎语', !shortcut.find('.bubble--user') && !shortcut.find('.bubble--assistant'));
+check('「新会话」顺带清掉提示条', shortcut.find('.notice') === null);
+check('「新会话」不刷新页面也能重开一轮', shortcut.find('.composer__send').textContent === '发送');
+
+// 上一轮还在生成时点「新会话」：先把后台那一轮掐掉，旧增量不能再冒出来
+shortcut.setValue(shortcut.find('.composer__input'), '再问一句');
+await tick();
+shortcut.find('.composer__send').click();
+await tick();
+const abortedRequestId = shortcut.requests.filter((r) => r.type === 'chat/start').at(-1).requestId;
+shortcut.find('.panel__new-chat').click();
+await tick();
+check(
+  '生成中「新会话」会先停掉那一轮',
+  shortcut.requests.filter((r) => r.type === 'chat/stop' && r.requestId === abortedRequestId).length === 1,
+);
+shortcut.emit({ type: 'chat/delta', requestId: abortedRequestId, text: '迟到的回答' });
+await tick();
+check('掐掉后迟到的增量不会再写进对话', !shortcut.find('.messages').textContent.includes('迟到的回答'));
 
 console.log(`\n${target} 冒烟测试通过`);

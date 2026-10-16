@@ -1,22 +1,34 @@
-import { useRef, useState, useSyncExternalStore } from 'react';
+import { useEffect, useRef, useState, useSyncExternalStore } from 'react';
 import { Composer } from './components/Composer';
 import { MessageList } from './components/MessageList';
 import { SettingsPanel } from './components/SettingsPanel';
 import { useChat } from './hooks/useChat';
-import { usePanelPosition } from './hooks/usePanelPosition';
+import { usePanelLayout } from './hooks/usePanelLayout';
 import { useSettings } from './hooks/useSettings';
-import { isPanelOpen, setPanelOpen, subscribePanel } from './panelStore';
+import {
+  isPanelOpen,
+  layoutResetCount,
+  setPanelOpen,
+  subscribeLayoutReset,
+  subscribePanel,
+} from './panelStore';
 
 type View = 'chat' | 'settings';
 
 export function App() {
   const open = useSyncExternalStore(subscribePanel, isPanelOpen, isPanelOpen);
+  const layoutReset = useSyncExternalStore(subscribeLayoutReset, layoutResetCount, layoutResetCount);
   const [view, setView] = useState<View>('chat');
   const [draft, setDraft] = useState('');
   const settings = useSettings();
   const chat = useChat(settings.hasApiKey);
   const panelRef = useRef<HTMLDivElement>(null);
-  const panel = usePanelPosition(panelRef);
+  const panel = usePanelLayout(panelRef);
+
+  // 双击插件图标 = 把位置与大小恢复默认（面板关着的时候也要生效，所以放在 store 上）
+  useEffect(() => {
+    if (layoutReset > 0) panel.reset();
+  }, [layoutReset, panel.reset]);
 
   if (!open) return null;
 
@@ -25,13 +37,25 @@ export function App() {
     setDraft('');
   };
 
+  // 「输入」按钮：整段写进作答区，写成功才清空输入框，失败时文本留着好重试
+  const inputToEditor = async () => {
+    if (await chat.inputCode(draft)) setDraft('');
+  };
+
   return (
     <div
       className="panel"
       ref={panelRef}
       style={
-        panel.position
-          ? { left: panel.position.x, top: panel.position.y, right: 'auto', bottom: 'auto' }
+        panel.layout
+          ? {
+              left: panel.layout.x,
+              top: panel.layout.y,
+              right: 'auto',
+              bottom: 'auto',
+              width: panel.layout.width,
+              height: panel.layout.height,
+            }
           : undefined
       }
     >
@@ -39,7 +63,7 @@ export function App() {
         className="panel__header"
         onPointerDown={panel.startDrag}
         onDoubleClick={panel.reset}
-        title="拖动可以移动面板，双击复位"
+        title="拖动可以移动面板，拉右下角可以改大小，双击这里（或双击插件图标）恢复默认"
       >
         {view === 'settings' ? (
           <>
@@ -51,19 +75,29 @@ export function App() {
         ) : (
           <>
             <span className="panel__title">PTA 助手</span>
-            <span className="panel__badge">v0.8.1</span>
+            <span className="panel__badge">v1.0-beta</span>
           </>
         )}
         <div className="panel__actions">
           {view === 'chat' && (
-            <button
-              type="button"
-              className="panel__close"
-              title="设置"
-              onClick={() => setView('settings')}
-            >
-              ⚙
-            </button>
+            <>
+              <button
+                type="button"
+                className="panel__new-chat"
+                title="新会话：清空当前对话上下文，做下一题不用刷新页面"
+                onClick={chat.reset}
+              >
+                新会话
+              </button>
+              <button
+                type="button"
+                className="panel__close"
+                title="设置"
+                onClick={() => setView('settings')}
+              >
+                ⚙
+              </button>
+            </>
           )}
           <button
             type="button"
@@ -103,10 +137,18 @@ export function App() {
             onChange={setDraft}
             onSend={send}
             onStop={chat.stop}
+            onInput={() => void inputToEditor()}
             streaming={chat.streaming}
+            writing={chat.writing}
           />
         </>
       )}
+
+      <div
+        className="panel__resize"
+        title="拖动可以改面板大小"
+        onPointerDown={panel.startResize}
+      />
     </div>
   );
 }

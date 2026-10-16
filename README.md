@@ -37,9 +37,11 @@ src/
   content/styles.css     悬浮窗样式（跟随 content.js 一起注入，不污染页面）
   shared/                browser API 入口、消息协议、工具定义、设置与消息类型
 public/engine/          内置 C 编译器：Clang/LLD 的 wasm + sysroot + WASI 运行时（见该目录 README）
+public/avata.jpg        作者头像：设置页作者卡片与底部署名用（走 web_accessible_resources + runtime.getURL）
 scripts/
   fetch-engine.mjs      下载编译器的三大资源（约 91MB，build 前自动跑一次）
   gen-icons.py           生成 public/icons 下的图标
+  package-firefox.mjs    把 dist/firefox 打成无签名的 xpi（npm run package:firefox）
   test-compile.mjs       内置 C 编译器：真实引擎编译运行 + 样例比对
   test-deepseek.mjs      假的 fetch 跑 SSE 解析与错误映射
   smoke.mjs              jsdom 冒烟测试：清单完整性、悬浮窗、流式对话、设置页
@@ -52,6 +54,7 @@ npm install
 npm run build      # 类型检查 + 产出 dist/chrome、dist/firefox
 npm run test       # SSE 解析校验 + 冒烟测试（冒烟测试需要先 build）
 npm run icons      # 重新生成图标（需要 python3 + Pillow）
+npm run package:firefox   # 构建 Firefox 版并打成 dist/pta-assistant-v1.0-beta.xpi（无签名）
 ```
 
 需要 Node 22.18+（`scripts/test-deepseek.mjs` 直接跑 TS 用的类型擦除）。
@@ -63,7 +66,10 @@ npm run icons      # 重新生成图标（需要 python3 + Pillow）
 加载方式：
 
 - Chrome：`chrome://extensions` -> 打开「开发者模式」-> 「加载已解压的扩展程序」-> 选择 `dist/chrome`
-- Firefox：`about:debugging#/runtime/this-firefox` -> 「临时载入附加组件」-> 选择 `dist/firefox/manifest.json`
+- Firefox（开发）：`about:debugging#/runtime/this-firefox` -> 「临时载入附加组件」-> 选择 `dist/firefox/manifest.json`
+- Firefox（发给别人）：`npm run package:firefox` 打成 `dist/pta-assistant-v1.0-beta.xpi`（无签名），
+  对方同样在「临时载入附加组件」里选这个 xpi 文件即可。产物名跟面板徽标一致，而清单里的 `version`
+  仍是数字 `1.0.0`（Chrome 不允许清单版本号带 `alpha` 后缀）
 
 **要加载的只有构建产物目录**（`dist/chrome`、`dist/firefox`），不要选项目根目录：根目录里没有 `content.js`、`background.js`，Chrome 会先报「无法为脚本加载 content.js」，再报「无法加载清单」。
 
@@ -85,7 +91,7 @@ npm run icons      # 重新生成图标（需要 python3 + Pillow）
 ## v0.2 已完成
 
 - 接入 DeepSeek 的 OpenAI 兼容接口，单轮流式对话：助手气泡逐字追加，生成中可以点「停止」打断
-- 设置页（右上角齿轮）：API Key、接口地址、模型名；默认 `https://api.deepseek.com` + `deepseek-v4.1-flash`
+- 设置页（右上角齿轮）：API Key、接口地址、模型名；默认现在是**硅基流动** `https://api.siliconflow.cn/v1` + `deepseek-ai/DeepSeek-V4.1-Flash`（早先默认是 DeepSeek，改接口只改设置页，不用改代码）
 - API Key 存在 `chrome.storage.local`，只有 background 能读到，content script 拿到的视图里没有 Key，页面上也拿不到明文
 - 请求由 background 发出（不是 content script 直连）：既避开页面自身的 CSP，也不让 Key 进入页面上下文
 - 错误会转成中文提示直接显示在对话里：未配置 Key、Key 无效、余额不足、限流、地址或模型名不对、连不上
@@ -122,7 +128,7 @@ npm run icons      # 重新生成图标（需要 python3 + Pillow）
 
 - 参数：`text`（要输入的文字）、`selector`（目标元素）、`clear`（先清空原内容）、`press`（按 Enter / Escape / Tab / ArrowDown 这类单键）、`perCharDelayMs`（真实按键的字符间隔，默认 8）
 - **不填 `selector` 会自动定位作答区**：按 `.cm-content, [contenteditable="true"]` 找、用 `isContentEditable` 过滤掉题面里只读的样例框、取文本最长的那个（页面上可能还残留上一题的编辑器）；找不到才退回当前焦点元素
-- 真实按键开关打开时是**逐字发按键**（`Input.dispatchKeyEvent` type=char，默认 8ms 间隔），不走剪贴板、也不直接改 DOM
+- 真实按键是**逐字发按键**（`Input.dispatchKeyEvent` type=char，默认 8ms 间隔），不走剪贴板、也不直接改 DOM
 - **打字时会跟编辑器的「自动闭合 / 自动缩进」对抗**（`src/background/typist.ts`，思路取自同行实践）：
   - 每敲一个左括号/引号，记住编辑器可能补上的右半边（「幻影」）；下一个字符之前先用页面探针看光标右侧：
     源文本正要它 → `ArrowRight` 跨过去不重复敲；用不上 → `Delete` 抹掉；引号幻影留到字面量结束
@@ -134,7 +140,7 @@ npm run icons      # 重新生成图标（需要 python3 + Pillow）
 - 输入框 / 文本域：走原型上的 `value` setter 再派发 `input` + `change`，这样 React 受控组件也能同步（直接赋值会被它的 value tracker 忽略）
 - 可编辑区域 / 代码编辑器：走 `document.execCommand('insertText')`，它能产生正常的 `beforeinput` / `input` 事件链，CodeMirror、Monaco 这类编辑器能接住
 - 兜底：`execCommand` 不可用时直接插入文本节点并派发 `input` 事件，并在结果里说明走了兜底
-- **真实按键开关**（设置页里的「用调试器发送真实按键」，默认关）：开启后 `simulate_keyboard_input` 改走 `chrome.debugger` 发 CDP 事件（`Input.insertText` / `Input.dispatchKeyEvent`），事件是 trusted 的，编辑器与浏览器默认行为都会响应。开启时先让页面聚焦并选中原内容，输入完立刻断开调试器，所以横幅只在输入的那几秒出现
+- **真实按键一律走调试器**：模型调 `simulate_keyboard_input` 时固定走 `chrome.debugger` 发 CDP 事件（`Input.insertText` / `Input.dispatchKeyEvent`），事件是 trusted 的，编辑器与浏览器默认行为都会响应。**没有开关了**（旧的「用调试器发送真实按键」已删）：要真按键的方案本来就该用调试器，不该被一个默认关的开关挡住；默认的整段写入方案根本用不到调试器。先让页面聚焦并选中原内容，输入完立刻断开调试器，横幅只在输入的那几秒出现
 - 调试器用不了时（该标签页开着 DevTools、或浏览器不支持）会自动退回模拟事件，并在工具结果里说明原因
 - **输入后回读确认**：按键是异步生效的，不回读就是假成功。回读 CodeMirror 时按 `.cm-line` 的 `textContent` 拼行（读 `innerText` 会多吐一个尾部换行，导致比对整体错位一行），比对结果（一致 / 第几行不一致）会写进工具结果给模型看
 
@@ -142,8 +148,8 @@ npm run icons      # 重新生成图标（需要 python3 + Pillow）
 
 - 还没有实现同行做法的「收尾统一扫缩进」（敲完 `Ctrl+Home` 逐行重排）：C 的缩进服务会在按 Enter 后回头重排 `case`/`default` 对齐，这类情况现在只能靠回读比对报出「第 X 行不一致」，模型看到后可以再来一次
 
-- 不开真实按键开关时，按键是**未信任事件**：浏览器默认行为不会发生（回车不换行、表单不提交），只对页面自己写的按键监听有效
-- 开了真实按键开关后：那个标签页会显示「正在调试此浏览器」横幅，且此时**不能打开开发者工具**（两者抢占同一个调试器）；扩展需要 `debugger` 权限，重新加载时要在扩展页确认一次
+- 调试器输入失败时会退回模拟事件，退回后按键是**未信任事件**：浏览器默认行为不会发生（回车不换行、表单不提交），只对页面自己写的按键监听有效
+- 用调试器输入的那几秒：那个标签页会显示「正在调试此浏览器」横幅，且此时**不能打开开发者工具**（两者抢占同一个调试器）；扩展需要 `debugger` 权限，重新加载时要在扩展页确认一次
 - 目标元素需要有明确的 CSS 选择器；模型会先用 `js_inject` 确认结构（系统提示里要求它这么做）
 
 已知限制：
@@ -156,11 +162,12 @@ npm run icons      # 重新生成图标（需要 python3 + Pillow）
 
 ## v0.8 已完成（界面打磨）
 
-- **面板可拖动、位置记住**：拖标题栏移动，双击复位；位置存在 `chrome.storage.local`，刷新页面还在；拖动会被夹在视口内。默认仍然是固定右上角（想自己挪开可以拖动，PTA 的按钮就不会被盖住了）
+- **面板可拖动、可改大小，布局记住**：拖标题栏移动、拉右下角把手改大小；位置与尺寸一起存在 `chrome.storage.local`（`pta-assistant-panel-layout`），刷新页面还在；两者都会被夹在视口内，小到 360×320 就夹住。默认仍然是固定右上角的 420×620
+  - **恢复默认有两条路**：双击标题栏，或**双击工具栏的插件图标**（两次点击间隔 ≤400ms 算双击；第二下只发复位消息、不再开关面板，所以窗口不会开完又关掉）
 - **智能滚动**：用户往上翻看的时候不再把视图拽回底部（以前每来一个流式字符都会跳到底部）；离开底部时右下角出现「↓ 回到底部」
 - **工具卡片**：可以折叠/展开（长代码、长输出不再一直占屏），代码与结果各有「复制」按钮（用 `execCommand` 复制，不需要额外权限）
-- **设置页的「模拟输入测试」**：一个文本框 + **一种写入方法一个按钮**（共 17 种，按四组排布），点哪个就用哪种方式把文本框内容写进当前页面的作答区（覆盖内容、不提交）。结果回显含三件事：回读比对（一致/第几行不一致）、**页面是否弹了「禁止粘贴」这类提示**、用的哪种方法。测试成功后该按钮会标 ✅ 并记进 storage，旁边显示「当前可用方法」
-  - **CDP 那几个方法不看「用调试器发送真实按键」开关**，一律直接尝试，挂不上调试器就如实报错
+- **设置页的「模拟输入测试」（v1.0-beta 起默认隐藏，代码保留）**：一个文本框 + **一种写入方法一个按钮**（共 17 种，按四组排布），点哪个就用哪种方式把文本框内容写进当前页面的作答区（覆盖内容、不提交）。结果回显含三件事：回读比对（一致/第几行不一致）、**页面是否弹了「禁止粘贴」这类提示**、用的哪种方法。测试成功后该按钮会标 ✅ 并记进 storage，旁边显示「当前可用方法」
+  - **CDP 那几个方法不需要设置页开关**，一律直接尝试，挂不上调试器就如实报错
   - **实测结论（2026-10-14，PTA 真实页面）**：只有「**整段 dispatch**」成功，其余（CDP 逐字真按键 / CDP keyDown+text / CDP 整段插入 / CDP 点击后按键 / execCommand / 手工输入事件 / 改 DOM / 输入法事件链 / paste 事件 / value setter / 剪贴板+Ctrl+V / 剪贴板+execCommand(paste)）都被页面拦下并弹「禁止粘贴」。`write_editor_code` 工具走的正是「整段 dispatch」
   - 17 种方法分组：**编辑器状态（CM6 API）**：整段 dispatch / 先 focus 再 dispatch / dispatch + 标注输入 / replaceSelection / 逐行 dispatch；**CDP 真实输入**：CDP 逐字真实按键 / CDP 真实点击 + 逐字按键 / CDP keyDown+text 逐字 / CDP 整段插入；**DOM 与事件**：execCommand / 手工派发 beforeinput+input / 改 DOM + 派发 input / 模拟输入法事件链 / 手工派发 paste 事件 / 原生 value setter；**剪贴板**：剪贴板 + 真 Ctrl+V / 剪贴板 + execCommand(paste)
 - 版本号同步到 0.8.0
@@ -201,6 +208,46 @@ npm run icons      # 重新生成图标（需要 python3 + Pillow）
 汇报文案沿用原来那套：编译错误原样带回 clang 诊断（含行列）、运行区分「崩溃 / 非零退出 / 超时」、输出过长会截断。
 版本号同步到 0.9.0。
 
+## 面板快捷通道：「输入」与「新会话」
+
+两个不走 AI 的即时通道，都是用户直接点的按钮：
+
+### 「输入」按钮（发送按钮左边）
+
+**起因**：有用户反馈 PTA 禁粘贴，而设置页里的「模拟输入测试」实测能绕过去，于是把它从「测试」变成日常可用的快捷通道。
+
+- 点一下就把输入框里的文本**整段写进作答区**，写成功后**清空输入框**；写入失败时输入框内容保留，方便改完再试
+- 走的是 `write_editor_code` 工具同一条链路（`src/background/input-methods.ts` 的 `writeEditorCode`）：默认实现 → 回读比对 →
+  不一致就清空并按备用顺序（`replaceSelection` → CDP 真实点击 + 逐字按键 → 整段 dispatch）重试，四种全败才报错
+- **不经过模型**：面板直接把文本发给后台（`code/input` 消息），不占用 API Key、不产生对话气泡、不污染上下文
+- 结果（成功说明 / 失败原因）回显在聊天区上方的提示条上
+- 输入框为空、只有空白、或正在生成时按钮禁用（生成中先点「停止」）
+
+### 「新会话」按钮（标题栏右上角）
+
+用户做下一题时不需要上一题的上文，而插件的对话历史原本只能靠刷新整个页面清掉。
+
+- 点了就把对话清回只剩欢迎语，同时清掉提示条；不用刷新页面、不用重开悬浮窗
+- 还在生成时点它，会先给后台发 `chat/stop` 把那一轮掐掉；那一轮迟到的流式增量因为请求号已失效，不会再冒出来
+- API Key 与所有设置不受影响
+
+## v1.0-beta：默认接口、面板尺寸与设置页
+
+- **设置页顶部作者卡片**：圆角矩形卡片，左边是矩形圆角头像（`public/avata.jpg`，跟着构建进 dist 并加进
+  `web_accessible_resources`，设置页用 `ext.runtime.getURL` 取），右边是大字昵称 `OCTest`、
+  下面一行小字邮箱 `octestwx@qq.com`，再下面是可点的网站链接 `octest.top`（点开走后台开新标签页）
+- **默认接口换成硅基流动**：`https://api.siliconflow.cn/v1` + `deepseek-ai/DeepSeek-V4.1-Flash`（`manifest` 的 `host_permissions` 已放行该域名；DeepSeek 的权限保留，切回去只要改设置页）
+- **「教程」按钮**：接口地址输入框右侧，下面写着「怎么配 Key、怎么用，看教程」；点它由后台开新标签页去
+  `http://octest.top/pta-assist-plugin`（content script 没有开标签页的权限；后台只放行 `http(s)`，
+  不让它变成任意开页面的入口）
+- **版本号**：标题栏徽标 `v1.0-beta`（manifest 的 `version` 仍是数字 `1.0.0`——Chrome 的清单版本号不允许带后缀，带了装不上）
+- **面板能改大小了**：右下角把手拖拽调整，宽高与位置一起存（`pta-assistant-panel-layout`），刷新还在，夹在 360×320 与视口之间；老版本只存过位置的 key 会顺手删掉
+- **双击插件图标恢复默认位置与大小**：后台把间隔 ≤400ms 的两次点击认成双击，第二下只发 `panel/reset-layout` 而不再开关面板
+- **删掉「用调试器发送真实按键」开关**：`simulate_keyboard_input` 一律走调试器（attach 失败照旧退回模拟事件）。旧版本存过的这个字段在读设置时会被丢掉
+- **「模拟输入测试」整块对用户隐藏**：那是排查 PTA 禁粘贴时的调试按钮组，普通用户用不到。
+  代码全部保留，由 `SettingsPanel.tsx` 顶部的 `SHOW_INPUT_METHOD_TESTS` 控制，改成 `true` 就恢复显示
+- **接口地址下面那句「要改 host_permissions」的提示已从界面移除**（属于开发者的事，写在 README 里就够了）
+
 ## PTA 三件套（原计划 v0.7，提前做了）
 
 三个工具都在**页面主世界**执行（编辑器实例挂在页面自己的 JS 对象上，隔离世界看不到），走的是已有的主世界注入器：
@@ -209,7 +256,7 @@ npm run icons      # 重新生成图标（需要 python3 + Pillow）
 |---|---|---|
 | `read_problem` | 拿到当前题目的题面 | ① 按类名找，但**遍历所有匹配**而不是只取第一个（只取第一个的话，文本太少的那个会把整个选择器废掉）；② 类名对不上时**按小标题定位**：同时出现「题目描述/输入格式/输出格式/样例输入/样例输出」里两个以上的**最小**容器；③ 都失败才退整页正文，并从第一个小标题开始截断、滤掉「上一题/下一题/图例/Toggle Sidebar/复制」这类纯 UI 文案行；④ 顺手把样例抠成「输入/输出」成对返回，可以直接当 `compile_and_run_c` 的 stdin |
 | `read_editor_code` | 读作答区里的代码 | 题面的「输入样例/输出样例」**也是 CodeMirror**（`contenteditable="false"` + `aria-readonly="true"`），所以先收集所有编辑器实例、**剔除只读的**，再在可写的里面取内容最长的；用 `view.state.doc` 读完整文档；只有只读实例时会明确说「只有样例框、没有作答区」而不是含糊报「编辑器是只读的」 |
-| `write_editor_code` | 改作答区里的代码（默认整段覆写） | 同样跳过只读样例框；优先 `view.dispatch({changes})` **原子写入**并**把光标留在文末**；退路是聚焦 + 全选 + `execCommand('insertText')`；两条路都**回读比对**。写完还会**自动检查**（`verify` 参数，默认开）：① 回读逐行比对；② 拿题面**第一组样例**编译并比对输出（"样例 1 输出一致" / "不一致——第 1 行不同：期望「7」，实际「8」" / "编译失败——…"）；③ 报告**提交按钮现在可用不可用**（确认页面认了这次修改）。开了「真实按键」开关时还会**自动敲一个空格再退格**触发页面的修改标记 |
+| `write_editor_code` | 改作答区里的代码（默认整段覆写） | 同样跳过只读样例框；优先 `view.dispatch({changes})` **原子写入**并**把光标留在文末**；退路是聚焦 + 全选 + `execCommand('insertText')`；两条路都**回读比对**。写完还会**自动检查**（`verify` 参数，默认开）：① 回读逐行比对；② 拿题面**第一组样例**编译并比对输出（"样例 1 输出一致" / "不一致——第 1 行不同：期望「7」，实际「8」" / "编译失败——…"）；③ 报告**提交按钮现在可用不可用**（确认页面认了这次修改）。写完还会**用真实按键敲一个空格再退格**，触发页面的修改标记（敲不动就在结果里说明，让用户手动敲一个字符） |
 
 编辑器实例不在公开 API 上，只能顺着 DOM 摸：先在 `#pta-answer-editor / .cm-editor / .cm-content` 及其祖先上找 `cmTile.view / cmView / editorView / view / _view`（PTA 用的是 `cmTile.view`），再退一步扫自身属性找「有 `state.doc` + `dispatch`」的对象，找到后把路径一并写进结果里。
 
@@ -219,9 +266,13 @@ npm run icons      # 重新生成图标（需要 python3 + Pillow）
 
 | 工具 | 做什么 | 实测经验（来自同行实践） |
 |---|---|---|
-| `submit_answer` | 点提交并用轮询等结论（默认等 20 秒，可调到 120） | 提交前先读一次旧结论、关掉上一次的弹窗；按文字分三级找按钮——**真按钮精确匹配 → 真按钮包含匹配 → 退到 `a/[role=button]/div[class*=btn]`**，顺序不能反（PTA 登录页上「登录」既是标签页又是按钮，按 DOM 顺序会点错） |
-| `read_judge_result` | 读当前判题结论，不点任何东西 | 「出结论」要同时满足 **文字非空 ∧ 与提交前不同 ∧ 能归一化成状态码**——只看「变了」会把「评测中」当结论，然后把还在评测的弹窗关掉，这次结果永远等不到 |
+| `submit_answer` | 点提交并用轮询等结论（默认等 20 秒，可调到 120） | 提交前先读一次旧结论、关掉上一次的弹窗；按文字分三级找按钮——**真按钮精确匹配 → 真按钮包含匹配 → 退到 `a/[role=button]/div[class*=btn]`**，顺序不能反（PTA 登录页上「登录」既是标签页又是按钮，按 DOM 顺序会点错）。提交期间挂上判题观察器，把弹窗里出现过的文字存进页面快照 |
+| `read_judge_result` | 等到并读出判题结论，不点任何东西（默认等 60 秒，可调到 120） | 每 **0.3 秒**重读一次页面，直到**文字非空 ∧ 能归一化成状态码**为止——只看「变了」会把「评测中」当结论，然后把还在评测的弹窗关掉，这次结果永远等不到。用户可能在结论出来之后、模型来读之前就把弹窗关掉，所以每次读到的文字都记在 `__ptaJudgeSnapshot` 里（由页面里的 `MutationObserver` 持续更新，合并 300ms 内的连续 DOM 变化），弹窗没了还能回看最后一次结论，并明确标注这是页面上的判题记录 |
 | `close_dialogs` | 关掉挡在页面上的弹窗 | ESC → 在**识别出的弹窗容器内部**找关闭控件 → 点文字按钮（关闭/确定/我知道了/取消）→ 最多三轮（关一层常常还压着一层）；拿到结论之后才关 |
+
+「停止」按钮对这两条等待中的工具同样有效：后台把 `signal` 一路传到 `injectScript`，中止时先往页面里置 `__ptaAborted = true`（`executeScript` 撤不回来，只能靠页面里的循环自己看标记），页面里所有等待都走 `sleepOrAbort`（最多 100ms 一醒），后台这一侧同时和 abort 赛跑、不再等页面返回。工具收尾照常发 `chat/tool-end`（内容是「已停止」），所以面板上的工具卡片不会一直转圈；随后 agent loop 直接按中止结束，不再喂下一轮模型请求。
+
+判题快照只在**页面上已经读不到任何判题文字**时才用来兜底（弹窗被关掉了）：只要页面还挂着「评测中」这类中间状态文字，就说明这次还在评测，这时宁可继续等，也不返回上一条旧结论——错报结论比不报更糟。重新提交会清空快照。观察器的开头那次读不受防抖限制（结论可能只活几十毫秒），防抖只用来补尾部那一次。
 
 判题状态归一化的顺序即优先级：先 `(AC|WA|RE|TLE|MLE|CE|PE|OLE)`，再中文词表，而且**具体状态排在泛化词前面**（否则「编译错误」会被当成「错误」报成 WA，模型就会一直改算法而不碰那句语法错误），否定词也排在肯定词前面（避免「未通过」被当成「通过」）。
 

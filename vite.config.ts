@@ -29,10 +29,10 @@ function applyFirefoxPatch(manifest: Record<string, unknown>): Record<string, un
     permissions: ((manifest.permissions as string[] | undefined) ?? []).filter(
       (permission) => permission !== 'offscreen',
     ),
-    // Firefox 的 content_security_policy 只认字符串形式（Chrome 认 { extension_pages: ... } 对象）。
+    // content_security_policy 保持对象形式：Firefox 102 起就移除了字符串形式，
+    // 用字符串会让 Firefox 115+ 判定清单无效（安装时报「已损坏」）。
     // 两个浏览器都需要在扩展页 CSP 里放行 wasm，否则 Worker 里 WebAssembly.compile 会被拦
-    content_security_policy: (manifest.content_security_policy as { extension_pages?: string } | undefined)
-      ?.extension_pages,
+    content_security_policy: manifest.content_security_policy,
   };
 }
 

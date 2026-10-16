@@ -2,9 +2,9 @@ import { createRoot } from 'react-dom/client';
 import { App } from './App';
 import { katexStyles } from './katexStyles';
 import { runPageTool } from './pageTools';
-import { togglePanel } from './panelStore';
+import { requestLayoutReset, togglePanel } from './panelStore';
 import { ext } from '../shared/browser';
-import { isRunToolRequest, isTogglePanelMessage } from '../shared/messages';
+import { isResetPanelLayoutMessage, isRunToolRequest, isTogglePanelMessage } from '../shared/messages';
 import styles from './styles.css?inline';
 
 const HOST_ID = 'pta-assistant-host';
@@ -46,6 +46,10 @@ function start(): void {
   ext.runtime.onMessage.addListener((message: unknown, _sender, sendResponse) => {
     if (isTogglePanelMessage(message)) {
       togglePanel();
+      return undefined;
+    }
+    if (isResetPanelLayoutMessage(message)) {
+      requestLayoutReset();
       return undefined;
     }
     if (isRunToolRequest(message)) {

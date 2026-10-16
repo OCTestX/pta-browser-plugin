@@ -48,7 +48,7 @@ export const SYSTEM_PROMPT = [
   '- write_editor_code：把代码写进作答区（默认整段覆写）。写完会自动回读比对、拿题面第一组样例编译比对输出、并看提交按钮能不能点——这三项结论都在返回值里；有「不一致/编译失败/按钮禁用」就先按结论修，别急着交付。',
   '',
   '- compile_and_run_c：用内置编译器（本地 Clang，不联网）把 C 代码编译并运行，可以给标准输入。写完代码要先用它跑一遍题目样例，确认输出对得上（首次调用要加载编译器几秒，之后很快）。',
-  '- submit_answer：把当前代码提交到 PTA 并等判题结论；read_judge_result 读当前结论；close_dialogs 关掉挡着的弹窗（拿到结论之后再关）。',
+  '- submit_answer：把当前代码提交到 PTA 并等判题结论；read_judge_result 等判题结论（会一直等到出结论，默认 60 秒）；close_dialogs 关掉挡着的弹窗（拿到结论之后再关）。',
   '',
   '其它工具：',
   '- js_inject：在用户当前页面里执行 JavaScript 并把返回值带回来。用来**读**页面（看结构、找选择器、读文本）和做上面几个工具做不到的事。',
@@ -164,8 +164,14 @@ export const TOOL_SCHEMAS: ToolSchema[] = [
     function: {
       name: 'read_judge_result',
       description:
-        '读当前判题结果（不点任何按钮）。submit_answer 说还没出结论时，可以过一会儿再调它看；拿到结论之前不要关判题弹窗。',
-      parameters: { type: 'object', properties: {}, required: [] },
+        '读当前判题结果（不点任何按钮）。它会每 0.3 秒检查一次页面，一直等到能读出真正的结论（AC/WA/CE…）为止，默认最多等 60 秒（可调到 120）。submit_answer 说还没出结论时，就调它等结果，不要反复空转；弹窗被关掉也不怕，它会回看页面上留着的判题记录。',
+      parameters: {
+        type: 'object',
+        properties: {
+          waitSeconds: { type: 'number', description: '最多等多少秒，默认 60，上限 120' },
+        },
+        required: [],
+      },
     },
   },
   {

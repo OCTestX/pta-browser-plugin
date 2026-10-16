@@ -29,3 +29,24 @@ export function subscribePanel(listener: Listener): () => void {
     listeners.delete(listener);
   };
 }
+
+// 「双击插件图标 → 恢复默认位置与大小」同样在 React 之外触发：
+// content script 一收到消息就能记下来，React 还没挂载也不会丢。
+let layoutResets = 0;
+const layoutListeners = new Set<Listener>();
+
+export function requestLayoutReset(): void {
+  layoutResets += 1;
+  layoutListeners.forEach((listener) => listener());
+}
+
+export function layoutResetCount(): number {
+  return layoutResets;
+}
+
+export function subscribeLayoutReset(listener: Listener): () => void {
+  layoutListeners.add(listener);
+  return () => {
+    layoutListeners.delete(listener);
+  };
+}

@@ -23,13 +23,17 @@ const state = {
   sse: [],
   worlds: [],
   tabEvents: [],
+  createdTabs: [],
   injectArgs: [],
+  hangJudge: false,
+  abortFlags: 0,
 };
 
 globalThis.chrome = {
   action: { onClicked: { addListener: (fn) => state.channels.action.push(fn) } },
   runtime: { onMessage: { addListener: (fn) => state.channels.message.push(fn) } },
   tabs: {
+    create: async (options) => { state.createdTabs.push(options); return { id: 99 }; },
     sendMessage: async (tabId, message) => {
       if (message.type === 'tool/run') {
         state.pageToolCalls.push(message);
@@ -57,9 +61,18 @@ globalThis.chrome = {
   scripting: {
     executeScript: async (options) => {
       if (options.files) { state.contentScriptPresent = true; return []; }
+      // 中止标记的注入（args 只有标记名，没有 source）
+      if (options.func && options.args && options.args.length === 1 && typeof options.args[0] === 'string' && !options.args[1]) {
+        state.abortFlags += 1;
+        return [{ result: undefined }];
+      }
       if (options.world === 'MAIN' && !state.mainWorldSupported) throw new Error('no MAIN');
       state.worlds.push(options.world);
       const source = String((options.args && options.args[0]) || '');
+      // 卡住的判题读取：executeScript 撤不回来，模拟页面里死循环的轮询，只能靠后台中止
+      if (state.hangJudge && source.includes('__ptaJudgeSnapshot')) {
+        return await new Promise(() => {});
+      }
       let parsed = null;
       try {
         const marker = source.indexOf('const __args = ');
@@ -73,6 +86,17 @@ globalThis.chrome = {
         if (parsed.method === 'clear') return [{ result: { ok: true, detail: '已清空' } }];
         if (parsed.method === 'readDoc') return [{ result: state.readDocText ?? 'hi' }];
         if (parsed.method === 'rect') return [{ result: { x: 60, y: 40 } }];
+        // json 模式（写入链路用）：返回结构化的成功/失败，由 state.writeOk 控制
+        if (parsed.json === true) {
+          return [{
+            result: {
+              ok: state.writeOk !== false,
+              method: parsed.method,
+              detail: state.writeOk === false ? '回读比对：与目标不一致' : '回读比对：与目标一致',
+              length: String(parsed.text ?? '').length,
+            },
+          }];
+        }
         return [{ result: { ok: true, output: state.writeResult ?? '写入成功' } }];
       }
       if (source.includes('isDisabled')) return [{ result: '提交按钮：当前可用' }];
@@ -122,6 +146,28 @@ state.contentScriptPresent = false;
 click(8);
 await tick();
 check('没有 content script 时补注入再发', state.tabEvents.filter((e) => e.type === 'toggle-panel').length === 3);
+
+/* ---------- 双击插件图标：复位位置与大小 ---------- */
+
+state.contentScriptPresent = true;
+state.tabEvents.length = 0;
+click(9);
+click(9);
+await tick();
+check(
+  '双击图标时第一下开关、第二下只发复位',
+  state.tabEvents.filter((e) => e.type === 'toggle-panel').length === 1 &&
+    state.tabEvents.filter((e) => e.type === 'panel/reset-layout').length === 1,
+);
+check('复位消息排在开关之后（面板不会被连点两次关掉）', state.tabEvents.at(-1).type === 'panel/reset-layout');
+
+// 单击仍然只是开关，不会误触发复位
+state.tabEvents.length = 0;
+click(10);
+await tick(450);
+click(10);
+await tick();
+check('两次单击各自开关，不会当成双击', state.tabEvents.filter((e) => e.type === 'panel/reset-layout').length === 0);
 state.contentScriptPresent = true;
 
 /* ---------- 设置 ---------- */
@@ -135,6 +181,31 @@ await respond2({ type: 'settings/save', patch: { apiKey: 'sk-test' } });
 const view = await respond2({ type: 'settings/get' });
 check('settings/save 落盘且视图不含 Key', state.storage['pta-assistant-settings'].apiKey === 'sk-test' && !('apiKey' in view) && view.hasApiKey === true);
 
+/* ---------- 默认值：硅基流动；旧版本存的调试器开关不再出现 ---------- */
+
+await respond2({ type: 'settings/save', patch: { apiKey: '' } });
+const defaults = await respond2({ type: 'settings/get' });
+check('默认接口地址是硅基流动', defaults.baseURL === 'https://api.siliconflow.cn/v1');
+check('默认模型是 deepseek-ai/DeepSeek-V4.1-Flash', defaults.model === 'deepseek-ai/DeepSeek-V4.1-Flash');
+check('设置视图里没有「用调试器发送真实按键」', !('useDebuggerInput' in defaults));
+
+// 旧版本存过的开关字段，读出来时不再带
+state.storage['pta-assistant-settings'] = {
+  apiKey: 'sk-old',
+  baseURL: 'https://api.siliconflow.cn/v1',
+  model: 'deepseek-ai/DeepSeek-V4.1-Flash',
+  useDebuggerInput: true,
+};
+const legacy = await respond2({ type: 'settings/get' });
+check('旧版本存过的调试器开关被丢掉', !('useDebuggerInput' in legacy));
+
+/* ---------- 教程按钮开新标签页 ---------- */
+
+const opened = await respond2({ type: 'ui/open-url', url: 'http://octest.top/pta-assist-plugin' });
+check('点教程会开新标签页去教程页', opened.ok === true && state.createdTabs.at(-1).url === 'http://octest.top/pta-assist-plugin');
+const refused = await respond2({ type: 'ui/open-url', url: 'javascript:alert(1)' });
+check('只放行 http/https 链接', refused.ok === false);
+
 /* ---------- 写入链路：默认 → 清空 → 备用 ---------- */
 
 // 正常：默认方法一次成功
@@ -146,6 +217,48 @@ state.sse = [
 await respond2({ type: 'chat/start', requestId: 'r1', messages: [{ role: 'user', content: 'hi' }] }, { tab: { id: 7 } });
 await tick(50);
 check('默认方法一次写入成功', state.injectArgs.some((a) => a.method === 'dispatchFocus'));
+
+/* ---------- 停止能打断正在等待的工具 ---------- */
+
+// 模型调 read_judge_result，页面那边永远不返回（真 PTA 上就是「一直在轮询等结论」）
+state.hangJudge = true;
+state.sse = [
+  `data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"c2","function":{"name":"read_judge_result","arguments":"{}"}}]}}]}\n\ndata: [DONE]\n\n`,
+];
+state.tabEvents.length = 0;
+await respond2({ type: 'chat/start', requestId: 'r3', messages: [{ role: 'user', content: 'hi' }] }, { tab: { id: 7 } });
+await tick(50);
+check('工具已经开跑', state.tabEvents.some((e) => e.type === 'chat/tool-start' && e.name === 'read_judge_result'));
+check('工具还没结束时没有 done', !state.tabEvents.some((e) => e.type === 'chat/done'));
+
+await respond2({ type: 'chat/stop', requestId: 'r3' });
+await tick(50);
+const stopped = state.tabEvents.filter((e) => e.type === 'chat/done');
+check('点停止能立刻结束这次生成（不必等页面里的轮询结束）', stopped.length === 1 && stopped[0].aborted === true);
+check('卡住的工具也收到收尾通知（面板上的工具卡片不会一直转）', state.tabEvents.some((e) => e.type === 'chat/tool-end' && e.result === '已停止'));
+check('中止时往页面里置了取消标记，页面里的轮询循环能自己退出', state.abortFlags >= 1);
+state.hangJudge = false;
+
+/* ---------- 「输入」按钮：面板输入框 → 作答区（PTA 禁粘贴时的快捷通道） ---------- */
+
+state.injectArgs.length = 0;
+state.writeOk = true;
+const inputOk = await respond2({ type: 'code/input', code: 'int main(){return 0;}' }, { tab: { id: 7 } });
+check(
+  'code/input 走写入链路：先清空再用默认实现写',
+  state.injectArgs.some((a) => a.method === 'clear') &&
+    state.injectArgs.some((a) => a.method === 'dispatchFocus' && a.text === 'int main(){return 0;}'),
+);
+check('写入成功时回一句能直接展示的结果', inputOk.ok === true && inputOk.result.includes('已写入作答区'));
+
+state.writeOk = false;
+const inputFail = await respond2({ type: 'code/input', code: 'int main(){return 0;}' }, { tab: { id: 7 } });
+check('四种方法都失败时如实回报失败（面板据此不清空输入框）', inputFail.ok === false);
+check('失败时把每一次尝试的原因带回去', inputFail.result.includes('四种写入方法全部失败'));
+state.writeOk = true;
+
+const inputNoTab = await respond2({ type: 'code/input', code: 'x' });
+check('拿不到标签页时给出提示而不是抛异常', inputNoTab.ok === false && inputNoTab.result.includes('当前页面不支持'));
 
 /* ---------- 无 Key 短路 ---------- */
 
