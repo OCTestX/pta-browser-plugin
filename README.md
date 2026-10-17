@@ -368,7 +368,8 @@ ask 以前没有超时：用户不点，这一轮就永远挂着；而且点完�
 
 - **设置页顶部作者卡片**：圆角矩形卡片，左边是矩形圆角头像（`public/avata.jpg`，跟着构建进 dist 并加进
   `web_accessible_resources`，设置页用 `ext.runtime.getURL` 取），右边是大字昵称 `OCTest`、
-  下面一行小字邮箱 `octestwx@qq.com`，再下面是可点的网站链接 `octestpi.top`（点开走后台开新标签页）
+  下面一行小字邮箱 `octestwx@qq.com`，再往下依次是可点的 `octestpi.top` 与「硅基流动 · 邀请码 16 元试用」
+  （跳 `https://cloud.siliconflow.cn/i/oU1ajhss`），点开都走后台开新标签页
 - **默认接口换成硅基流动**：`https://api.siliconflow.cn/v1` + `deepseek-ai/DeepSeek-V4.1-Flash`（`manifest` 的 `host_permissions` 已放行该域名；DeepSeek 的权限保留，切回去只要改设置页）
 - **「教程」按钮**：接口地址输入框右侧，下面写着「怎么配 Key、怎么用，看教程」；点它由后台开新标签页去
   `http://octestpi.top/pta-assist-plugin`（content script 没有开标签页的权限；后台只放行 `http(s)`，

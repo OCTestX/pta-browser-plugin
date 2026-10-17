@@ -325,6 +325,18 @@ check(
   withKey.requests.filter((r) => r.type === 'ui/open-url').map((r) => r.url).includes('http://octestpi.top'),
 );
 
+const sponsorLink = authorCard.querySelector('.author__site--sponsor');
+check('网站下面还有硅基流动的邀请链接', sponsorLink?.textContent.includes('硅基流动'));
+sponsorLink.click();
+await tick();
+check(
+  '点邀请链接打开带邀请码的注册页',
+  withKey.requests
+    .filter((r) => r.type === 'ui/open-url')
+    .map((r) => r.url)
+    .includes('https://cloud.siliconflow.cn/i/oU1ajhss'),
+);
+
 const tutorialButton = [...withKey.shadow().querySelectorAll('.field__jump')][0];
 check('接口地址旁边有「教程」按钮', tutorialButton?.textContent === '教程');
 check('按钮旁边提示去看教程', withKey.find('.settings').textContent.includes('怎么配 Key、怎么用，看教程'));

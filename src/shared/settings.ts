@@ -21,6 +21,9 @@ export const DEFAULT_SETTINGS: Settings = {
 /** 设置页「教程」按钮跳到的地址（作者自己的站点，讲清楚怎么配 Key 怎么用） */
 export const TUTORIAL_URL = 'http://octestpi.top/pta-assist-plugin';
 
+/** 作者卡片里的硅基流动邀请链接（带邀请码的注册页） */
+export const SILICONFLOW_INVITE_URL = 'https://cloud.siliconflow.cn/i/oU1ajhss';
+
 export function normalizeBaseURL(baseURL: string): string {
   return baseURL.trim().replace(/\/+$/, '');
 }
