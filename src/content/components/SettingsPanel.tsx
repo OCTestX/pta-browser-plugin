@@ -2,7 +2,6 @@ import { useEffect, useState } from 'react';
 import { ext } from '../../shared/browser';
 import {
   DEFAULT_SETTINGS,
-  SILICONFLOW_INVITE_URL,
   TUTORIAL_URL,
   type Settings,
   type SettingsView,
@@ -129,14 +128,6 @@ export function SettingsPanel({ view, onSave, onBack }: SettingsPanelProps) {
             onClick={() => void openLink(AUTHOR_SITE_URL)}
           >
             {AUTHOR_SITE_LABEL}
-          </button>
-          <button
-            type="button"
-            className="author__site author__site--sponsor"
-            title={SILICONFLOW_INVITE_URL}
-            onClick={() => void openLink(SILICONFLOW_INVITE_URL)}
-          >
-            硅基流动 · 邀请码 16 元试用
           </button>
         </div>
       </section>
