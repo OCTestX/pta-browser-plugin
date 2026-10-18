@@ -26,11 +26,11 @@ export interface CompileResult {
 }
 
 export async function compileAndRun(options: CompileOptions): Promise<CompileResult> {
-  const { code, stdin } = options;
+  const { code, stdin, signal } = options;
 
   let raw: EngineRunResult;
   try {
-    raw = await runInEngine(code, stdin);
+    raw = await runInEngine(code, stdin, signal);
   } catch (error) {
     if (error instanceof Error && error.name === 'EngineTimeout') {
       return {

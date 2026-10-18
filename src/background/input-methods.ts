@@ -1,3 +1,4 @@
+import { isAbortError, throwIfAborted } from '../shared/abort';
 import { findInputMethod, WRITE_FALLBACK_CHAIN } from '../shared/input-methods';
 import type { ToolOutcome } from './agent';
 import { compareOutput } from './compile';
@@ -12,8 +13,9 @@ async function writeOnce(
   tabId: number,
   method: string,
   code: string,
+  signal?: AbortSignal,
 ): Promise<{ ok: boolean; detail: string }> {
-  const result = await injectScript(tabId, INPUT_METHOD_SCRIPT, { method, text: code, json: true });
+  const result = await injectScript(tabId, INPUT_METHOD_SCRIPT, { method, text: code, json: true }, undefined, signal);
   // injectScript 会把对象 JSON 化，这里解析回来
   try {
     const parsed = JSON.parse(result.output) as { ok: boolean; detail: string };
@@ -24,16 +26,16 @@ async function writeOnce(
 }
 
 /** 清空作答区：换备用实现之前先把内容全部删掉 */
-async function clearEditor(tabId: number): Promise<void> {
-  const result = await injectScript(tabId, INPUT_METHOD_SCRIPT, { method: 'clear', text: '' });
+async function clearEditor(tabId: number, signal?: AbortSignal): Promise<void> {
+  const result = await injectScript(tabId, INPUT_METHOD_SCRIPT, { method: 'clear', text: '' }, undefined, signal);
   if (!result.ok || !result.output.includes('已清空')) {
     throw new Error(result.output);
   }
 }
 
 /** 回读编辑器全文（优先编辑器实例） */
-async function readDoc(tabId: number): Promise<string> {
-  const result = await injectScript(tabId, INPUT_METHOD_SCRIPT, { method: 'readDoc', text: '' });
+async function readDoc(tabId: number, signal?: AbortSignal): Promise<string> {
+  const result = await injectScript(tabId, INPUT_METHOD_SCRIPT, { method: 'readDoc', text: '' }, undefined, signal);
   return result.output;
 }
 
@@ -45,13 +47,18 @@ async function readDoc(tabId: number): Promise<string> {
 export async function writeEditorCode(options: {
   tabId: number;
   code: string;
+  /** 传了就能被面板的「停止」打断：每种写入方法前后都看一眼标记 */
+  signal?: AbortSignal;
 }): Promise<ToolOutcome> {
   const attempts: string[] = [];
+  const { signal } = options;
 
   for (const method of WRITE_FALLBACK_CHAIN) {
     try {
-      await clearEditor(options.tabId);
-      const result = await writeOnce(options.tabId, method, options.code);
+      // 换下一种实现之前先确认没被停掉，否则会把作答区清空却什么都没写进去
+      throwIfAborted(signal);
+      await clearEditor(options.tabId, signal);
+      const result = await writeOnce(options.tabId, method, options.code, signal);
       if (result.ok) {
         const parts = [`写入成功（${findInputMethod(method).label}）`, result.detail];
         if (attempts.length > 0) parts.push(`之前失败的尝试：${attempts.join('；')}`);
@@ -59,6 +66,8 @@ export async function writeEditorCode(options: {
       }
       attempts.push(`${findInputMethod(method).label}——${result.detail}`);
     } catch (error) {
+      // 被用户停掉的不算「这种写法失败」，别再往下一种实现接着试
+      if (isAbortError(error, signal)) throw error;
       attempts.push(
         `${findInputMethod(method).label}——${error instanceof Error ? error.message : String(error)}`,
       );

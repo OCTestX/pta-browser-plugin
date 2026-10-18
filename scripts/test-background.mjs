@@ -37,6 +37,8 @@ globalThis.chrome = {
     sendMessage: async (tabId, message) => {
       if (message.type === 'tool/run') {
         state.pageToolCalls.push(message);
+        // content script 不回话：模拟页面主线程被占死
+        if (state.hangPageTool) return await new Promise(() => {});
         return state.pageTool;
       }
       state.tabEvents.push(message);
@@ -88,6 +90,8 @@ globalThis.chrome = {
         if (parsed.method === 'rect') return [{ result: { x: 60, y: 40 } }];
         // json 模式（写入链路用）：返回结构化的成功/失败，由 state.writeOk 控制
         if (parsed.json === true) {
+          // 写入卡住：executeScript 撤不回来，只能靠后台中止
+          if (state.hangWrite && parsed.text) return await new Promise(() => {});
           return [{
             result: {
               ok: state.writeOk !== false,
@@ -118,6 +122,10 @@ globalThis.chrome = {
 const encoder = new TextEncoder();
 globalThis.fetch = async (url, init) => {
   state.modelCalls.push(JSON.parse(init.body));
+  // 接口连上但一直不吐数据：真实场景里的「模型卡住」，只有取消能收回来
+  if (state.hangStream) {
+    return new Response(new ReadableStream({ start() {} }), { status: 200 });
+  }
   const sse = state.sse[Math.min(state.modelCalls.length - 1, state.sse.length - 1)] ?? '';
   return new Response(
     new ReadableStream({ start(c) { c.enqueue(encoder.encode(sse)); c.close(); } }),
@@ -329,6 +337,93 @@ state.writeOk = true;
 
 const inputNoTab = await respond2({ type: 'code/input', code: 'x' });
 check('拿不到标签页时给出提示而不是抛异常', inputNoTab.ok === false && inputNoTab.result.includes('当前页面不支持'));
+
+/* ---------- 停止在任何时刻都有效 ---------- */
+
+// 接口连上了但一直不吐数据（真实场景：模型卡住 / 网络半死）
+state.hangStream = true;
+state.sse = [`data: {"choices":[{"delta":{"content":"好。"}}]}\n\ndata: [DONE]\n\n`];
+state.tabEvents.length = 0;
+state.modelCalls.length = 0;
+await respond2({ type: 'chat/start', requestId: 'r8', messages: [{ role: 'user', content: 'hi' }] }, { tab: { id: 7 } });
+await tick(50);
+check('模型卡住时这一轮挂着（没有 done）', !state.tabEvents.some((e) => e.type === 'chat/done'));
+await respond2({ type: 'chat/stop', requestId: 'r8' });
+await tick(50);
+check(
+  '模型流卡住时点停止也能立刻收尾',
+  state.tabEvents.some((e) => e.type === 'chat/done' && e.aborted === true),
+);
+state.hangStream = false;
+
+// content script 不回话（页面正在忙 / 脚本被换掉），点停止不能陪着一起挂
+state.hangPageTool = true;
+state.sse = [
+  `data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"c6","function":{"name":"url","arguments":"{}"}}]}}]}\n\ndata: [DONE]\n\n`,
+];
+state.tabEvents.length = 0;
+state.modelCalls.length = 0;
+await respond2({ type: 'chat/start', requestId: 'r9', messages: [{ role: 'user', content: 'hi' }] }, { tab: { id: 7 } });
+await tick(50);
+check('页面工具已经发出去了', state.pageToolCalls.length > 0 && !state.tabEvents.some((e) => e.type === 'chat/done'));
+await respond2({ type: 'chat/stop', requestId: 'r9' });
+await tick(50);
+check(
+  '页面工具不返回时点停止也能立刻收尾',
+  state.tabEvents.some((e) => e.type === 'chat/done' && e.aborted === true),
+);
+state.hangPageTool = false;
+
+/* ---------- ask 超时：15 分钟没作答就按「没有作答」继续 ---------- */
+
+// 把 15 分钟那个定时器按比例缩短（只认 900000ms 这一档，其余照常），
+// 这样测的是「真实配置的等待时长」和超时后的收尾，而不是源码里的数字
+const realSetTimeout = globalThis.setTimeout;
+let askedTimeoutMs = 0;
+globalThis.setTimeout = (fn, ms, ...rest) => {
+  if (ms === 900_000) {
+    askedTimeoutMs = ms;
+    return realSetTimeout(fn, 5, ...rest);
+  }
+  return realSetTimeout(fn, ms, ...rest);
+};
+state.sse = [
+  `data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"c7","function":{"name":"ask","arguments":"{\\"question\\":\\"选哪个？\\",\\"options\\":[\\"A\\",\\"B\\"]}"}}]}}]}\n\ndata: [DONE]\n\n`,
+  `data: {"choices":[{"delta":{"content":"那我按没有作答继续。"}}]}\n\ndata: [DONE]\n\n`,
+];
+state.tabEvents.length = 0;
+state.modelCalls.length = 0;
+await respond2({ type: 'chat/start', requestId: 'r10', messages: [{ role: 'user', content: 'hi' }] }, { tab: { id: 7 } });
+await tick(50);
+check('ask 先发给面板', state.tabEvents.some((e) => e.type === 'chat/ask' && e.question === '选哪个？'));
+await tick(80);
+globalThis.setTimeout = realSetTimeout;
+check('等用户作答的时限是 15 分钟', askedTimeoutMs === 900_000);
+check(
+  '超时后按「没有作答」继续，agent loop 不挂死',
+  state.tabEvents.some((e) => e.type === 'chat/notice' && e.text.includes('15 分钟')) &&
+    state.tabEvents.some((e) => e.type === 'chat/tool-end' && e.result.includes('没有作答')) &&
+    state.tabEvents.some((e) => e.type === 'chat/done' && e.aborted === false),
+);
+check('超时之后再来作答会被拒绝', (await respond2({ type: 'chat/ask-answer', requestId: 'r10', callId: 'c7', choice: 'A' })).ok === false);
+
+/* ---------- 写入作答区也能被停止 ---------- */
+
+state.writeOk = true;
+state.hangWrite = true;
+state.injectArgs.length = 0;
+const inputPromise = respond2(
+  { type: 'code/input', requestId: 'w1', code: 'int main(){return 0;}' },
+  { tab: { id: 7 } },
+);
+await tick(50);
+await respond2({ type: 'chat/stop', requestId: 'w1' });
+const stoppedInput = await inputPromise;
+state.hangWrite = false;
+check(
+  '写作答区卡住时点停止会如实回报没写完',
+  stoppedInput.ok === false && stoppedInput.result.includes('已停止'),
+);
 
 /* ---------- 无 Key 短路 ---------- */
 

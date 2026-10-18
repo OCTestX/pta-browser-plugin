@@ -93,6 +93,8 @@ function boot({ hasApiKey, store }) {
   const stored = { ...(store ?? {}) };
   // 「输入」按钮打回后台的写入结果，失败路径要能换
   let inputResult = { ok: true, result: '已写入作答区：写入成功（先 focus 再 dispatch）' };
+  // 按住 code/input 的回复，模拟一次很慢的写入
+  const pending = { input: null };
 
   window.chrome = {
     storage: {
@@ -135,6 +137,8 @@ function boot({ hasApiKey, store }) {
           case 'chat/stop':
             return { ok: true };
           case 'code/input':
+            // 测试「写入途中点停止」时要能按住后台的回复，模拟一次很慢的写入
+            if (pending.input) await pending.input;
             return inputResult;
           case 'ui/open-url':
             return { ok: true };
@@ -160,6 +164,16 @@ function boot({ hasApiKey, store }) {
     stored,
     setInputResult: (value) => {
       inputResult = value;
+    },
+    /** 按住 code/input 的回复，直到 releaseInput 被调用 */
+    holdInput: () => {
+      pending.input = new Promise((resolve) => {
+        pending.release = resolve;
+      });
+    },
+    releaseInput: () => {
+      pending.release?.();
+      pending.input = null;
     },
     shadow: () => window.document.getElementById('pta-assistant-host')?.shadowRoot,
     toggle: () => listeners.forEach((fn) => fn({ type: 'toggle-panel' })),
@@ -990,5 +1004,62 @@ await tick();
 tools2.find('.panel__new-chat').click();
 await tick();
 check('「新会话」把没答完的 ask 一起清掉', !tools2.find('.messages').textContent.includes('要提交吗？'));
+
+/* ---------- 场景九：点「停止」立刻见效，不必等后台回话 ---------- */
+
+const stopper = boot({ hasApiKey: true });
+await tick();
+stopper.toggle();
+await tick();
+stopper.setValue(stopper.find('.composer__input'), '帮我看看这道题');
+await tick();
+stopper.find('.composer__send').click();
+await tick();
+const stopId = stopper.requests.filter((r) => r.type === 'chat/start').at(-1).requestId;
+stopper.emit({
+  type: 'chat/tool-start',
+  requestId: stopId,
+  callId: 'call_stop',
+  name: 'read_judge_result',
+  args: '{}',
+});
+await tick();
+check('工具在跑时进度条出现', Boolean(stopper.find('.panel__progress')));
+
+// 后台不回 chat/done（真实场景里就是某一阶段没接上停止信号）：界面也要马上停下来
+stopper.find('.composer__send--stop').click();
+await tick();
+check('点停止会通知后台停这一轮', stopper.requests.some((r) => r.type === 'chat/stop' && r.requestId === stopId));
+check('不等后台回话进度条就停了', !stopper.find('.panel__progress'));
+check('停掉的工具卡片不再转', [...stopper.shadow().querySelectorAll('.tool')].at(-1).className.includes('tool--error'));
+check('面板说明这一轮已停', stopper.find('.messages').textContent.includes('已停止这一轮'));
+stopper.emit({ type: 'chat/delta', requestId: stopId, text: '迟到的回答' });
+await tick();
+check('停止后迟到的增量不会上屏', !stopper.find('.messages').textContent.includes('迟到的回答'));
+
+// 写作答区时同样有「停止」可按
+const writer = boot({ hasApiKey: true });
+await tick();
+writer.toggle();
+await tick();
+writer.setValue(writer.find('.composer__input'), 'int main(){return 0;}');
+await tick();
+writer.holdInput();
+writer.find('.composer__write').click();
+await tick();
+check('写入作答区时按钮变成「停止」', writer.find('.composer__send--stop') !== null);
+check('写入中进度条出现', Boolean(writer.find('.panel__progress')));
+writer.find('.composer__send--stop').click();
+await tick();
+const writeRequest = writer.requests.filter((r) => r.type === 'code/input').at(-1);
+const writeStop = writer.requests.filter((r) => r.type === 'chat/stop').at(-1);
+check(
+  '写作答区时点停止会带着这次写入的 id 通知后台',
+  Boolean(writeRequest?.requestId) && writeStop?.requestId === writeRequest.requestId,
+);
+check('写入被停后进度条消失', !writer.find('.panel__progress'));
+writer.releaseInput();
+await tick();
+check('被停的写入结果不会再冒出来', !writer.find('.notice'));
 
 console.log(`\n${target} 冒烟测试通过`);

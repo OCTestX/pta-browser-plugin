@@ -6,6 +6,7 @@
 //
 // 超时是硬杀：死循环的程序没有任何协作式检查点，只能 terminate 整个 Worker 再重建。
 
+import { abortError } from '../shared/abort.ts';
 import { ext } from '../shared/browser.ts';
 
 export type EngineStage = 'compile' | 'run';
@@ -167,21 +168,46 @@ function keepAliveWhile(id: number): () => void {
   return () => clearInterval(interval);
 }
 
-/** 在内置引擎里编译并运行一段 C 代码（排队执行，阶段化超时） */
-export function runInEngine(code: string, stdin: string): Promise<EngineRunResult> {
+/**
+ * 在内置引擎里编译并运行一段 C 代码（排队执行，阶段化超时）。
+ * 传了 signal 就能被「停止」打断：中止会直接把引擎换掉（死循环的程序没有检查点，
+ * 留着它会把后面的编译一起堵住），然后以 AbortError 收场。
+ */
+export function runInEngine(code: string, stdin: string, signal?: AbortSignal): Promise<EngineRunResult> {
   installListener();
   const attempt = () =>
     new Promise<EngineRunResult>((resolve, reject) => {
+      if (signal?.aborted) {
+        reject(abortError());
+        return;
+      }
+
       const id = nextId++;
       const stopKeepAlive = keepAliveWhile(id);
       const entry: PendingRequest = {
-        resolve: (value) => { stopKeepAlive(); resolve(value); },
-        reject: (error) => { stopKeepAlive(); reject(error); },
+        resolve: (value) => {
+          stopKeepAlive();
+          signal?.removeEventListener('abort', onAbort);
+          resolve(value);
+        },
+        reject: (error) => {
+          stopKeepAlive();
+          signal?.removeEventListener('abort', onAbort);
+          reject(error);
+        },
         deadline: 0,
         timer: 0 as never,
       };
+      const onAbort = () => {
+        if (!pending.delete(id)) return;
+        clearTimeout(entry.timer);
+        stopKeepAlive();
+        restartEngine();
+        reject(abortError());
+      };
       pending.set(id, entry);
       armTimer(id, entry, 'compile');
+      signal?.addEventListener('abort', onAbort, { once: true });
 
       void sendToEngine({ id, code, stdin }).catch((error: unknown) => {
         pending.delete(id);

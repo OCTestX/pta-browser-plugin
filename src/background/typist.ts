@@ -13,6 +13,9 @@
  * 探针与按键都通过注入的 io 提供，所以这套算法可以脱离浏览器测（见 scripts/test-typist.mjs）。
  */
 
+// 带上 .ts 后缀：scripts/test-typist.mjs 直接用 Node 导入本模块（Node 不做省略后缀解析）
+import { throwIfAborted } from '../shared/abort.ts';
+
 export interface CursorProbe {
   /** 光标在当前行的列号 */
   col: number;
@@ -100,6 +103,7 @@ export async function runTypist(
   io: TypistIo,
   source: string,
   perCharDelayMs = 0,
+  signal?: AbortSignal,
 ): Promise<TypistStats> {
   const stats: TypistStats = {
     lines: 0,
@@ -150,6 +154,8 @@ export async function runTypist(
     await normalizeIndent(io, stats, target);
 
     for (let position = leading; position < line.length; position += 1) {
+      // 逐字敲动辄几十秒：每个字符前都看一眼停止标记，按了「停止」就立刻收手
+      throwIfAborted(signal);
       const char = line[position];
       const next = line[position + 1];
 

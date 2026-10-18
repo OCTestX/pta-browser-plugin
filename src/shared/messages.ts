@@ -104,8 +104,9 @@ export type ContentRequest =
   | { type: 'settings/save'; patch: Partial<Settings> }
   /** 设置页的「模拟输入测试」：按指定方法往作答区写一次文本 */
   | { type: 'tool/test-input'; text: string; method?: string }
-  /** 输入框的「输入」按钮：把面板输入框里的文本写进作答区（PTA 禁粘贴时的快捷通道） */
-  | { type: 'code/input'; code: string }
+  /** 输入框的「输入」按钮：把面板输入框里的文本写进作答区（PTA 禁粘贴时的快捷通道）；
+   *  requestId 用来让同一个「停止」按钮也能打断这次写入 */
+  | { type: 'code/input'; requestId: string; code: string }
   /** 设置页的「一键跳转硅基流动」：让后台开一个新标签页 */
   | { type: 'ui/open-url'; url: string };
 

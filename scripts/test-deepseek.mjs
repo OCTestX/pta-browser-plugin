@@ -141,4 +141,38 @@ try {
   check('停止生成抛出 AbortError 交给上层处理', error.name === 'AbortError');
 }
 
+// 7. 流连上了却一直不吐数据（模型卡住）：只有主动 cancel 才收得回来
+{
+  const stallController = new AbortController();
+  let cancelled = false;
+  global.fetch = async () =>
+    new Response(
+      new ReadableStream({
+        start(c) {
+          c.enqueue(new TextEncoder().encode('data: {"choices":[{"delta":{"content":"半句"}}]}\n\n'));
+        },
+        cancel() {
+          cancelled = true;
+        },
+      }),
+      { status: 200 },
+    );
+  const stalled = streamChat({
+    apiKey: 'sk-x',
+    baseURL: 'https://api.deepseek.com',
+    model: 'm',
+    messages: [],
+    signal: stallController.signal,
+    onDelta: () => {},
+  });
+  stallController.abort();
+  try {
+    await stalled;
+    throw new Error('✗ 卡住的流被停止后没有抛出 AbortError');
+  } catch (error) {
+    check('接口卡住不吐数据时点停止也能立刻收尾', error.name === 'AbortError');
+    check('中止时主动取消了这条流', cancelled);
+  }
+}
+
 console.log('\nSSE 解析校验通过');

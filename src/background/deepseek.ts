@@ -1,3 +1,5 @@
+// 带上 .ts 后缀：scripts/test-deepseek.mjs 直接用 Node 导入本模块（Node 不做省略后缀解析）
+import { throwIfAborted } from '../shared/abort.ts';
 import type { TokenUsage } from '../shared/messages';
 import type { ToolSchema } from '../shared/tools';
 import type { ApiMessage, ToolCall } from '../shared/types';
@@ -57,20 +59,33 @@ export async function streamChat(options: StreamChatOptions): Promise<StreamChat
   const decoder = new TextDecoder();
   let buffer = '';
 
-  while (true) {
-    const { done, value } = await reader.read();
-    if (done) break;
-    buffer += decoder.decode(value, { stream: true });
+  // 中止时主动 cancel：接口半路不吐数据时，光等 fetch 自己报错不一定及时
+  const cancelOnAbort = () => {
+    void reader.cancel().catch(() => undefined);
+  };
+  if (signal.aborted) cancelOnAbort();
+  else signal.addEventListener('abort', cancelOnAbort, { once: true });
 
-    const lines = buffer.split('\n');
-    // 最后一段可能是半行，留到下次读取再处理
-    buffer = lines.pop() ?? '';
-    for (const line of lines) {
-      const payload = readPayload(line);
-      if (payload === null) return toResult(state); // 收到 [DONE]
-      if (payload === '') continue;
-      consume(payload, state, model, onDelta);
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      // 放在 read 之后：cancel 引来的 done 也要被认成「用户按了停止」
+      throwIfAborted(signal);
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+
+      const lines = buffer.split('\n');
+      // 最后一段可能是半行，留到下次读取再处理
+      buffer = lines.pop() ?? '';
+      for (const line of lines) {
+        const payload = readPayload(line);
+        if (payload === null) return toResult(state); // 收到 [DONE]
+        if (payload === '') continue;
+        consume(payload, state, model, onDelta);
+      }
     }
+  } finally {
+    signal.removeEventListener('abort', cancelOnAbort);
   }
 
   return toResult(state);

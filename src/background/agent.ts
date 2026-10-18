@@ -7,6 +7,7 @@ import {
   parseToolArguments,
   truncate,
 } from '../shared/tools';
+import { abortable, isAbortError, throwIfAborted } from '../shared/abort';
 import type { ApiMessage } from '../shared/types';
 import { compileAndRun, compareOutput, formatCompileResult } from './compile';
 import { pokeEditor as poke, writeEditorCode } from './input-methods';
@@ -70,6 +71,8 @@ export async function runAgent(options: RunAgentOptions): Promise<void> {
   const usage: TokenUsage = { promptTokens: 0, completionTokens: 0, totalTokens: 0 };
 
   for (let round = 0; round < MAX_TOOL_ROUNDS; round += 1) {
+    // 用户随时可以按「停止」：上一轮工具刚收工还没发下一次请求时也要立刻退出
+    throwIfAborted(signal);
     const { content, toolCalls, usage: roundUsage } = await streamChat({
       apiKey: settings.apiKey,
       baseURL: settings.baseURL,
@@ -96,21 +99,29 @@ export async function runAgent(options: RunAgentOptions): Promise<void> {
     });
 
     for (const call of toolCalls) {
+      throwIfAborted(signal);
       events.onToolStart({
         callId: call.id,
         name: call.function.name,
         args: call.function.arguments,
       });
-      const outcome = await runTool(call.function.name, call.function.arguments, {
-        tabId,
-        callId: call.id,
-        signal,
-        runPageTool: events.runPageTool,
-        askUser: events.askUser,
-      });
+      let outcome: ToolOutcome;
+      try {
+        outcome = await runTool(call.function.name, call.function.arguments, {
+          tabId,
+          callId: call.id,
+          signal,
+          runPageTool: events.runPageTool,
+          askUser: events.askUser,
+        });
+      } catch (error) {
+        // 工具跑到一半被停：先给面板一个收尾（卡片不会一直转），再按中止退出这一轮
+        if (!isAbortError(error, signal)) throw error;
+        outcome = { output: '已停止', isError: true };
+      }
       events.onToolEnd(call.id, outcome.output, outcome.isError, outcome.diff);
       // 工具执行期间用户点了「停止」：不再喂下一轮，直接按中止收尾
-      if (signal.aborted) throw new DOMException('用户停止了生成', 'AbortError');
+      throwIfAborted(signal);
       conversation.push({
         role: 'tool',
         tool_call_id: call.id,
@@ -147,6 +158,8 @@ export async function runTool(
   context: ToolContext,
 ): Promise<ToolOutcome> {
   const { tabId, signal, runPageTool } = context;
+  // 每个工具开始前先看一眼停止标记：这一轮已经被停掉就别再往页面里动手
+  throwIfAborted(signal);
   if (!isToolName(name)) {
     return { output: `没有名为 ${name} 的工具，可用工具：${TOOL_NAMES.join('、')}`, isError: true };
   }
@@ -197,19 +210,25 @@ export async function runTool(
     if (!code.trim()) return { output: '缺少 code 参数', isError: true };
     const stdin = typeof args.stdin === 'string' ? args.stdin : '';
     try {
-      const result = await compileAndRun({ code, stdin });
+      // 编译最长能跑一分钟，中途被停也要立刻放手
+      const result = await abortable(compileAndRun({ code, stdin, signal }), signal);
       return { output: formatCompileResult(result), isError: false };
     } catch (error) {
+      if (isAbortError(error, signal)) throw error;
       return { output: error instanceof Error ? error.message : String(error), isError: true };
     }
   }
 
   if (name === 'write_editor_code') {
     // 写入走完整链路：默认实现 → 清空 → 备用实现依次重试
-    const outcome = await writeEditorCode({
-      tabId,
-      code: typeof args.code === 'string' ? args.code : '',
-    });
+    const outcome = await abortable(
+      writeEditorCode({
+        tabId,
+        code: typeof args.code === 'string' ? args.code : '',
+        signal,
+      }),
+      signal,
+    );
     const notes: string[] = [];
 
     // 整段写入走的是编辑器状态，PTA 可能没标成「改过」；无条件尝试用真实按键戳一下
@@ -224,7 +243,7 @@ export async function runTool(
 
     // 自动检查：回读比对已在链路里做过，这里补样例编译比对与提交按钮状态
     if (args.verify !== false) {
-      notes.push(await verifyWrittenCode(injectScript, tabId, args.code));
+      notes.push(await verifyWrittenCode(injectScript, tabId, args.code, signal));
     }
 
     return { output: [outcome.output, ...notes].join('；'), isError: outcome.isError };
@@ -247,11 +266,11 @@ export async function runTool(
 
   if (name === 'simulate_keyboard_input') {
     // 不再受任何开关管制：要真按键就直接用调试器，attach 失败由 typeWithDebugger 自己兜底
-    return typeWithDebugger(args, tabId, runPageTool);
+    return typeWithDebugger(args, tabId, runPageTool, signal);
   }
 
   // 其余工具需要页面上下文
-  return runPageTool(name, args);
+  return abortable(runPageTool(name, args), signal);
 }
 
 /**
@@ -263,38 +282,44 @@ async function typeWithDebugger(
   args: Record<string, unknown>,
   tabId: number,
   runPageTool: ToolContext['runPageTool'],
+  signal: AbortSignal,
 ): Promise<ToolOutcome> {
   const text = typeof args.text === 'string' ? args.text : '';
   const press = typeof args.press === 'string' ? args.press.trim() : '';
+  // 逐字敲可能要几十秒，聚焦 / 回读 / 敲键每一步都得能被「停止」打断
+  const page = (params: Record<string, unknown>) =>
+    abortable(runPageTool('simulate_keyboard_input', params), signal);
 
-  const focused = await runPageTool('simulate_keyboard_input', { ...args, focusOnly: true });
+  const focused = await page({ ...args, focusOnly: true });
   if (focused.isError) return focused;
 
   const steps = [focused.output];
   try {
     if (text) {
       // 逐字敲，边敲边和编辑器的自动闭合 / 自动缩进对抗
-      const stats = await runTypist(createDebuggerIo(tabId), text, perCharDelay(args));
+      const stats = await abortable(
+        runTypist(createDebuggerIo(tabId), text, perCharDelay(args), signal),
+        signal,
+      );
       steps.push(describeTypist(stats));
     }
     if (press) {
-      await pressKey(tabId, press);
+      await abortable(pressKey(tabId, press), signal);
       steps.push(`已用真实按键按下 ${press}`);
     }
 
     // 按键是异步生效的，不回读确认就是假成功
     if (text) {
-      const readBack = await runPageTool('simulate_keyboard_input', {
-        selector: args.selector,
-        readOnly: true,
-      });
+      const readBack = await page({ selector: args.selector, readOnly: true });
       if (!readBack.isError) steps.push(compareTyped(text, readBack.output));
     }
 
     return { output: steps.join('；'), isError: false };
   } catch (error) {
+    // 被用户停掉的输入不该再退回模拟事件接着敲
+    if (isAbortError(error, signal)) throw error;
     const reason = error instanceof Error ? error.message : String(error);
-    const fallback = await runPageTool('simulate_keyboard_input', args);
+    const fallback = await page(args);
     return {
       output: `调试器输入失败（${reason}），已退回模拟事件：${fallback.output}`,
       isError: fallback.isError,
@@ -313,13 +338,14 @@ async function verifyWrittenCode(
   inject: typeof injectScript,
   tabId: number,
   code: unknown,
+  signal: AbortSignal,
 ): Promise<string> {
   const source = typeof code === 'string' ? code : '';
   const checks: string[] = [];
 
   // 1) 样例编译并比对输出（用第一组样例，避免每次都多跑一遍）
   try {
-    const samplesRaw = await inject(tabId, READ_PROBLEM_SCRIPT, { samplesOnly: true });
+    const samplesRaw = await inject(tabId, READ_PROBLEM_SCRIPT, { samplesOnly: true }, undefined, signal);
     const parsed = JSON.parse(samplesRaw.output) as {
       samples?: { input: string; output: string }[];
     };
@@ -327,7 +353,7 @@ async function verifyWrittenCode(
     if (!sample) {
       checks.push('自动检查：题面里没识别出样例，跳过编译比对');
     } else {
-      const compiled = await compileAndRun({ code: source, stdin: sample.input });
+      const compiled = await abortable(compileAndRun({ code: source, stdin: sample.input, signal }), signal);
       if (compiled.compileOutput) {
         checks.push(`自动检查：编译失败——${compiled.compileOutput.split('\n')[0]}`);
       } else if (!compiled.ok) {
@@ -342,15 +368,17 @@ async function verifyWrittenCode(
       }
     }
   } catch (error) {
+    if (isAbortError(error, signal)) throw error;
     const reason = error instanceof Error ? error.message : String(error);
     checks.push(`自动检查：编译比对没做成（${reason}）`);
   }
 
   // 2) 提交按钮可用性
   try {
-    const ready = await inject(tabId, CHECK_READY_SCRIPT);
+    const ready = await inject(tabId, CHECK_READY_SCRIPT, undefined, undefined, signal);
     checks.push(`页面状态：${ready.output}`);
   } catch (error) {
+    if (isAbortError(error, signal)) throw error;
     const reason = error instanceof Error ? error.message : String(error);
     checks.push(`页面状态没读到（${reason}）`);
   }

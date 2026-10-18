@@ -1,3 +1,4 @@
+import { isAbortError } from '../shared/abort';
 import { ext } from '../shared/browser';
 import { isContentRequest } from '../shared/messages';
 import type {
@@ -7,7 +8,7 @@ import type {
   TestInputResponse,
   ToolRunResponse,
 } from '../shared/messages';
-import type { ApiMessage } from '../shared/types';
+import { createId, type ApiMessage } from '../shared/types';
 import { runAgent, type ToolOutcome } from './agent';
 import { DEFAULT_INPUT_METHOD, findInputMethod } from '../shared/input-methods';
 import { runInputMethod, writeEditorCode } from './input-methods';
@@ -19,6 +20,12 @@ const RESET_PANEL_LAYOUT: BackgroundEvent = { type: 'panel/reset-layout' };
 /** requestId -> AbortController，用于「停止生成」 */
 const runningRequests = new Map<string, AbortController>();
 
+/**
+ * requestId -> AbortController，「输入」按钮的写作答区任务。
+ * 它也会跑很久（整段代码要写进编辑器），所以「停止」同样要能打断它。
+ */
+const runningInputs = new Map<string, AbortController>();
+
 /** callId -> 等用户点选的 ask 工具：面板点完选项用 chat/ask-answer 回来兑现 */
 interface PendingAsk {
   requestId: string;
@@ -27,8 +34,13 @@ interface PendingAsk {
 }
 const pendingAsks = new Map<string, PendingAsk>();
 
-/** 等太久用户就当卡死了：超时后按「用户没有作答」继续，agent loop 不再挂着 */
-const ASK_TIMEOUT_MS = 120_000;
+/**
+ * 等太久用户就当卡死了：超时后按「用户没有作答」继续，agent loop 不再挂着。
+ * 15 分钟：问用户判题结果、写题解这类问题，用户可能中途去查资料，
+ * 2 分钟就判「没人管」会白白打断正常的一轮；真有走人的情况，用户点「停止」同样能收工。
+ */
+const ASK_TIMEOUT_MINUTES = 15;
+const ASK_TIMEOUT_MS = ASK_TIMEOUT_MINUTES * 60_000;
 
 /**
  * ask 工具：把选择题发给面板并等用户点选。
@@ -53,8 +65,12 @@ function askUserInTab(
       resolve(choice);
     };
     const timer = setTimeout(() => {
-      settle(`用户 ${ASK_TIMEOUT_MS / 1000} 秒内没有作答，按「没有作答」继续`);
-      sendToTab(tabId, { type: 'chat/notice', requestId, text: '这次提问等太久了，已经按「没有作答」继续' });
+      settle(`用户 ${ASK_TIMEOUT_MINUTES} 分钟内没有作答，按「没有作答」继续`);
+      sendToTab(tabId, {
+        type: 'chat/notice',
+        requestId,
+        text: `这次提问等了 ${ASK_TIMEOUT_MINUTES} 分钟还没有作答，已经按「没有作答」继续`,
+      });
     }, ASK_TIMEOUT_MS);
 
     pendingAsks.set(callId, { requestId, settle, timer });
@@ -142,7 +158,9 @@ ext.runtime.onMessage.addListener((message: unknown, sender, sendResponse) => {
         sendResponse(await startChat(message.requestId, message.messages, tabId));
         return;
       case 'chat/stop': {
+        // 面板只有一个「停止」：这一轮对话在跑、或者「输入」按钮正在写作答区，都归它管
         runningRequests.get(message.requestId)?.abort();
+        runningInputs.get(message.requestId)?.abort();
         releaseAsks(message.requestId);
         sendResponse({ ok: true } satisfies StartChatResponse);
         return;
@@ -183,7 +201,23 @@ ext.runtime.onMessage.addListener((message: unknown, sender, sendResponse) => {
           sendResponse({ ok: false, result: '当前页面不支持（请刷新页面后重试）' } satisfies ToolRunResponse);
           return;
         }
-        const outcome = await writeEditorCode({ tabId, code: message.code });
+        const controller = new AbortController();
+        // 面板一定会带 requestId；缺了就自己造一个，保证「停止」这条路仍然能接上
+        const requestId = message.requestId ?? createId();
+        runningInputs.set(requestId, controller);
+        const stopKeepAlive = keepServiceWorkerAlive(() => runningInputs.has(requestId));
+        let outcome: ToolOutcome;
+        try {
+          outcome = await writeEditorCode({ tabId, code: message.code, signal: controller.signal });
+        } catch (error) {
+          outcome = {
+            output: isAbortError(error, controller.signal) ? '已停止，作答区没写完' : toErrorMessage(error),
+            isError: true,
+          };
+        } finally {
+          stopKeepAlive();
+          runningInputs.delete(requestId);
+        }
         sendResponse({
           ok: !outcome.isError,
           result: outcome.isError ? `写入作答区失败：${outcome.output}` : `已写入作答区：${outcome.output}`,
@@ -197,6 +231,22 @@ ext.runtime.onMessage.addListener((message: unknown, sender, sendResponse) => {
 
   return true; // 保持消息通道，等异步结果
 });
+
+/**
+ * 面板可能长时间什么都不做（等用户作答最多 15 分钟、等判题结论一两分钟、整段写作答区）。
+ * MV3 的 service worker 空闲到点会被回收，那时 pendingAsks 里的等待会跟着进程一起消失，
+ * agent loop 就永远挂住了——每 20 秒戳一次扩展 API 把空闲计时器重置掉。
+ */
+function keepServiceWorkerAlive(isAlive: () => boolean): () => void {
+  const interval = setInterval(() => {
+    if (!isAlive()) {
+      clearInterval(interval);
+      return;
+    }
+    void Promise.resolve(ext.runtime.getPlatformInfo?.()).catch(() => undefined);
+  }, 20_000);
+  return () => clearInterval(interval);
+}
 
 async function startChat(
   requestId: string,
@@ -216,6 +266,7 @@ async function startChat(
 
   const controller = new AbortController();
   runningRequests.set(requestId, controller);
+  const stopKeepAlive = keepServiceWorkerAlive(() => runningRequests.has(requestId));
 
   void (async () => {
     try {
@@ -243,12 +294,15 @@ async function startChat(
       });
       sendToTab(tabId, { type: 'chat/done', requestId, aborted: false });
     } catch (error) {
-      if (error instanceof DOMException && error.name === 'AbortError') {
+      // 各阶段（模型流 / 页面脚本 / 编译 / 逐字输入）都靠同一个 AbortError 收工，
+      // 这里只认「这一轮被停掉了」，别把它当成出错报给用户
+      if (isAbortError(error, controller.signal)) {
         sendToTab(tabId, { type: 'chat/done', requestId, aborted: true });
       } else {
         sendToTab(tabId, { type: 'chat/error', requestId, message: toErrorMessage(error) });
       }
     } finally {
+      stopKeepAlive();
       releaseAsks(requestId);
       runningRequests.delete(requestId);
     }

@@ -26,6 +26,8 @@ export function useChat(hasApiKey: boolean) {
   const [writing, setWriting] = useState(false);
   const [notice, setNotice] = useState<ChatNotice | null>(null);
   const requestRef = useRef<string | null>(null);
+  /** 「输入」按钮那次写入的 requestId：它也要能被「停止」打断 */
+  const inputRef = useRef<string | null>(null);
   // 收尾时要知道「这一轮到底吐没吐字」，state 更新是异步的，所以留一份同镜像
   const messagesRef = useRef<ChatMessage[]>(messages);
   messagesRef.current = messages;
@@ -263,10 +265,34 @@ export function useChat(hasApiKey: boolean) {
   );
 
   const stop = useCallback(() => {
+    // 「停止」只有一个按钮：这一轮对话和「输入」按钮的写入都归它管
     const requestId = requestRef.current;
-    if (!requestId) return;
-    void ext.runtime.sendMessage({ type: 'chat/stop', requestId });
-  }, []);
+    if (requestId) void Promise.resolve(ext.runtime.sendMessage({ type: 'chat/stop', requestId })).catch(() => undefined);
+    const inputId = inputRef.current;
+    if (inputId) {
+      inputRef.current = null;
+      setWriting(false);
+      void Promise.resolve(ext.runtime.sendMessage({ type: 'chat/stop', requestId: inputId })).catch(() => undefined);
+    }
+
+    // 面板不等后台回话：先把「停下来了」做出来（进度条停、工具卡片收尾），
+    // 否则某一阶段没接上停止信号时，界面会一直转、用户以为按钮按不动。
+    // requestRef 也一并清掉，之后迟到的 chat/* 事件一律不再上屏。
+    const assistantId = assistantRef.current;
+    assistantRef.current = null;
+    requestRef.current = null;
+    setStreaming(false);
+    setMessages((prev) =>
+      prev.map((message) => {
+        if (message.id === assistantId) return { ...message, streaming: false };
+        if (message.role === 'tool' && (message.toolStatus ?? 'running') === 'running' && !message.content) {
+          return { ...message, content: '已停止', toolStatus: 'error' as const };
+        }
+        return message;
+      }),
+    );
+    appendSystem(requestId ? '已停止这一轮' : '已停止写入作答区');
+  }, [appendSystem]);
 
   /**
    * 「输入」按钮：把输入框里的文本整段写进作答区（PTA 禁粘贴时的快捷通道）。
@@ -276,22 +302,32 @@ export function useChat(hasApiKey: boolean) {
     async (code: string): Promise<boolean> => {
       if (!code.trim() || writing || streaming) return false;
 
+      // 整段写入可能要几十秒，给它一个 requestId，用户点「停止」就能中途收手
+      const requestId = createId();
+      inputRef.current = requestId;
       setWriting(true);
       try {
         const response = (await ext.runtime.sendMessage({
           type: 'code/input',
+          requestId,
           code,
         })) as ToolRunResponse | undefined;
+        // 已经被停止的话，这次写入的结果不该再冒出来
+        if (inputRef.current !== requestId) return false;
         setNotice({
           text: response?.result ?? '插件后台没有响应，请在扩展管理页重新加载插件',
           needsApiKey: false,
         });
         return response?.ok === true;
       } catch {
+        if (inputRef.current !== requestId) return false;
         setNotice({ text: '插件后台没有响应，请在扩展管理页重新加载插件', needsApiKey: false });
         return false;
       } finally {
-        setWriting(false);
+        if (inputRef.current === requestId) {
+          inputRef.current = null;
+          setWriting(false);
+        }
       }
     },
     [streaming, writing],
@@ -339,6 +375,13 @@ export function useChat(hasApiKey: boolean) {
   const reset = useCallback(() => {
     const requestId = requestRef.current;
     if (requestId) void ext.runtime.sendMessage({ type: 'chat/stop', requestId });
+    // 写作答区也一并掐掉：新会话之后那次写入的结果已经没有意义了
+    const inputId = inputRef.current;
+    if (inputId) {
+      inputRef.current = null;
+      setWriting(false);
+      void ext.runtime.sendMessage({ type: 'chat/stop', requestId: inputId });
+    }
     requestRef.current = null;
     assistantRef.current = null;
     setStreaming(false);
