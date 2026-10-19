@@ -153,48 +153,76 @@ const HELPERS = `
 
   // ---- 判题（提交相关的几条实测经验都写在这里）----
 
-  // 归一化判题文字：顺序即优先级 —— 具体状态排在泛化词前面，
-  // 否则「编译错误」会被当成「错误」报成 WA，模型就会一直改算法而不碰那句语法错误
-  const judgeStatus = (text) => {
+  // 判题结论词表：顺序即优先级 —— 具体状态排在泛化词前面，
+  // 否则「编译错误」会被当成「错误」报成 WA，模型就会一直改算法而不碰那句语法错误。
+  //
+  // 「部分正确」必须排在所有正向词前面：PTA 的部分得分弹窗里常同时出现
+  // 「部分正确」和「通过测试点 6/10」，只认泛化的「通过」就会把部分正确误报成 AC，
+  // 模型以为整题都对、交卷就完事了（这题还没拿满分）。
+  const JUDGE_WORDS = [
+    ['部分正确', 'PC'],
+    ['部分得分', 'PC'],
+    ['部分通过', 'PC'],
+    ['partial correct', 'PC'],
+    ['编译错误', 'CE'],
+    ['运行超时', 'TLE'],
+    ['内存超限', 'MLE'],
+    ['输出超限', 'OLE'],
+    ['运行错误', 'RE'],
+    ['格式错误', 'PE'],
+    ['答案错误', 'WA'],
+    ['未通过', '未通过'],
+    ['答案正确', 'AC'],
+  ];
+
+  // 「通过」太泛：PTA 会在结论旁边写「通过测试点 6/10」「通过率 60%」，
+  // 这些是在说统计，不是在说结论。只有真正在讲结论的「通过」才算 AC。
+  const isVerdictPass = (value) => {
+    const hit = /(?<![未不非部])通过(?![率测的])/.exec(value);
+    return Boolean(hit);
+  };
+
+  // 归一化判题文字，并给出优先级（rank 越小越具体）：跨容器挑结论时按 rank 取最好的那个
+  const judgeHit = (text) => {
     const value = String(text || '');
     const code = value.match(/\\b(AC|WA|RE|TLE|MLE|CE|PE|OLE)\\b/i);
-    if (code) return code[1].toUpperCase();
-    const words = [
-      ['编译错误', 'CE'],
-      ['运行超时', 'TLE'],
-      ['内存超限', 'MLE'],
-      ['输出超限', 'OLE'],
-      ['运行错误', 'RE'],
-      ['格式错误', 'PE'],
-      ['答案错误', 'WA'],
-      ['未通过', '未通过'],
-      ['答案正确', 'AC'],
-      ['通过', 'AC'],
-    ];
-    for (const [word, status] of words) {
-      if (value.includes(word)) return status;
+    // 字母状态码比「通过」「答案正确」这类泛化中文词可信，但不如「部分正确」「编译错误」具体
+    if (code) return { status: code[1].toUpperCase(), rank: 5 };
+    const lower = value.toLowerCase();
+    for (let index = 0; index < JUDGE_WORDS.length; index += 1) {
+      if (lower.includes(JUDGE_WORDS[index][0])) return { status: JUDGE_WORDS[index][1], rank: 10 + index };
     }
+    if (isVerdictPass(value)) return { status: 'AC', rank: 30 };
     return null;
   };
 
-  // 判题文字可能挂在弹窗里，也可能直接出现在页面上
+  // 判题文字可能挂在弹窗里，也可能直接出现在页面上。
+  // 一条一条地判再按优先级取最好的那个：把多个容器拼成一大段再匹配会先撞上谁算谁
+  // （实测把「部分正确 通过测试点 6/10」报成了 AC）。
   const readJudgeText = () => {
     const containers = ['[class*=judge]', '[class*=result]', '[class*=status]', '[role=alert]', '.el-message', '.ant-message', '[class*=modal]', '[class*=dialog]'];
     const chunks = [];
+    let best = null;
     for (const selector of containers) {
       let nodes = [];
       try { nodes = Array.from(document.querySelectorAll(selector)); } catch (e) { continue; }
       for (const node of nodes) {
         const text = shortText(node);
-        if (text && text.length < 200) chunks.push(text);
+        if (!text || text.length >= 200) continue;
+        chunks.push(text);
+        const hit = judgeHit(text);
+        if (hit && (!best || hit.rank < best.rank)) best = { text, status: hit.status };
       }
     }
-    const joined = chunks.join(' \\n ');
-    const matched = judgeStatus(joined);
-    if (matched) return { text: joined.slice(0, 400), status: matched };
+    if (best) return { text: best.text.slice(0, 400), status: best.status };
+
     const lines = (document.body.innerText || '').split('\\n').map((line) => line.trim()).filter(Boolean);
-    const hit = lines.find((line) => judgeStatus(line));
-    return { text: hit || joined.slice(0, 400), status: hit ? judgeStatus(hit) : null };
+    for (const line of lines) {
+      const hit = judgeHit(line);
+      if (hit) return { text: line.slice(0, 400), status: hit.status };
+    }
+    // 没有结论也把看到的中间状态带回去（评测中/排队中），调用方要靠它判断「变了没有」
+    return { text: chunks.join(' \\n ').slice(0, 400), status: null };
   };
 
   // 判题弹窗随时可能被用户关掉，一关掉 DOM 上就再也读不到了 —— 而模型往往是在弹窗消失之后才来读结果的。

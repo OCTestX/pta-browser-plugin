@@ -307,6 +307,33 @@ const notPassed = createJudgePage();
 notPassed.__setJudgeText('未通过 部分测试点答案错误');
 check('「未通过」不会被当成通过', (await runScript(notPassed, READ_JUDGE_SCRIPT, {})).includes('未通过'));
 
+// 部分正确：PTA 的部分得分弹窗里「部分正确」和「通过测试点 6/10」经常同时出现，
+// 只认泛化的「通过」就会把这题误报成 AC，模型以为整题都对就收工了
+const partial = createJudgePage();
+partial.__setJudgeText('判题结果：部分正确 通过测试点 6/10');
+const partialOut = await runScript(partial, READ_JUDGE_SCRIPT, {});
+check('部分正确不会因为旁边写着「通过测试点」被当成 AC', partialOut.includes('判题结论：PC') && !partialOut.includes('判题结论：AC'));
+
+const partialPlain = createJudgePage();
+partialPlain.__setJudgeText('部分正确 得分 60/100');
+check('只写「部分正确」也能读出结论', (await runScript(partialPlain, READ_JUDGE_SCRIPT, {})).includes('PC'));
+
+const partialEnglish = createJudgePage();
+partialEnglish.__setJudgeText('Partial Correct');
+check('英文的 Partial Correct 也认得', (await runScript(partialEnglish, READ_JUDGE_SCRIPT, {})).includes('PC'));
+
+const statsOnly = createJudgePage();
+statsOnly.__setJudgeText('通过测试点 6/10 通过率 60%');
+const statsOut = await runScript(statsOnly, READ_JUDGE_SCRIPT, { waitSeconds: 0 });
+check('只有通过率之类的统计时不硬报成 AC', !statsOut.includes('判题结论：AC') && statsOut.includes('还没读到'));
+
+// 不同容器里结论不一致时按优先级取最具体的那个
+const mixedPage = createJudgePage();
+mixedPage.document.querySelector('.judge-panel').insertAdjacentHTML('afterend', '<div class="status">答案正确</div>');
+mixedPage.__setJudgeText('部分正确 通过测试点 6/10');
+const mixed = await runScript(mixedPage, READ_JUDGE_SCRIPT, {});
+check('另一个容器写着「答案正确」也不覆盖更具体的部分正确', mixed.includes('判题结论：PC'));
+
 check(
   '页面上没有判题文字时如实告知',
   (await runScript(createPage({ withView: false }), READ_JUDGE_SCRIPT, { waitSeconds: 0 })).includes('没读到判题文字'),
