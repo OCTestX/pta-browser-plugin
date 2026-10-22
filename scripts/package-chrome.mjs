@@ -8,9 +8,12 @@ import { existsSync, mkdirSync, readFileSync, statSync } from 'node:fs';
 import path from 'node:path';
 import { zipDirectory } from './zip.mjs';
 
-// 跟面板标题栏上的版本号保持一致（Chrome 清单版本号只能是数字，这里只进文件名）
-const ARTIFACT_LABEL = 'v1.0';
+
 const SOURCE_DIR = path.join('dist', 'chrome');
+
+// 产物名跟面板标题栏上的版本号一致：版本从构建好的清单里取（2.0.0 → v2.0），
+// 这样发版只要改 manifest/manifest.json 的 version，产物名自动跟上
+const ARTIFACT_LABEL = `v${JSON.parse(readFileSync(path.join(SOURCE_DIR, 'manifest.json'), 'utf8')).version.split('.').slice(0, 2).join('.')}`;
 const OUT_DIR = 'dist';
 
 if (!existsSync(path.join(SOURCE_DIR, 'manifest.json'))) {

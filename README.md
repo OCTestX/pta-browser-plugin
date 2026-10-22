@@ -23,10 +23,10 @@
 
 插件**没有签名**，所以每个浏览器的装法都不一样。先记住三条铁律：
 
-1. **Chromium 系（Chrome / Edge / Brave / Vivaldi / Opera）只认「文件夹」**：把 `pta-assistant-v1.0.zip`
+1. **Chromium 系（Chrome / Edge / Brave / Vivaldi / Opera）只认「文件夹」**：把 `pta-assistant-v2.0.zip`
    **先解压**，再在扩展管理页里「加载已解压的扩展程序」选那个文件夹。直接选 zip 会报「无法加载清单」。
 2. **Gecko 系（Firefox / Zen）可以直接选 xpi**：`about:debugging` → 临时载入附加组件 → 选
-   `pta-assistant-v1.0.xpi`。临时载入**关掉浏览器就没了**，再开一次要再载一遍。
+   `pta-assistant-v2.0.xpi`。临时载入**关掉浏览器就没了**，再开一次要再载一遍。
 3. **一定要选对文件夹层级**：解压后要选**里面有 `manifest.json` 的那一层**。别选到套了两层目录的，
    也别选项目根目录——Chrome 会先报「无法为脚本加载 content.js」，再报「无法加载清单」。
 
@@ -34,7 +34,7 @@
 
 Zen 是基于 Firefox（Gecko）做的浏览器，这套步骤完全一样。
 
-1. 下载 [Release 里的 `pta-assistant-v1.0.xpi`](https://github.com/OCTestX/pta-browser-plugin/releases/tag/v1.0)
+1. 下载 [Release 里的 `pta-assistant-v2.0.xpi`](https://github.com/OCTestX/pta-browser-plugin/releases/tag/v2.0)
 2. 地址栏打开 `about:debugging#/runtime/this-firefox`
 3. 右上角点「临时载入附加组件…」，选择刚下载的 `.xpi`（或先解压再选里面的 `manifest.json`）
 4. 浏览器工具栏出现拼图图标，点它找到「PTA 助手」并**固定**到工具栏；之后点图标就能开关悬浮窗
@@ -46,7 +46,7 @@ Zen 是基于 Firefox（Gecko）做的浏览器，这套步骤完全一样。
 
 ### Chrome
 
-1. 下载 `pta-assistant-v1.0.zip` 并**解压**（Windows 右键「全部解压缩」；macOS 双击会自动解压出一个文件夹）
+1. 下载 `pta-assistant-v2.0.zip` 并**解压**（Windows 右键「全部解压缩」；macOS 双击会自动解压出一个文件夹）
 2. 地址栏打开 `chrome://extensions`
 3. 右上角打开「开发者模式」
 4. 点「加载已解压的扩展程序」，选中**解压出来、里面有 `manifest.json` 的那个文件夹**
@@ -58,7 +58,7 @@ Zen 是基于 Firefox（Gecko）做的浏览器，这套步骤完全一样。
 
 和 Chrome 完全一样，只是地址换成 `edge://extensions`：
 
-1. 解压 `pta-assistant-v1.0.zip`
+1. 解压 `pta-assistant-v2.0.zip`
 2. 打开 `edge://extensions` → 打开「开发人员模式」开关（左侧栏底部）
 3. 点「加载解压缩的扩展」→ 选解压出来的文件夹
 4. 在「扩展」图标菜单里把「PTA 助手」固定到工具栏
@@ -121,7 +121,7 @@ npm install
 npm run build      # 类型检查 + 产出 dist/chrome、dist/firefox
 npm run test       # SSE 解析校验 + 冒烟测试（冒烟测试需要先 build）
 npm run icons      # 重新生成图标（需要 python3 + Pillow）
-npm run package            # 两个浏览器各打一个包（dist/pta-assistant-v1.0.xpi 与 .zip）
+npm run package            # 两个浏览器各打一个包（dist/pta-assistant-v2.0.xpi 与 .zip）
 npm run package:firefox   # 只打 Firefox 的 xpi（无签名）
 npm run package:chrome    # 只打 Chrome 的 zip（上传应用商店 / 给用户手动解压安装）
 ```
@@ -136,13 +136,13 @@ npm run package:chrome    # 只打 Chrome 的 zip（上传应用商店 / 给用�
 
 - Chrome：`chrome://extensions` -> 打开「开发者模式」-> 「加载已解压的扩展程序」-> 选择 `dist/chrome`
 - Firefox（开发）：`about:debugging#/runtime/this-firefox` -> 「临时载入附加组件」-> 选择 `dist/firefox/manifest.json`
-- Firefox（发给别人）：`npm run package:firefox` 打成 `dist/pta-assistant-v1.0.xpi`（无签名），
+- Firefox（发给别人）：`npm run package:firefox` 打成 `dist/pta-assistant-v2.0.xpi`（无签名），
   对方同样在「临时载入附加组件」里选这个 xpi 文件即可
-- Chrome（发给别人）：`npm run package:chrome` 打成 `dist/pta-assistant-v1.0.zip`。**Chrome 不允许直接加载
+- Chrome（发给别人）：`npm run package:chrome` 打成 `dist/pta-assistant-v2.0.zip`。**Chrome 不允许直接加载
   压缩包**，要先解压，再在开发者模式里「加载已解压的扩展程序」选那个文件夹；想让用户一键安装只能上传
   Chrome 应用商店（需要自己的开发者账号 + 5 美元注册费），zip 里 manifest.json 就在根目录，符合商店要求
 
-产物名跟面板徽标一致，而清单里的 `version` 仍是数字 `1.0.0`（Chrome 不允许清单版本号带 `alpha`/`beta` 后缀）
+产物名跟面板徽标一致，而清单里的 `version` 仍是数字 `2.0.0`（Chrome 不允许清单版本号带 `alpha`/`beta` 后缀）
 
 **要加载的只有构建产物目录**（`dist/chrome`、`dist/firefox`），不要选项目根目录：根目录里没有 `content.js`、`background.js`，Chrome 会先报「无法为脚本加载 content.js」，再报「无法加载清单」。
 
@@ -370,6 +370,41 @@ ask 以前没有超时：用户不点，这一轮就永远挂着；而且点完�
 - 点了就把对话清回只剩欢迎语，同时清掉提示条；不用刷新页面、不用重开悬浮窗
 - 还在生成时点它，会先给后台发 `chat/stop` 把那一轮掐掉；那一轮迟到的流式增量因为请求号已失效，不会再冒出来
 - API Key 与所有设置不受影响
+
+## v2.0：模型下拉框、判题结论修正、停止随时可用
+
+这一版的改动多半是在**真实 PTA 页面上跑出来的**（2026-10-22 用真账号实测），假页面测不出来的东西全暴露了。
+
+### 设置页：内置提供商 + 模型下拉框
+
+- **接口地址上面一行「模型提供商」**：硅基流动 / 深度求索，点一下就填好对应地址，当前那家高亮
+- **模型输入框右边的「选模型 ▾」**：API Key（填的或已存的）和接口地址都齐了才出现；
+  点它才去问接口要模型列表（`GET {baseURL}/models`），点模型就填进输入框。
+  请求在后台发（`models/list` 消息），Key 不出 background；地址不完整就不发请求；
+  接口报错（401/404…）时把状态码带回来，界面上显示成一句人话，不假装「没有模型」
+
+### 判题结论：部分正确不再被报成 AC
+
+- PTA 的判题结果页是**英文**的，而且结论**不在弹窗里**，而是「`Status` 标签 + 结论值」一块
+  （`div.space-y-1: Status / Partially Accepted`），下面才是 `Submission Detail` 明细表 → 读法改成
+  「先找整体结论块，再退回逐行扫」，**整体结论优先于明细表**
+- **部分正确的英文原文是 `Partially Accepted`**（不是 Partial Correct），它包含 `Accepted`，
+  不单独列出来就会被报成 AC —— 用户报的「部分正确被识别成 ac」就是它
+- **裸状态码只在 ≤24 字符的一行里才算结论**：页面那段「不再支持旧浏览器」的提示脚本里
+  `you're` 的 `re` 会被 `\bRE\b` 命中，整页被报成「判题结论：RE」；脚本/样式节点不参与判题文字收集
+- `host_permissions` 加上 `https://pintia.cn/*`：否则后台往 PTA 页面注入脚本只能靠 `activeTab`，
+  用户没点过插件图标就报「Cannot access contents of the page」
+- 提交按钮文案补 `Submit For This Problem`（真实页面上的按钮文字），走「精确匹配」那一档
+
+### 「停止」在任何时刻都有效
+
+- 以前只有「等判题」那两类工具接了停止信号，模型请求卡住、页面工具不返回、编译跑一分钟、
+  逐字敲键盘、整段写作答区都不理中止 → 现在每一段都接同一个 `AbortSignal`（语义统一在 `src/shared/abort.ts`）
+- **面板点「停止」立刻自己收尾**：进度条停、运行中的工具卡片标成失败、聊天区说明「已停止这一轮」，
+  迟到的 `chat/*` 事件一律不上屏——后台真没回音时界面也不会假装还在忙
+- 写作答区（输入按钮）途中也能停，`code/input` 与 `chat/stop` 用同一个 `requestId` 对上号
+- **ask 的等待时限从 2 分钟放宽到 15 分钟**：问用户判题结果这类问题，用户可能中途去查资料，
+  2 分钟就判「没人管」会白白打断正常的一轮；真有走人的情况点「停止」一样能收工
 
 ## v1.0：默认接口、面板尺寸与设置页
 

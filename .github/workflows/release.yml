@@ -1,0 +1,59 @@
+# 发版：推 v* 标签时自动构建两个浏览器的包并创建 GitHub Release。
+#
+# 用法：改好 manifest/manifest.json 的 version → npm test → git commit && git push
+#       → git tag v2.0 && git push origin v2.0
+#
+# 产物名里的版本从清单版本推出来（2.0.0 → v2.0），和面板标题栏的徽标一致。
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+# 建 Release、上传产物需要写仓库内容
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - run: npm ci
+
+      # npm run package 会先 build（顺带下载内置编译器的三个大资源），再打成 xpi 与 zip
+      - name: 构建并打包（Chrome zip + Firefox xpi）
+        run: npm run package
+
+      - name: 确认产物都在
+        run: |
+          ls -lh dist/*.xpi dist/*.zip
+          test -f "dist/pta-assistant-${{ github.ref_name }}.xpi"
+          test -f "dist/pta-assistant-${{ github.ref_name }}.zip"
+
+      - name: 创建 Release
+        uses: softprops/action-gh-release@v2
+        with:
+          name: PTA 助手 ${{ github.ref_name }}
+          files: |
+            dist/pta-assistant-${{ github.ref_name }}.xpi
+            dist/pta-assistant-${{ github.ref_name }}.zip
+          generate_release_notes: true
+          body: |
+            ## PTA 助手 ${{ github.ref_name }}
+
+            浏览器插件，两个浏览器各一个包：
+
+            | 浏览器 | 文件 | 怎么装 |
+            |---|---|---|
+            | Firefox / Zen | `pta-assistant-${{ github.ref_name }}.xpi` | `about:debugging` → 本机 → 临时载入附加组件（无签名，关掉浏览器要重新载） |
+            | Chrome / Edge 等 Chromium 系 | `pta-assistant-${{ github.ref_name }}.zip` | 先解压，再在 `chrome://extensions` 开发者模式里「加载已解压的扩展程序」选解压出来那一层 |
+
+            完整说明与各版本改动见仓库 README。

@@ -118,6 +118,8 @@ function boot({ hasApiKey, store }) {
     },
     runtime: {
       getURL: (filePath) => `chrome-extension://test/${filePath}`,
+      // 面板标题栏的版本徽标从清单里读
+      getManifest: () => ({ version: '2.0.0' }),
       onMessage: {
         addListener: (fn) => listeners.push(fn),
         removeListener: () => {},
@@ -223,7 +225,7 @@ check(
 );
 check('聊天区存在', Boolean(withKey.find('.messages')));
 check('输入框存在', Boolean(withKey.find('.composer__input')));
-check('标题栏版本号是 v1.0', withKey.find('.panel__badge')?.textContent === 'v1.0');
+check('标题栏版本号跟清单一致（2.0.0 → v2.0）', withKey.find('.panel__badge')?.textContent === 'v2.0');
 check('没聊过时顶栏不显示 token', withKey.find('.panel__usage').textContent === '');
 
 withKey.setValue(withKey.find('.composer__input'), '帮我看看这道题');

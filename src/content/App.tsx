@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState, useSyncExternalStore } from 'react';
+import { ext } from '../shared/browser';
 import { Composer } from './components/Composer';
 import { MessageList } from './components/MessageList';
 import { SettingsPanel } from './components/SettingsPanel';
@@ -14,6 +15,9 @@ import {
 } from './panelStore';
 
 type View = 'chat' | 'settings';
+
+// 标题栏徽标：跟清单版本同源（2.0.0 → v2.0），发版时改 manifest 就够，不用再改这里
+const VERSION_LABEL = `v${ext.runtime.getManifest().version.split('.').slice(0, 2).join('.')}`;
 
 export function App() {
   const open = useSyncExternalStore(subscribePanel, isPanelOpen, isPanelOpen);
@@ -78,7 +82,7 @@ export function App() {
         ) : (
           <>
             <span className="panel__title">PTA 助手</span>
-            <span className="panel__badge">v1.0</span>
+            <span className="panel__badge">{VERSION_LABEL}</span>
             <span className="panel__usage" title="本轮对话累计消耗的 token（接口回传精确值，流式过程中按字数实时估算）">
               {tokenText}
             </span>
