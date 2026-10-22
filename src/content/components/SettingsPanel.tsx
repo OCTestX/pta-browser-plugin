@@ -2,13 +2,16 @@ import { useEffect, useState } from 'react';
 import { ext } from '../../shared/browser';
 import {
   DEFAULT_SETTINGS,
+  PROVIDER_PRESETS,
   TUTORIAL_URL,
+  isCompleteBaseURL,
+  normalizeBaseURL,
   type Settings,
   type SettingsView,
 } from '../../shared/settings';
 import { INPUT_METHODS, INPUT_METHOD_GROUPS, inputMethodIndex } from '../../shared/input-methods';
 import { SYSTEM_PROMPT } from '../../shared/tools';
-import type { TestInputResponse } from '../../shared/messages';
+import type { ModelsListResponse, TestInputResponse } from '../../shared/messages';
 
 const METHOD_OK_KEY = 'pta-assistant-input-method-ok';
 
@@ -49,6 +52,11 @@ export function SettingsPanel({ view, onSave, onBack }: SettingsPanelProps) {
   const [testResult, setTestResult] = useState<string | null>(null);
   // 已经实测哪种方法能用，记下来标个 ✅
   const [workingMethod, setWorkingMethod] = useState<string | null>(null);
+  // 模型下拉框：Key 与接口地址都齐了才出现，点了才去问接口要模型列表
+  const [modelsOpen, setModelsOpen] = useState(false);
+  const [models, setModels] = useState<string[]>([]);
+  const [modelsLoading, setModelsLoading] = useState(false);
+  const [modelsError, setModelsError] = useState<string | null>(null);
 
   useEffect(() => {
     void (async () => {
@@ -82,6 +90,38 @@ export function SettingsPanel({ view, onSave, onBack }: SettingsPanelProps) {
       setTestResult(`测试失败：${error instanceof Error ? error.message : String(error)}`);
     } finally {
       setTesting(null);
+    }
+  };
+
+  // Key（填的或已存的）与接口地址都齐了，模型旁边才出现下拉框
+  const canListModels = (apiKey.trim().length > 0 || Boolean(view?.hasApiKey)) && isCompleteBaseURL(baseURL);
+
+  // 打开下拉框时才去加载：把面板上刚填的 Key 一起给后台（它那边才有权限发请求）
+  const toggleModelList = async () => {
+    if (modelsOpen) {
+      setModelsOpen(false);
+      return;
+    }
+    setModelsOpen(true);
+    setModelsLoading(true);
+    setModelsError(null);
+    try {
+      const response = (await ext.runtime.sendMessage({
+        type: 'models/list',
+        baseURL,
+        apiKey: apiKey.trim() || undefined,
+      })) as ModelsListResponse | undefined;
+      if (!response?.ok) {
+        setModels([]);
+        setModelsError(response?.message ?? '后台没有响应');
+        return;
+      }
+      setModels(response.models);
+    } catch {
+      setModels([]);
+      setModelsError('插件后台没有响应，请在扩展管理页重新加载插件');
+    } finally {
+      setModelsLoading(false);
     }
   };
 
@@ -143,6 +183,27 @@ export function SettingsPanel({ view, onSave, onBack }: SettingsPanelProps) {
         />
       </label>
 
+      <div className="providers">
+        <span className="providers__label">模型提供商</span>
+        <span className="providers__list">
+          {PROVIDER_PRESETS.map((provider) => (
+            <button
+              key={provider.id}
+              type="button"
+              className={`provider${normalizeBaseURL(baseURL) === provider.baseURL ? ' provider--on' : ''}`}
+              title={provider.baseURL}
+              onClick={() => {
+                setBaseURL(provider.baseURL);
+                setModelsOpen(false);
+                setModels([]);
+              }}
+            >
+              {provider.label}
+            </button>
+          ))}
+        </span>
+      </div>
+
       <label className="field">
         <span className="field__label">接口地址</span>
         <span className="field__row">
@@ -161,12 +222,48 @@ export function SettingsPanel({ view, onSave, onBack }: SettingsPanelProps) {
 
       <label className="field">
         <span className="field__label">模型</span>
-        <input
-          className="field__input"
-          type="text"
-          value={model}
-          onChange={(event) => setModel(event.target.value)}
-        />
+        <span className="field__row">
+          <input
+            className="field__input"
+            type="text"
+            value={model}
+            onChange={(event) => setModel(event.target.value)}
+          />
+          {canListModels && (
+            <button
+              type="button"
+              className={`button button--ghost field__jump field__models${modelsOpen ? ' field__jump--on' : ''}`}
+              title="从这个接口加载可用模型列表"
+              onClick={() => void toggleModelList()}
+            >
+              {modelsLoading ? '加载中…' : '选模型 ▾'}
+            </button>
+          )}
+        </span>
+        {modelsOpen && (
+          <span className="model-list">
+            {modelsLoading && <span className="model-list__hint">正在问接口要模型列表…</span>}
+            {!modelsLoading && modelsError && <span className="model-list__hint model-list__hint--error">{modelsError}</span>}
+            {!modelsLoading && !modelsError && models.length === 0 && (
+              <span className="model-list__hint">没有模型可选</span>
+            )}
+            {!modelsLoading &&
+              models.map((id) => (
+                <button
+                  key={id}
+                  type="button"
+                  className={`model-list__item${id === model ? ' model-list__item--on' : ''}`}
+                  title={id}
+                  onClick={() => {
+                    setModel(id);
+                    setModelsOpen(false);
+                  }}
+                >
+                  {id}
+                </button>
+              ))}
+          </span>
+        )}
       </label>
 
       {SHOW_INPUT_METHOD_TESTS && (

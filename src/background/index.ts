@@ -3,11 +3,13 @@ import { ext } from '../shared/browser';
 import { isContentRequest } from '../shared/messages';
 import type {
   BackgroundEvent,
+  ModelsListResponse,
   RunToolRequest,
   StartChatResponse,
   TestInputResponse,
   ToolRunResponse,
 } from '../shared/messages';
+import { isCompleteBaseURL, normalizeBaseURL } from '../shared/settings';
 import { createId, type ApiMessage } from '../shared/types';
 import { runAgent, type ToolOutcome } from './agent';
 import { DEFAULT_INPUT_METHOD, findInputMethod } from '../shared/input-methods';
@@ -154,6 +156,10 @@ ext.runtime.onMessage.addListener((message: unknown, sender, sendResponse) => {
         }
         return;
       }
+      case 'models/list': {
+        sendResponse(await listModels(message.baseURL, message.apiKey));
+        return;
+      }
       case 'chat/start':
         sendResponse(await startChat(message.requestId, message.messages, tabId));
         return;
@@ -246,6 +252,46 @@ function keepServiceWorkerAlive(isAlive: () => boolean): () => void {
     void Promise.resolve(ext.runtime.getPlatformInfo?.()).catch(() => undefined);
   }, 20_000);
   return () => clearInterval(interval);
+}
+
+/**
+ * 问接口「你有哪些模型」：OpenAI 兼容的 GET {baseURL}/models。
+ * Key 优先用面板上刚填的（还没保存），没填就用后台存着的那把。
+ */
+async function listModels(baseURL: string, draftApiKey?: string): Promise<ModelsListResponse> {
+  const settings = await loadSettings();
+  const apiKey = (draftApiKey ?? '').trim() || settings.apiKey;
+  if (!apiKey) return { ok: false, models: [], message: '还没有 API Key，先填上再加载模型列表' };
+
+  const base = normalizeBaseURL(baseURL);
+  if (!isCompleteBaseURL(base)) {
+    return { ok: false, models: [], message: '接口地址还没填完整（要写成 https://…/v1 这样的完整地址）' };
+  }
+
+  try {
+    const response = await fetch(`${base}/models`, {
+      headers: { Authorization: `Bearer ${apiKey}` },
+    });
+    if (!response.ok) {
+      const detail = await response.text().catch(() => '');
+      return {
+        ok: false,
+        models: [],
+        message: `接口返回 ${response.status}${detail ? `：${detail.slice(0, 200)}` : ''}`,
+      };
+    }
+    const payload = (await response.json()) as { data?: { id?: unknown }[] };
+    const models = (Array.isArray(payload.data) ? payload.data : [])
+      .map((item) => (typeof item?.id === 'string' ? item.id : ''))
+      .filter((id) => id.length > 0)
+      .sort();
+    if (models.length === 0) {
+      return { ok: false, models: [], message: '这个接口没有返回模型列表（可能不是 OpenAI 兼容的 /models）' };
+    }
+    return { ok: true, models };
+  } catch (error) {
+    return { ok: false, models: [], message: toErrorMessage(error) };
+  }
 }
 
 async function startChat(

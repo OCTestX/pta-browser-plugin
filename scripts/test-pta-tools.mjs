@@ -334,6 +334,61 @@ mixedPage.__setJudgeText('部分正确 通过测试点 6/10');
 const mixed = await runScript(mixedPage, READ_JUDGE_SCRIPT, {});
 check('另一个容器写着「答案正确」也不覆盖更具体的部分正确', mixed.includes('判题结论：PC'));
 
+// PTA 的结果页是英文的、结论不落在弹窗里，而是「Status 标签 + 结论值」放在同一个块里
+// （实测 2026-10-22 的真实页面：div.space-y-1 里是 Status / Accepted）
+function createEnglishJudgePage(verdict) {
+  const dom = new JSDOM(
+    `<!doctype html><html><body>
+      <div class="legend"><span>Status</span><span>Score</span></div>
+      <div class="grid grid-cols-3 gap-x-4 gap-y-3 p-3 rounded-lg bg-bg-light">
+        <div class="space-y-1">
+          <div class="flex space-x-1">
+            <div class="pc-text pc-color-light pc-gap-4"><div class="pc-text-raw flex-auto break-words text-xs"><span>Status</span></div></div>
+            <button class="pc-button pc-button-text pc-sm"><div class="pc-text pc-gap-4"><div class="pc-text-raw flex-auto break-words text-sm"><div class="pc-text inline pc-color-normal"><div class="pc-text-raw flex-auto break-words"><span>${verdict}</span></div></div></div></div></div></button>
+          </div>
+          <div class="pc-text pc-gap-4"><div class="pc-text-raw flex-auto break-words text-xs"><span>Score</span></div></div>
+        </div>
+      </div>
+      <div class="border border-border rounded-lg overflow-hidden">
+        <div class="flex items-center py-2 px-4 bg-bg-light text-xs font-bold"><span>Submission Detail</span></div>
+        <div class="pc-text pc-gap-4"><div class="pc-text-raw flex-auto break-words text-xs"><span>Status</span></div></div>
+        <div class="pc-text pc-gap-4"><div class="pc-text-raw flex-auto break-words text-xs"><span>Accepted</span></div></div>
+      </div>
+    </body></html>`,
+    { url: 'https://pintia.cn/problem-sets/14/exam/problems/type/7?problemSetProblemId=781', runScripts: 'outside-only' },
+  );
+  return installInnerText(dom.window);
+}
+
+const englishAc = await runScript(createEnglishJudgePage('Accepted'), READ_JUDGE_SCRIPT, {});
+check('英文结果页的 Accepted 归一化成 AC', englishAc.includes('判题结论：AC'));
+
+const englishWa = await runScript(createEnglishJudgePage('Wrong Answer'), READ_JUDGE_SCRIPT, {});
+check('英文结果页的 Wrong Answer 归一化成 WA', englishWa.includes('判题结论：WA'));
+
+const englishPc = await runScript(createEnglishJudgePage('Partial Correct'), READ_JUDGE_SCRIPT, {});
+check('英文结果页的 Partial Correct 归一化成 PC', englishPc.includes('判题结论：PC'));
+
+// PTA 的部分得分判题原文是 "Partially Accepted"（实测 2026-10-22 真实页面），
+// 它包含 "Accepted" —— 不单独认的话这题就被报成 AC 了
+const englishPartialAccepted = await runScript(createEnglishJudgePage('Partially Accepted'), READ_JUDGE_SCRIPT, {});
+check('英文结果页的 Partially Accepted 归一化成 PC（不是 AC）', englishPartialAccepted.includes('判题结论：PC') && !englishPartialAccepted.includes('判题结论：AC'));
+
+// 明细表里每行都写着 Accepted，整体结论是 Wrong Answer —— 要报整体的
+const englishMixed = await runScript(createEnglishJudgePage('Wrong Answer'), READ_JUDGE_SCRIPT, {});
+check('明细里的 Accepted 盖不掉整体结论', englishMixed.includes('判题结论：WA'));
+
+// 页面上的一段脚本源码里可能有孤零零的 RE/AC，不能当成判题结论
+// （实测 PTA 页面里那段「不再支持旧浏览器」的提示脚本会被当成 RE）
+const scriptNoise = createJudgePage();
+scriptNoise.document.body.insertAdjacentHTML(
+  'beforeend',
+  `<script>var deprecationMsgEN = 'We have ceased the support for legacy browsers that you are currently using. Please switch to more recent versions of Microsoft Edge, Google Chrome, Firefox or QQ Browser.';</script>`,
+);
+scriptNoise.__setJudgeText('评测中');
+const noiseOut = await runScript(scriptNoise, READ_JUDGE_SCRIPT, { waitSeconds: 0 });
+check('脚本源码里的 RE 不会被当成判题结论', !noiseOut.includes('判题结论：RE'));
+
 check(
   '页面上没有判题文字时如实告知',
   (await runScript(createPage({ withView: false }), READ_JUDGE_SCRIPT, { waitSeconds: 0 })).includes('没读到判题文字'),

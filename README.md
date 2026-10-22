@@ -172,6 +172,8 @@ npm run package:chrome    # 只打 Chrome 的 zip（上传应用商店 / 给用�
 对话上下文取自面板里可见的消息（系统提示和报错气泡不发），刷新页面即清空；上下文记忆与 markdown 渲染在 v0.3 处理。
 
 已知限制：自定义接口地址时，需要把该域名加进 `manifest/manifest.json` 的 `host_permissions`，否则浏览器会拦掉请求。
+（`host_permissions` 里已有 `https://api.siliconflow.cn/*`、`https://api.deepseek.com/*` 和 `https://pintia.cn/*`——
+最后这个是 PTA 页面本身：没有它，后台往页面注入脚本就只能靠 `activeTab`，用户没点过插件图标就什么都干不了。）
 
 ## v0.3 已完成
 
@@ -386,6 +388,19 @@ ask 以前没有超时：用户不点，这一轮就永远挂着；而且点完�
   代码全部保留，由 `SettingsPanel.tsx` 顶部的 `SHOW_INPUT_METHOD_TESTS` 控制，改成 `true` 就恢复显示
 - **接口地址下面那句「要改 host_permissions」的提示已从界面移除**（属于开发者的事，写在 README 里就够了）
 
+## 设置页：内置模型提供商 + 模型下拉框
+
+设置页里最容易填错的就是「接口地址」和「模型名」，这两个现在都能不手打：
+
+- **内置两家提供商**（`PROVIDER_PRESETS`，都在 `manifest` 的 `host_permissions` 里）：接口地址上面一行，
+  点「硅基流动」/「深度求索」就把接口地址填成 `https://api.siliconflow.cn/v1` / `https://api.deepseek.com/v1`，
+  当前地址对应的那家是高亮的。想接别家还是自己填地址。
+- **模型下拉框**：**API Key 与接口地址都齐了**（Key 可以是刚填的、也可以是已存的那把）时，模型输入框右边出现
+  「选模型 ▾」。点它才去问接口要模型列表（`GET {baseURL}/models`，OpenAI 兼容），列出来的模型点一下就填进输入框。
+  拖不动的三件事都在后台做（`models/list` 消息）：Key 永远不出 background；地址不完整就不发请求；
+  接口报错（401/404…）时把状态码带回来，界面上显示成一句人话，不假装「没有模型」。
+- 面板上刚填、还没保存的 Key 会跟着这次请求走（后台优先用它），保存后就不用再传。
+
 ## PTA 三件套（原计划 v0.7，提前做了）
 
 三个工具都在**页面主世界**执行（编辑器实例挂在页面自己的 JS 对象上，隔离世界看不到），走的是已有的主世界注入器：
@@ -441,6 +456,28 @@ ask 以前没有超时：用户不点，这一轮就永远挂着；而且点完�
 - 「通过」只在真的在讲结论时才算 AC —— `(?<![未不非部])通过(?![率测的])`，「通过测试点 6/10」「通过率 60%」这类统计不算；
 - 多个容器里的文字**一条一条判、再按 rank 取最具体的那个**，不再拼成一大段去撞第一个命中的词（另一个容器写着「答案正确」也不能盖掉更具体的「部分正确」）；
 - 系统提示里明写 `PC = 部分正确，只拿到部分测试点的分，不等于做对了`，模型不能拿它当收工信号。
+
+### 真实页面实测（2026-10-22，PTA 账号实测）后补的三条
+
+在真机上跑才发现的，单元测试用的假页面看不出来：
+
+1. **PTA 的判题结果页是英文的**，而且**不落在弹窗里**：结论是页面上一块 `Status` 标签 + 结论值
+   （`<div class="space-y-1">Status / Partially Accepted</div>`），下面才是 `Submission Detail` 明细表。
+   - 词表补上英文：`Accepted / Wrong Answer / Compile Error / Time Limit Exceeded / Memory Limit Exceeded /
+     Output Limit Exceeded / Runtime Error / Presentation Error / Partial Correct / **Partially Accepted** / Unaccepted`；
+   - **`Partially Accepted` 才是 PTA 的「部分正确」原文**（不是 Partial Correct），它包含 `Accepted`，
+     不单独列出来就会被报成 AC —— 这正是用户报的「部分正确被识别成 ac」；
+   - 读法：先找「`Status` 标签 + 结论值」的整体结论块（往上最多找 5 层祖先，取第一个读得出结论的小块），
+     再退回逐行扫。**整体结论优先于明细表**——明细里每行都写着 `Accepted`，整体是 `Wrong Answer` 时要报整体那个。
+2. **裸状态码只在很短的一行里才算结论**（≤ 24 字符），长文本一律不当结论：
+   PTA 页面里有一段「不再支持旧浏览器」的提示脚本，其中的 `you're` 会被 `\bRE\b` 命中，
+   结果整页被报成「判题结论：RE」。同理脚本/样式节点不参与判题文字收集。
+3. **`host_permissions` 里加上了 `https://pintia.cn/*`**：原来只有两个 API 域名，后台往 PTA 页面注入脚本
+   靠的是 `activeTab`（用户点过插件图标才给），没点过就是
+   「Cannot access contents of the page」，读题面/写代码/提交全都用不了。
+
+提交按钮的文案也补了 `Submit For This Problem`（真实页面上的按钮文字），这样走的是「精确匹配」那一档，
+不再靠「包含匹配 Submit」兜底。
 
 还没做：`switch/case` 的收尾缩进重排（同行做法的第 ⑤ 步）。
 

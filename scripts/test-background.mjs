@@ -27,6 +27,8 @@ const state = {
   injectArgs: [],
   hangJudge: false,
   abortFlags: 0,
+  modelsCalls: [],
+  modelsStatus: 200,
 };
 
 globalThis.chrome = {
@@ -121,6 +123,14 @@ globalThis.chrome = {
 // fetch 桩：只回放模型的 SSE（内置编译器在 Node 里没有 Worker，走到会自己降级）
 const encoder = new TextEncoder();
 globalThis.fetch = async (url, init) => {
+  // 模型列表接口（GET {baseURL}/models）与对话接口不是一回事，分开处理
+  if (String(url).endsWith('/models')) {
+    state.modelsCalls.push({ url: String(url), auth: init?.headers?.Authorization });
+    if (state.modelsStatus && state.modelsStatus !== 200) {
+      return new Response('{"error":"unauthorized"}', { status: state.modelsStatus });
+    }
+    return new Response(JSON.stringify({ data: [{ id: 'model-a' }, { id: 'model-b' }] }), { status: 200 });
+  }
   state.modelCalls.push(JSON.parse(init.body));
   // 接口连上但一直不吐数据：真实场景里的「模型卡住」，只有取消能收回来
   if (state.hangStream) {
@@ -424,6 +434,34 @@ check(
   '写作答区卡住时点停止会如实回报没写完',
   stoppedInput.ok === false && stoppedInput.result.includes('已停止'),
 );
+
+/* ---------- 模型列表：设置页的下拉框 ---------- */
+
+await respond2({ type: 'settings/save', patch: { apiKey: 'sk-models' } });
+state.modelsCalls.length = 0;
+const modelList = await respond2({ type: 'models/list', baseURL: 'https://api.siliconflow.cn/v1/' });
+check(
+  'models/list 去问 {baseURL}/models 并带回模型 id',
+  modelList.ok === true &&
+    modelList.models.join(',') === 'model-a,model-b' &&
+    state.modelsCalls[0].url === 'https://api.siliconflow.cn/v1/models',
+);
+check('请求带着 Key 走', state.modelsCalls[0].auth === 'Bearer sk-models');
+
+const draftKey = await respond2({ type: 'models/list', baseURL: 'https://api.deepseek.com/v1', apiKey: 'sk-draft' });
+check('面板上刚填的 Key 优先于存着的那把', draftKey.ok === true && state.modelsCalls.at(-1).auth === 'Bearer sk-draft');
+
+const badBase = await respond2({ type: 'models/list', baseURL: 'api.siliconflow.cn' });
+check('接口地址不完整时如实说清楚，不去乱请求', badBase.ok === false && badBase.message.includes('接口地址'));
+
+state.modelsStatus = 401;
+const unauthorized = await respond2({ type: 'models/list', baseURL: 'https://api.siliconflow.cn/v1' });
+check('接口报错时把状态码带回来', unauthorized.ok === false && unauthorized.message.includes('401'));
+state.modelsStatus = 200;
+
+await respond2({ type: 'settings/save', patch: { apiKey: '' } });
+const noKeyModels = await respond2({ type: 'models/list', baseURL: 'https://api.siliconflow.cn/v1' });
+check('没有 Key 时不去请求', noKeyModels.ok === false && noKeyModels.message.includes('API Key'));
 
 /* ---------- 无 Key 短路 ---------- */
 

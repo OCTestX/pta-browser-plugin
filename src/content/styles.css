@@ -575,6 +575,98 @@
   margin-top: 4px;
 }
 
+/* ---------- 内置模型提供商 + 模型下拉框 ---------- */
+
+.providers {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 10px;
+}
+
+.providers__label {
+  font-size: 13px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.providers__list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.provider {
+  padding: 4px 10px;
+  border: 1px solid var(--pta-border);
+  border-radius: 999px;
+  background: transparent;
+  color: var(--pta-text);
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.provider:hover {
+  border-color: var(--pta-accent);
+  color: var(--pta-accent);
+}
+
+.provider--on {
+  border-color: var(--pta-accent);
+  background: var(--pta-accent);
+  color: #ffffff;
+}
+
+.field__jump--on {
+  border-color: var(--pta-accent);
+  color: var(--pta-accent);
+}
+
+.model-list {
+  display: flex;
+  flex-direction: column;
+  max-height: 190px;
+  margin-top: 6px;
+  padding: 4px;
+  overflow-y: auto;
+  border: 1px solid var(--pta-border);
+  border-radius: 8px;
+  background: var(--pta-surface);
+}
+
+.model-list__hint {
+  padding: 6px 8px;
+  color: var(--pta-text-muted);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.model-list__hint--error {
+  color: var(--pta-danger);
+}
+
+.model-list__item {
+  padding: 5px 8px;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--pta-text);
+  font: inherit;
+  font-size: 12px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.model-list__item:hover {
+  background: var(--pta-surface-alt);
+}
+
+.model-list__item--on {
+  color: var(--pta-accent);
+  font-weight: 600;
+}
+
 .button {
   margin-left: auto;
   padding: 6px 16px;

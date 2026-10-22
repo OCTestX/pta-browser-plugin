@@ -159,6 +159,9 @@ const HELPERS = `
   // 「部分正确」必须排在所有正向词前面：PTA 的部分得分弹窗里常同时出现
   // 「部分正确」和「通过测试点 6/10」，只认泛化的「通过」就会把部分正确误报成 AC，
   // 模型以为整题都对、交卷就完事了（这题还没拿满分）。
+  //
+  // 英文也要认：PTA 的判题结果页是英文的（Accepted / Wrong Answer / Time Limit Exceeded…），
+  // 只认中文的话整页都读不出结论，只能干等到超时。
   const JUDGE_WORDS = [
     ['部分正确', 'PC'],
     ['部分得分', 'PC'],
@@ -173,7 +176,25 @@ const HELPERS = `
     ['答案错误', 'WA'],
     ['未通过', '未通过'],
     ['答案正确', 'AC'],
+    // 英文结论（unaccepted 必须在 accepted 前面：它是包含关系；
+    // partially accepted 也要排在 accepted 前面 —— PTA 的部分得分判题原文就是
+    // "Partially Accepted"，只认 accepted 会把这题报成 AC）
+    ['unaccepted', '未通过'],
+    ['partially accepted', 'PC'],
+    ['partly accepted', 'PC'],
+    ['partial accepted', 'PC'],
+    ['wrong answer', 'WA'],
+    ['compile error', 'CE'],
+    ['time limit exceeded', 'TLE'],
+    ['memory limit exceeded', 'MLE'],
+    ['output limit exceeded', 'OLE'],
+    ['runtime error', 'RE'],
+    ['presentation error', 'PE'],
+    ['accepted', 'AC'],
   ];
+
+  // rank 越小越具体，挑结论时取 rank 最小的那个
+  const JUDGE_RANKS = { PC: 10, CE: 20, TLE: 20, MLE: 20, OLE: 20, RE: 20, PE: 20, WA: 20, '未通过': 20, AC: 30 };
 
   // 「通过」太泛：PTA 会在结论旁边写「通过测试点 6/10」「通过率 60%」，
   // 这些是在说统计，不是在说结论。只有真正在讲结论的「通过」才算 AC。
@@ -185,14 +206,43 @@ const HELPERS = `
   // 归一化判题文字，并给出优先级（rank 越小越具体）：跨容器挑结论时按 rank 取最好的那个
   const judgeHit = (text) => {
     const value = String(text || '');
-    const code = value.match(/\\b(AC|WA|RE|TLE|MLE|CE|PE|OLE)\\b/i);
-    // 字母状态码比「通过」「答案正确」这类泛化中文词可信，但不如「部分正确」「编译错误」具体
-    if (code) return { status: code[1].toUpperCase(), rank: 5 };
+    // 结论文字都很短（一行）。长文本一律不当结论：
+    // 页面上随便一段脚本源码里就可能有个孤零零的 RE/AC
+    // （实测 PTA 那段「不再支持旧浏览器」的提示脚本里的 you're 会被当成 RE）
+    if (value.trim().length > 120) return null;
     const lower = value.toLowerCase();
     for (let index = 0; index < JUDGE_WORDS.length; index += 1) {
-      if (lower.includes(JUDGE_WORDS[index][0])) return { status: JUDGE_WORDS[index][1], rank: 10 + index };
+      if (!lower.includes(JUDGE_WORDS[index][0])) continue;
+      return { status: JUDGE_WORDS[index][1], rank: JUDGE_RANKS[JUDGE_WORDS[index][1]] };
     }
-    if (isVerdictPass(value)) return { status: 'AC', rank: 30 };
+    // 裸状态码（AC/WA/…）更严格：只在很短的一行里才算
+    if (value.trim().length <= 24) {
+      const code = value.match(/\\b(AC|WA|RE|TLE|MLE|CE|PE|OLE)\\b/i);
+      if (code) return { status: code[1].toUpperCase(), rank: JUDGE_RANKS[code[1].toUpperCase()] };
+    }
+    if (isVerdictPass(value)) return { status: 'AC', rank: 40 };
+    return null;
+  };
+
+  // 整体结论块：PTA 的结果页是「Status」标签和结论值放在同一个块里
+  // （<div class="space-y-1">Status / Accepted</div>），标签本身是叶子节点，值在旁边的按钮里。
+  // 往上找几层祖先，取第一个「能读出结论」的小块。
+  // 题面列表的表头里也有个 Status，但那一块里没有结论，不会被误认成整体结论。
+  const readStatusBlock = () => {
+    const labels = document.querySelectorAll('span, td, th, p, li, div');
+    for (const label of labels) {
+      if (label.children.length > 0) continue; // 只看真正写着字的叶子节点
+      const labelText = textOf(label).trim();
+      if (!/^(status|状态|判题结果|评测结果|judge result|结果)$/i.test(labelText)) continue;
+      let node = label.parentElement;
+      for (let depth = 0; node && depth < 5; depth += 1) {
+        const blockText = textOf(node).trim();
+        if (blockText.length > 200) break;
+        const hit = judgeHit(blockText);
+        if (hit) return { text: blockText, status: hit.status, rank: 5 };
+        node = node.parentElement;
+      }
+    }
     return null;
   };
 
@@ -200,6 +250,11 @@ const HELPERS = `
   // 一条一条地判再按优先级取最好的那个：把多个容器拼成一大段再匹配会先撞上谁算谁
   // （实测把「部分正确 通过测试点 6/10」报成了 AC）。
   const readJudgeText = () => {
+    // 整体结论最优先：它才是「这次提交」的结论，页面上其它地方（题面列表、提交记录）
+    // 也可能有 Accepted / Wrong Answer，不能盖过它
+    const block = readStatusBlock();
+    if (block) return { text: block.text.slice(0, 400), status: block.status };
+
     const containers = ['[class*=judge]', '[class*=result]', '[class*=status]', '[role=alert]', '.el-message', '.ant-message', '[class*=modal]', '[class*=dialog]'];
     const chunks = [];
     let best = null;
@@ -207,6 +262,8 @@ const HELPERS = `
       let nodes = [];
       try { nodes = Array.from(document.querySelectorAll(selector)); } catch (e) { continue; }
       for (const node of nodes) {
+        // 脚本/样式里的文字不是判题结论（PTA 页面里就有一段弃用提示的脚本源码）
+        if (node.tagName === 'SCRIPT' || node.tagName === 'STYLE' || node.tagName === 'NOSCRIPT') continue;
         const text = shortText(node);
         if (!text || text.length >= 200) continue;
         chunks.push(text);
@@ -217,10 +274,23 @@ const HELPERS = `
     if (best) return { text: best.text.slice(0, 400), status: best.status };
 
     const lines = (document.body.innerText || '').split('\\n').map((line) => line.trim()).filter(Boolean);
+    let lineBest = null;
     for (const line of lines) {
+      if (line.length > 120) continue; // 太长的是脚本源码/整段说明，不是结论
+      const hit = judgeHit(line);
+      if (hit && (!lineBest || hit.rank < lineBest.rank)) lineBest = { text: line, status: hit.status };
+    }
+    if (lineBest) return { text: lineBest.text.slice(0, 400), status: lineBest.status };
+
+    // innerText 只算「看得见」的部分：结果区被折叠/藏起来时读不到，
+    // 退到 textContent 再扫一遍（textContent 含隐藏文字）
+    const rawLines = (document.body.textContent || '').split('\\n').map((line) => line.trim()).filter(Boolean);
+    for (const line of rawLines) {
+      if (line.length > 120) continue;
       const hit = judgeHit(line);
       if (hit) return { text: line.slice(0, 400), status: hit.status };
     }
+
     // 没有结论也把看到的中间状态带回去（评测中/排队中），调用方要靠它判断「变了没有」
     return { text: chunks.join(' \\n ').slice(0, 400), status: null };
   };
@@ -250,7 +320,7 @@ const HELPERS = `
   // 分三级找提交按钮：真按钮精确匹配 → 真按钮包含匹配 → 退到 a/[role=button]/class 含 btn 的元素。
   // 顺序很关键：PTA 登录页上「登录」既是标签页又是提交按钮，按 DOM 顺序点会点到标签页
   const findSubmitButton = () => {
-    const labels = ['提交本题作答', '提交答案', '提交', '提交评测', 'Submit'];
+    const labels = ['提交本题作答', '提交答案', '提交', '提交评测', 'Submit For This Problem', 'Submit'];
     const candidates = [];
     for (const label of labels) {
       for (const node of document.querySelectorAll('button, input[type=submit]')) {

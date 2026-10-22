@@ -107,6 +107,8 @@ export type ContentRequest =
   /** 输入框的「输入」按钮：把面板输入框里的文本写进作答区（PTA 禁粘贴时的快捷通道）；
    *  requestId 用来让同一个「停止」按钮也能打断这次写入 */
   | { type: 'code/input'; requestId: string; code: string }
+  /** 问接口「你有哪些模型」：模型下拉框用。Key 只在 background 那边用，content 传过来的是草稿值 */
+  | { type: 'models/list'; baseURL: string; apiKey?: string }
   /** 设置页的「一键跳转硅基流动」：让后台开一个新标签页 */
   | { type: 'ui/open-url'; url: string };
 
@@ -120,6 +122,7 @@ export function isContentRequest(message: unknown): message is ContentRequest {
       message.type === 'settings/save' ||
       message.type === 'tool/test-input' ||
       message.type === 'code/input' ||
+      message.type === 'models/list' ||
       message.type === 'ui/open-url')
   );
 }
@@ -145,6 +148,13 @@ export interface TestInputResponse {
 export interface ToolRunResponse {
   ok: boolean;
   result: string;
+}
+
+/** 模型下拉框的结果：模型 id 列表或一句人话（为什么没列出来） */
+export interface ModelsListResponse {
+  ok: boolean;
+  models: string[];
+  message?: string;
 }
 
 export type SettingsResponse = SettingsView;

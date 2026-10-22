@@ -140,6 +140,11 @@ function boot({ hasApiKey, store }) {
             // 测试「写入途中点停止」时要能按住后台的回复，模拟一次很慢的写入
             if (pending.input) await pending.input;
             return inputResult;
+          case 'models/list':
+            return {
+              ok: true,
+              models: ['deepseek-ai/DeepSeek-V4.1-Flash', 'Qwen/Qwen3-8B', 'deepseek-ai/DeepSeek-V3.2'],
+            };
           case 'ui/open-url':
             return { ok: true };
           default:
@@ -359,6 +364,56 @@ await tick();
 const saved = withKey.requests.find((r) => r.type === 'settings/save');
 check('保存设置会把 Key 交给 background', saved?.patch?.apiKey === 'sk-test-key');
 check('保存后 Key 输入框被清空', withKey.find('.field__input[type="password"]').value === '');
+
+// 内置的模型提供商：点一下就把接口地址填上
+const providerChips = [...withKey.shadow().querySelectorAll('.provider')];
+check('接口地址上面有内置提供商按钮', providerChips.length === 2);
+check('内置提供商是硅基流动与深度求索', providerChips.map((el) => el.textContent).join('、') === '硅基流动、深度求索');
+check('当前接口地址对应的提供商是高亮的', providerChips[0].className.includes('provider--on'));
+providerChips[1].click();
+await tick();
+check('点「深度求索」把接口地址换成它的', withKey.find('.field__input[type="text"]').value === 'https://api.deepseek.com/v1');
+check('换过之后高亮跟着换', providerChips[1].className.includes('provider--on') && !providerChips[0].className.includes('provider--on'));
+providerChips[0].click();
+await tick();
+check('点「硅基流动」把接口地址换回来', withKey.find('.field__input[type="text"]').value === 'https://api.siliconflow.cn/v1');
+
+// Key 与接口地址都齐了，模型旁边出现下拉框
+check('模型旁边的下拉框出现了', Boolean(withKey.find('.field__models')));
+withKey.find('.field__models').click();
+await tick();
+const modelRequest = withKey.requests.find((r) => r.type === 'models/list');
+check('下拉框去后台要这个接口的模型列表', modelRequest?.baseURL === 'https://api.siliconflow.cn/v1');
+check('Key 已存着时不用再传（后台自己会用存的那把）', modelRequest?.apiKey === undefined);
+const modelItems = [...withKey.shadow().querySelectorAll('.model-list__item')];
+check('模型列表列出来了', modelItems.length === 3 && modelItems[0].textContent === 'deepseek-ai/DeepSeek-V4.1-Flash');
+modelItems[1].click();
+await tick();
+check('点模型就把模型名填进输入框', [...withKey.shadow().querySelectorAll('.field__input[type="text"]')][1].value === 'Qwen/Qwen3-8B');
+check('选完下拉框收起', !withKey.find('.model-list'));
+
+// 没填 Key 时不该出现下拉框
+const noKeyPanel = boot({ hasApiKey: false });
+await tick();
+noKeyPanel.toggle();
+await tick();
+noKeyPanel.find('.panel__close[title="设置"]').click();
+await tick();
+check('没有 Key 时模型旁边没有下拉框', !noKeyPanel.find('.field__models'));
+noKeyPanel.setValue(noKeyPanel.find('.field__input[type="password"]'), 'sk-x');
+await tick();
+check('填了 Key 之后下拉框出现', Boolean(noKeyPanel.find('.field__models')));
+noKeyPanel.setValue(noKeyPanel.find('.field__input[type="text"]'), 'api.siliconflow.cn');
+await tick();
+check('接口地址不完整时还是没有下拉框', !noKeyPanel.find('.field__models'));
+
+// 还没保存的 Key 也要能带着去问模型列表
+noKeyPanel.setValue(noKeyPanel.find('.field__input[type="text"]'), 'https://api.siliconflow.cn/v1');
+await tick();
+noKeyPanel.find('.field__models').click();
+await tick();
+const draftKeyRequest = noKeyPanel.requests.find((r) => r.type === 'models/list');
+check('下拉框把面板上刚填的 Key 一起给了后台', draftKeyRequest?.apiKey === 'sk-x');
 
 // 「模拟输入测试」整块对用户隐藏（代码留着，普通用户看不到这组调试按钮）
 check('设置页不显示「模拟输入测试」区域', !withKey.find('.settings').textContent.includes('模拟输入测试'));
