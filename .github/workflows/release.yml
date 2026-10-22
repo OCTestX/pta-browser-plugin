@@ -32,11 +32,17 @@ jobs:
       - name: 构建并打包（Chrome zip + Firefox xpi）
         run: npm run package
 
-      - name: 确认产物都在
+      - name: 确认产物都在（且带着内置编译器的大资源）
         run: |
           ls -lh dist/*.xpi dist/*.zip
           test -f "dist/pta-assistant-${{ github.ref_name }}.xpi"
           test -f "dist/pta-assistant-${{ github.ref_name }}.zip"
+          # 包里必须有内置编译器（约 91MB 的三个大资源），少了就等于发了个不能编译的插件
+          for f in dist/pta-assistant-${{ github.ref_name }}.xpi dist/pta-assistant-${{ github.ref_name }}.zip; do
+            size=$(stat -c%s "$f")
+            echo "$f: $((size / 1024 / 1024)) MB"
+            test "$size" -gt 20000000 || { echo "✗ $f 太小，内置编译器资源没进去"; exit 1; }
+          done
 
       - name: 创建 Release
         uses: softprops/action-gh-release@v2
