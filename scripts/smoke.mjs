@@ -85,6 +85,7 @@ function boot({ hasApiKey, store }) {
   booted.push(window);
   const listeners = [];
   const requests = [];
+  const storageChangedListeners = [];
   let keySet = hasApiKey;
 
   // 打桩的 background：只实现 content script 依赖的那几个消息
@@ -110,9 +111,21 @@ function boot({ hasApiKey, store }) {
         set: async (patch) => {
           Object.assign(stored, patch);
           storageWrites.push(patch);
+          // 触发 onChanged 监听（模拟跨标签页状态同步）
+          for (const key of Object.keys(patch)) {
+            const change = { oldValue: undefined, newValue: patch[key] };
+            storageChangedListeners.forEach((fn) => fn({ [key]: change }));
+          }
         },
         remove: async (keys) => {
           for (const name of Array.isArray(keys) ? keys : [keys]) delete stored[name];
+        },
+      },
+      onChanged: {
+        addListener: (fn) => storageChangedListeners.push(fn),
+        removeListener: (fn) => {
+          const index = storageChangedListeners.indexOf(fn);
+          if (index >= 0) storageChangedListeners.splice(index, 1);
         },
       },
     },

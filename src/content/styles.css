@@ -131,6 +131,24 @@
   color: var(--pta-text);
 }
 
+.panel__maximize {
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--pta-text-muted);
+  font-size: 18px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.panel__maximize:hover {
+  background: var(--pta-border);
+  color: var(--pta-text);
+}
+
 .panel__back {
   width: 24px;
   height: 24px;

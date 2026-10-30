@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, useSyncExternalStore } from 'react';
+import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from 'react';
 import { ext } from '../shared/browser';
 import { Composer } from './components/Composer';
 import { MessageList } from './components/MessageList';
@@ -7,9 +7,12 @@ import { useChat } from './hooks/useChat';
 import { usePanelLayout } from './hooks/usePanelLayout';
 import { useSettings } from './hooks/useSettings';
 import {
+  getDraft,
   isPanelOpen,
   layoutResetCount,
+  setDraft,
   setPanelOpen,
+  subscribeDraft,
   subscribeLayoutReset,
   subscribePanel,
 } from './panelStore';
@@ -22,8 +25,8 @@ const VERSION_LABEL = `v${ext.runtime.getManifest().version.split('.').slice(0, 
 export function App() {
   const open = useSyncExternalStore(subscribePanel, isPanelOpen, isPanelOpen);
   const layoutReset = useSyncExternalStore(subscribeLayoutReset, layoutResetCount, layoutResetCount);
+  const draft = useSyncExternalStore(subscribeDraft, getDraft, getDraft);
   const [view, setView] = useState<View>('chat');
-  const [draft, setDraft] = useState('');
   const settings = useSettings();
   const chat = useChat(settings.hasApiKey);
   const panelRef = useRef<HTMLDivElement>(null);
@@ -33,6 +36,11 @@ export function App() {
   useEffect(() => {
     if (layoutReset > 0) panel.reset();
   }, [layoutReset, panel.reset]);
+
+  // 最大化：在新标签页打开全页面模式
+  const maximize = useCallback(() => {
+    void ext.tabs.create({ url: ext.runtime.getURL('fullpage.html') });
+  }, []);
 
   if (!open) return null;
 
@@ -98,6 +106,14 @@ export function App() {
                 onClick={chat.reset}
               >
                 新会话
+              </button>
+              <button
+                type="button"
+                className="panel__maximize"
+                title="新标签页打开（最大化）"
+                onClick={maximize}
+              >
+                ⛶
               </button>
               <button
                 type="button"

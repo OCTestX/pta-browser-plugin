@@ -3,6 +3,127 @@ import { truncate } from '../shared/tools.ts';
 import { runInEngine, type EngineRunResult } from './compiler-host.ts';
 
 /**
+ * 内置 JavaScript 运行器：在本地用浏览器/Node 的 JS 引擎跑一段代码，捕获 stdout/stderr。
+ * 不联网、代码不出本机。
+ */
+export interface JsCompileOptions {
+  code: string;
+  stdin: string;
+  signal?: AbortSignal;
+}
+
+export async function compileAndRunJs(options: JsCompileOptions): Promise<CompileResult> {
+  const { code, stdin, signal } = options;
+  const started = Date.now();
+  const stdout: string[] = [];
+  const stderr: string[] = [];
+  const lines = (stdin || '').split('\n');
+  let stdinIndex = 0;
+  const readline = () => (stdinIndex < lines.length ? lines[stdinIndex++] : '');
+  const consoleObj = {
+    log: (...a: unknown[]) => stdout.push(a.map(String).join(' ')),
+    error: (...a: unknown[]) => stderr.push(a.map(String).join(' ')),
+    warn: (...a: unknown[]) => stderr.push(a.map(String).join(' ')),
+  };
+
+  if (signal?.aborted) throw new Error('已停止');
+  let error: string | null = null;
+  try {
+    // eslint-disable-next-line no-new-func
+    const fn = new Function('console', 'readline', 'stdin', code);
+    const r = fn(consoleObj, readline, stdin || '');
+    if (r !== undefined) stdout.push(String(r));
+  } catch (e) {
+    error = e instanceof Error ? e.message : String(e);
+  }
+
+  const time = `${((Date.now() - started) / 1000).toFixed(2)}`;
+  const base = {
+    stdout: stdout.join('\n') + (stdout.length ? '\n' : ''),
+    stderr: stderr.join('\n') + (stderr.length ? '\n' : ''),
+    compileOutput: '',
+    message: error ? error : '',
+    time,
+    memory: null,
+  } as const;
+
+  if (error) {
+    return { ...base, ok: false, statusText: '运行时错误', message: error };
+  }
+  return { ...base, ok: true, statusText: '运行成功' };
+}
+
+/**
+ * 内置 Python 运行器：Node 环境用 python3 子进程；浏览器环境回退到提示信息。
+ */
+export interface PyCompileOptions {
+  code: string;
+  stdin: string;
+  signal?: AbortSignal;
+}
+
+export async function compileAndRunPython(options: PyCompileOptions): Promise<CompileResult> {
+  const { code, stdin, signal } = options;
+
+  // 浏览器环境：没有 python3，提示借用 PTA 模拟运行
+  const g = globalThis as { process?: { versions?: { node?: string } } };
+  const hasNode = !!g.process?.versions?.node;
+  if (!hasNode) {
+    return {
+      ok: false,
+      statusText: 'Python 运行时未内置',
+      stdout: '',
+      stderr: '',
+      compileOutput: '',
+      message: '当前环境没有内置 Python 运行时，请改用 read_pta_compile_result / simulate_pta_run 借用 PTA 的编译与模拟运行。',
+      time: '',
+      memory: null,
+    };
+  }
+
+  const started = Date.now();
+  const modName = 'node:child_process';
+  const { spawn } = await import(modName);
+  return new Promise<CompileResult>((resolve) => {
+    const child = spawn('python3', ['-u', '-c', code], { stdio: ['pipe', 'pipe', 'pipe'] });
+    let stdout = '';
+    let stderr = '';
+    child.stdout.on('data', (d: unknown) => { stdout += String(d); });
+    child.stderr.on('data', (d: unknown) => { stderr += String(d); });
+    child.on('close', (codeNum: number) => {
+      const time = `${((Date.now() - started) / 1000).toFixed(2)}`;
+      const ok = codeNum === 0;
+      resolve({
+        ok,
+        statusText: ok ? '运行成功' : `运行时错误（退出码 ${codeNum}）`,
+        stdout,
+        stderr,
+        compileOutput: '',
+        message: '',
+        time,
+        memory: null,
+      });
+    });
+    child.on('error', (err: { message: string }) => {
+      resolve({
+        ok: false,
+        statusText: '运行时错误',
+        stdout: '',
+        stderr: '',
+        compileOutput: '',
+        message: err.message,
+        time: '',
+        memory: null,
+      });
+    });
+    if (signal) {
+      signal.addEventListener('abort', () => { try { child.kill(); } catch {} }, { once: true });
+    }
+    try { child.stdin.write(stdin || ''); child.stdin.end(); } catch {}
+  });
+}
+
+/**
  * 编译并运行 C 代码——内置编译器（Clang 22 编译成 WebAssembly）在本地完成，
  * 不联网、代码不出本机。之前版本走 Judge0 在线服务，v0.9 起换成了内置。
  */

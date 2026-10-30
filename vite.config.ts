@@ -9,11 +9,12 @@ type BrowserTarget = 'chrome' | 'firefox';
 
 const target: BrowserTarget = process.env.TARGET === 'firefox' ? 'firefox' : 'chrome';
 // 扩展要求每个脚本都是自包含的单文件，所以一次只打一个入口
-const entry = process.env.ENTRY === 'background' ? 'background' : 'content';
+const entry = process.env.ENTRY ?? 'content';
 
 const ENTRY_FILES: Record<string, string> = {
   background: 'src/background/index.ts',
   content: 'src/content/index.tsx',
+  fullpage: 'src/fullpage/main.tsx',
 };
 
 // manifest/manifest.json 是手写的基础清单（Chrome 用），Firefox 的差异在这里补
@@ -107,11 +108,20 @@ export default defineConfig({
     target: 'esnext',
     rollupOptions: {
       input: ENTRY_FILES[entry],
-      output: {
-        format: 'iife',
-        entryFileNames: `${entry}.js`,
-        assetFileNames: '[name][extname]',
-      },
+      output:
+        entry === 'background' || entry === 'content'
+          ? {
+              format: 'iife',
+              entryFileNames: `${entry}.js`,
+              assetFileNames: '[name][extname]',
+            }
+          : {
+              format: 'es',
+              entryFileNames: 'fullpage.js',
+              chunkFileNames: 'fullpage-[hash].js',
+              assetFileNames: 'fullpage-[name]-[ext]',
+            },
     },
   },
 });
+

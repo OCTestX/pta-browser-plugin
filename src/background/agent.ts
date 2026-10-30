@@ -10,6 +10,8 @@ import {
 import { abortable, isAbortError, throwIfAborted } from '../shared/abort';
 import type { ApiMessage } from '../shared/types';
 import { compileAndRun, compareOutput, formatCompileResult } from './compile';
+import { compileAndRunJs } from './compile';
+import { compileAndRunPython } from './compile';
 import { pokeEditor as poke, writeEditorCode } from './input-methods';
 import { createDebuggerIo, detach, pressKey } from './debugger-input';
 import {
@@ -19,6 +21,8 @@ import {
   READ_JUDGE_SCRIPT,
   READ_PROBLEM_SCRIPT,
   SUBMIT_ANSWER_SCRIPT,
+  READ_PTA_COMPILE_RESULT_SCRIPT,
+  SIMULATE_PTA_RUN_SCRIPT,
 } from './pta-scripts';
 import { describeTypist, runTypist } from './typist';
 
@@ -140,6 +144,8 @@ const PTA_SCRIPTS: Record<string, string> = {
   submit_answer: SUBMIT_ANSWER_SCRIPT,
   read_judge_result: READ_JUDGE_SCRIPT,
   close_dialogs: CLOSE_DIALOGS_SCRIPT,
+  read_pta_compile_result: READ_PTA_COMPILE_RESULT_SCRIPT,
+  simulate_pta_run: SIMULATE_PTA_RUN_SCRIPT,
 };
 
 export interface ToolContext {
@@ -219,8 +225,33 @@ export async function runTool(
     }
   }
 
+  if (name === 'compile_and_run_js') {
+    const code = typeof args.code === 'string' ? args.code : '';
+    if (!code.trim()) return { output: '缺少 code 参数', isError: true };
+    const stdin = typeof args.stdin === 'string' ? args.stdin : '';
+    try {
+      const result = await abortable(compileAndRunJs({ code, stdin, signal }), signal);
+      return { output: formatCompileResult(result), isError: false };
+    } catch (error) {
+      if (isAbortError(error, signal)) throw error;
+      return { output: error instanceof Error ? error.message : String(error), isError: true };
+    }
+  }
+
+  if (name === 'compile_and_run_python') {
+    const code = typeof args.code === 'string' ? args.code : '';
+    if (!code.trim()) return { output: '缺少 code 参数', isError: true };
+    const stdin = typeof args.stdin === 'string' ? args.stdin : '';
+    try {
+      const result = await abortable(compileAndRunPython({ code, stdin, signal }), signal);
+      return { output: formatCompileResult(result), isError: false };
+    } catch (error) {
+      if (isAbortError(error, signal)) throw error;
+      return { output: error instanceof Error ? error.message : String(error), isError: true };
+    }
+  }
+
   if (name === 'write_editor_code') {
-    // 写入走完整链路：默认实现 → 清空 → 备用实现依次重试
     const outcome = await abortable(
       writeEditorCode({
         tabId,

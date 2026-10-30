@@ -4,9 +4,13 @@ export type ToolName =
   | 'read_editor_code'
   | 'write_editor_code'
   | 'compile_and_run_c'
+  | 'compile_and_run_python'
+  | 'compile_and_run_js'
   | 'submit_answer'
   | 'read_judge_result'
   | 'close_dialogs'
+  | 'read_pta_compile_result'
+  | 'simulate_pta_run'
   | 'js_inject'
   | 'date'
   | 'url'
@@ -20,9 +24,13 @@ export const TOOL_NAMES: ToolName[] = [
   'read_editor_code',
   'write_editor_code',
   'compile_and_run_c',
+  'compile_and_run_python',
+  'compile_and_run_js',
   'submit_answer',
   'read_judge_result',
   'close_dialogs',
+  'read_pta_compile_result',
+  'simulate_pta_run',
   'js_inject',
   'date',
   'url',
@@ -292,6 +300,74 @@ export const TOOL_SCHEMAS: ToolSchema[] = [
         },
         required: ['question', 'options'],
       },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'diff',
+      description:
+        '把改动前后的两段文本左右对照展示给用户（新增/修改/删除的行会分色标出），让用户一眼看出你把代码改成了什么样。改完 write_editor_code 必须调用一次。',
+      parameters: {
+        type: 'object',
+        properties: {
+          left: { type: 'string', description: '改动之前的内容（原文）' },
+          right: { type: 'string', description: '改动之后的内容' },
+          leftLabel: { type: 'string', description: '左列标题，默认「改动前」' },
+          rightLabel: { type: 'string', description: '右列标题，默认「改动后」' },
+        },
+        required: ['left', 'right'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'compile_and_run_python',
+      description:
+        '用插件内置的 Python 运行器（本地运行，不联网）把一段 Python 代码运行，指定标准输入后拿回运行输出与错误。写完代码应该先用它跑一遍题目样例。首次调用要加载 Python 运行时（几秒）。',
+      parameters: {
+        type: 'object',
+        properties: {
+          code: { type: 'string', description: '完整的 Python 源代码' },
+          stdin: { type: 'string', description: '标准输入内容，按题目的样例输入原样填，没有就留空' },
+        },
+        required: ['code'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'compile_and_run_js',
+      description:
+        '用插件内置的 JavaScript 运行器（本地运行，不联网）把一段 JavaScript 代码运行，指定标准输入后拿回运行输出与错误。写完代码应该先用它跑一遍题目样例。',
+      parameters: {
+        type: 'object',
+        properties: {
+          code: { type: 'string', description: '完整的 JavaScript 源代码' },
+          stdin: { type: 'string', description: '标准输入内容，按题目的样例输入原样填，没有就留空' },
+        },
+        required: ['code'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'read_pta_compile_result',
+      description:
+        '读取 PTA 页面上最近一次编译/运行的结果（编译错误、运行输出等）。仅在编写了插件没有内置编译器的语言时，借用 PTA 的编译结果。',
+      parameters: { type: 'object', properties: {}, required: [] },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'simulate_pta_run',
+      description:
+        '在 PTA 页面上用「模拟运行」按钮运行当前作答区的代码并读回结果。仅在编写了插件没有内置编译器的语言时借用 PTA 的模拟运行。一般情况下不使用。',
+      parameters: { type: 'object', properties: {}, required: [] },
     },
   },
   {

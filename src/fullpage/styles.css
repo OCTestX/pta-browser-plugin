@@ -1,0 +1,146 @@
+.pta-fullpage {
+  all: initial;
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
+  width: 100vw;
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Microsoft YaHei',
+    sans-serif;
+  font-size: 14px;
+  line-height: 1.6;
+  color: #1f2430;
+  background: #ffffff;
+}
+
+.pta-fullpage * {
+  box-sizing: border-box;
+}
+
+/* 顶部 header */
+.pta-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 12px 16px;
+  border-bottom: 1px solid #e2e6f0;
+  background: #f4f6fb;
+  flex: none;
+}
+
+.pta-title {
+  font-size: 15px;
+  font-weight: 600;
+}
+
+.pta-badge {
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: #eaf0ff;
+  color: #2f6bff;
+  font-size: 11px;
+}
+
+.pta-usage {
+  margin-left: auto;
+  color: #8a93a6;
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+.pta-actions {
+  display: flex;
+  gap: 4px;
+}
+
+.pta-new-chat-btn,
+.pta-back-btn,
+.pta-close-btn {
+  padding: 4px 10px;
+  border: 1px solid #e2e6f0;
+  border-radius: 6px;
+  background: #ffffff;
+  color: #8a93a6;
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.pta-new-chat-btn:hover,
+.pta-back-btn:hover,
+.pta-close-btn:hover {
+  border-color: #2f6bff;
+  color: #2f6bff;
+}
+
+.pta-back-btn {
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  line-height: 1;
+}
+
+.pta-close-btn {
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  line-height: 1;
+}
+
+/* 主内容区：messages 或 settings */
+.pta-main {
+  flex: 1;
+  overflow-y: auto;
+}
+
+/* 进度条 */
+.pta-progress {
+  height: 3px;
+  flex: none;
+  background: #eaf0ff;
+  position: relative;
+  overflow: hidden;
+}
+
+.pta-progress::after {
+  content: '';
+  position: absolute;
+  inset: 0 auto 0 0;
+  width: 45%;
+  background: linear-gradient(90deg, rgba(47, 107, 255, 0), #2f6bff 50%, rgba(47, 107, 255, 0));
+  animation: pta-fullpage-progress 1s linear infinite;
+}
+
+@keyframes pta-fullpage-progress {
+  from { transform: translateX(-100%); }
+  to { transform: translateX(250%); }
+}
+
+/* Notice 条 */
+.pta-notice {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 16px;
+  border-top: 1px solid #e2e6f0;
+  background: #fef2f2;
+  color: #d64545;
+  font-size: 13px;
+  flex: none;
+}
+
+.pta-notice__action {
+  padding: 4px 10px;
+  border: 1px solid #d64545;
+  border-radius: 6px;
+  background: transparent;
+  color: #d64545;
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.pta-notice__action:hover {
+  background: #d64545;
+  color: #ffffff;
+}
+

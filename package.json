@@ -1,13 +1,13 @@
 {
   "name": "pta-browser-plugin",
-  "version": "2.0.0",
+  "version": "3.0.0",
   "description": "帮助学生完成 PTA 题目的浏览器插件（Chrome / Firefox）",
   "private": true,
   "type": "module",
   "scripts": {
     "build": "npm run fetch-engine && npm run typecheck && npm run build:chrome && npm run build:firefox",
-    "build:chrome": "ENTRY=background TARGET=chrome vite build && ENTRY=content TARGET=chrome vite build",
-    "build:firefox": "ENTRY=background TARGET=firefox vite build && ENTRY=content TARGET=firefox vite build",
+    "build:chrome": "ENTRY=background TARGET=chrome vite build && ENTRY=content TARGET=chrome vite build && ENTRY=fullpage TARGET=chrome vite build",
+    "build:firefox": "ENTRY=background TARGET=firefox vite build && ENTRY=content TARGET=firefox vite build && ENTRY=fullpage TARGET=firefox vite build",
     "package:firefox": "npm run fetch-engine && npm run build:firefox && node scripts/package-firefox.mjs",
     "package:chrome": "npm run fetch-engine && npm run build:chrome && node scripts/package-chrome.mjs",
     "package": "npm run package:chrome && npm run package:firefox",

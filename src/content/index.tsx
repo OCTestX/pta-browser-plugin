@@ -2,7 +2,7 @@ import { createRoot } from 'react-dom/client';
 import { App } from './App';
 import { katexStyles } from './katexStyles';
 import { runPageTool } from './pageTools';
-import { requestLayoutReset, togglePanel } from './panelStore';
+import { initState, requestLayoutReset, togglePanel } from './panelStore';
 import { ext } from '../shared/browser';
 import { isResetPanelLayoutMessage, isRunToolRequest, isTogglePanelMessage } from '../shared/messages';
 import styles from './styles.css?inline';
@@ -41,6 +41,9 @@ function mount(): void {
 
 function start(): void {
   if (isInjected()) return;
+
+  // 初始化共享状态（从 storage.local 恢复面板开关 + 草稿等）
+  void initState();
 
   // 在模块顶层注册，保证后台发来的 toggle 一定有人接
   ext.runtime.onMessage.addListener((message: unknown, _sender, sendResponse) => {

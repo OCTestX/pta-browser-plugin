@@ -739,3 +739,35 @@ if (method === 'cdpClickTyping') {
 
 return json ? { ok: false, method, detail: '没有实现的方法：' + method, length: -1 } : '没有实现的方法：' + method;
 `;
+
+/** 读取 PTA 页面上最近一次编译/运行的结果（编译错误、运行输出等） */
+export const READ_PTA_COMPILE_RESULT_SCRIPT = `${HELPERS}
+const collect = () => {
+  const parts = [];
+  const selectors = ['.compile-result', '.run-result', '.judge-result', '.result', 'pre', 'code'];
+  for (const sel of selectors) {
+    const nodes = Array.from(document.querySelectorAll(sel));
+    for (const node of nodes) {
+      const t = textOf(node);
+      if (t && t.length > 0) parts.push(t);
+    }
+  }
+  const seen = new Set();
+  const out = [];
+  for (const p of parts) { if (!seen.has(p)) { seen.add(p); out.push(p); } }
+  return out.join('\\n---\\n') || '没读到编译结果';
+};
+return collect();
+`;
+
+/** 在 PTA 页面上用「模拟运行」按钮运行当前作答区代码并读回结果 */
+export const SIMULATE_PTA_RUN_SCRIPT = `${HELPERS}
+const findRunButton = () => {
+  const candidates = Array.from(document.querySelectorAll('button'));
+  return candidates.find((b) => /模拟运行 | 运行|Run/i.test(b.textContent || '')) || null;
+};
+const btn = findRunButton();
+if (!btn) return '没找到模拟运行按钮';
+btn.click();
+return '已点击模拟运行按钮，请稍后用 read_pta_compile_result 读取结果';
+`;
