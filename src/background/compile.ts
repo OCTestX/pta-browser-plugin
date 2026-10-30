@@ -54,7 +54,8 @@ export async function compileAndRunJs(options: JsCompileOptions): Promise<Compil
 }
 
 /**
- * 内置 Python 运行器：Node 环境用 python3 子进程；浏览器环境回退到提示信息。
+ * 内置 Python 运行器：用本地 Pyodide（随插件打包，不联网）解释执行。
+ * Node 环境（测试脚本）没有 Pyodide，退回 python3 子进程。
  */
 export interface PyCompileOptions {
   code: string;
@@ -65,22 +66,54 @@ export interface PyCompileOptions {
 export async function compileAndRunPython(options: PyCompileOptions): Promise<CompileResult> {
   const { code, stdin, signal } = options;
 
-  // 浏览器环境：没有 python3，提示借用 PTA 模拟运行
+  // Node 环境：没有 Worker / offscreen，用 python3 子进程跑（仓库里的测试脚本走这条）
   const g = globalThis as { process?: { versions?: { node?: string } } };
   const hasNode = !!g.process?.versions?.node;
-  if (!hasNode) {
-    return {
-      ok: false,
-      statusText: 'Python 运行时未内置',
-      stdout: '',
-      stderr: '',
-      compileOutput: '',
-      message: '当前环境没有内置 Python 运行时，请改用 read_pta_compile_result / simulate_pta_run 借用 PTA 的编译与模拟运行。',
-      time: '',
-      memory: null,
-    };
+  if (hasNode) {
+    return runPythonWithNode(code, stdin, signal);
   }
 
+  // 浏览器环境：走内置引擎（Pyodide）
+  let raw: EngineRunResult;
+  try {
+    raw = await runInEngine(code, stdin, signal, 'python');
+  } catch (error) {
+    if (error instanceof Error && error.name === 'EngineTimeout') {
+      return {
+        ok: false,
+        statusText: '运行超时',
+        stdout: '',
+        stderr: '',
+        compileOutput: '',
+        message: error.message,
+        time: '',
+        memory: null,
+      };
+    }
+    throw error;
+  }
+
+  if (raw.stage === 'engine-error') {
+    throw new Error(raw.message || '内置 Python 运行时内部错误');
+  }
+
+  const time = raw.elapsedMs > 0 ? `${(raw.elapsedMs / 1000).toFixed(2)}` : '';
+  const base = { stdout: raw.stdout, stderr: raw.stderr, compileOutput: '', message: '', time, memory: null } as const;
+
+  if (raw.stage === 'ok') return { ...base, ok: true, statusText: '运行成功' };
+  if (raw.stage === 'run-trap') {
+    return { ...base, ok: false, statusText: '运行时错误（程序崩溃）', message: (raw.trap ?? '').split('\n')[0] };
+  }
+  return {
+    ...base,
+    ok: false,
+    statusText: '运行时错误',
+    message: raw.message || raw.stderr || 'Python 程序运行失败',
+  };
+}
+
+/** Node 环境的 Python：起一个 python3 子进程 */
+async function runPythonWithNode(code: string, stdin: string, signal?: AbortSignal): Promise<CompileResult> {
   const started = Date.now();
   const modName = 'node:child_process';
   const { spawn } = await import(modName);

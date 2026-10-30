@@ -7,14 +7,20 @@ import {
   CHECK_READY_SCRIPT,
   CLOSE_DIALOGS_SCRIPT,
   INPUT_METHOD_SCRIPT,
+  LANGUAGE_SCRIPT,
   READ_EDITOR_SCRIPT,
   READ_JUDGE_SCRIPT,
   READ_PROBLEM_SCRIPT,
+  READ_PTA_COMPILE_RESULT_SCRIPT,
+  SIMULATE_PTA_RUN_SCRIPT,
   SUBMIT_ANSWER_SCRIPT,
 } from '../src/background/pta-scripts.ts';
 
-const check = (label, ok) => {
-  if (!ok) throw new Error(`✗ ${label}`);
+const check = (label, ok, detail) => {
+  if (!ok) {
+    const extra = detail === undefined ? '' : `（实际：${JSON.stringify(detail).slice(0, 300)}）`;
+    throw new Error(`✗ ${label}${extra}`);
+  }
   console.log(`✓ ${label}`);
 };
 
@@ -189,6 +195,83 @@ check('样例里的「复制」按钮文字被滤掉', !examProblem.includes('�
 const sampleRaw = await runScript(examPage, READ_PROBLEM_SCRIPT, { samplesOnly: true });
 const parsedSamples = typeof sampleRaw === 'string' ? JSON.parse(sampleRaw) : sampleRaw;
 check('samplesOnly 返回结构化样例', Array.isArray(parsedSamples.samples) && parsedSamples.samples[0].input === '3 4' && parsedSamples.samples[0].output === '7');
+
+/* ---------- 新版考试页（.rendered-markdown + KaTeX + 只读样例框 + 语言选择器） ---------- */
+
+// 复刻真实页面结构（2026-10-30 实测）：题面在 .rendered-markdown 里，
+// 样例是只读的 CodeMirror，公式是 KaTeX，右上角有语言选择器
+function createExamUiPage() {
+  const dom = new JSDOM(
+    `<!doctype html><html><head><title>7-8 淘淘不喜欢3、6、9 - python基础</title></head><body>
+       <div class="select__control">Python (python3)</div>
+       <div class="rendered-markdown dark:rendered-markdown-invert">
+         <p>淘淘不喜欢数字
+           <span class="katex"><span class="katex-mathml"><math><semantics><mrow><mi>n</mi></mrow>
+             <annotation encoding="application/x-tex">n \\le 100</annotation></semantics></math></span></span>
+           ，求和如下：</p>
+         <p>输入格式:</p>
+         <p>输入一个正整数n。</p>
+         <p>输出格式:</p>
+         <p>输出淘淘数的数之和。</p>
+         <p>输入样例1:</p>
+         <p>在这里给出一组输入。例如：</p>
+         <div class="codeEditor readOnly"><div class="cm-editor"><div class="cm-scroller">
+           <div class="cm-gutters"><div class="cm-gutterElement">1</div></div>
+           <div class="cm-content" contenteditable="false" aria-readonly="true">
+             <div class="cm-line">12</div>
+           </div>
+         </div></div></div>
+         <p>输出样例1:</p>
+         <p>在这里给出相应的输出。例如：</p>
+         <div class="codeEditor readOnly"><div class="cm-editor"><div class="cm-scroller">
+           <div class="cm-gutters"><div class="cm-gutterElement">1</div></div>
+           <div class="cm-content" contenteditable="false" aria-readonly="true">
+             <div class="cm-line">60</div>
+           </div>
+         </div></div></div>
+       </div>
+     </body></html>`,
+    {
+      url: 'https://pintia.cn/problem-sets/2112364537537314816/exam/problems/type/7?problemSetProblemId=2112364537575063568',
+      runScripts: 'outside-only',
+      pretendToBeVisual: true,
+    },
+  );
+  return installInnerText(dom.window);
+}
+
+const examUi = createExamUiPage();
+const examUiProblem = await runScript(examUi, READ_PROBLEM_SCRIPT, {});
+check('新版考试页能找到 .rendered-markdown 题面', examUiProblem.includes('淘淘不喜欢数字'));
+check('KaTeX 公式被还原成 LaTeX 源码', examUiProblem.includes('$n \\le 100$'));
+check('样例从只读编辑器里读到了（不带行号槽）', examUiProblem.includes('样例 1 输入') && examUiProblem.includes('\n12\n'));
+check('样例输出也从只读编辑器里读到', examUiProblem.includes('样例 1 输出') && examUiProblem.includes('\n60\n'));
+check('题面里带上了语言', examUiProblem.includes('Python (python3)') || examUiProblem.includes('题目语言：python'));
+
+const examUiSamples = await runScript(examUi, READ_PROBLEM_SCRIPT, { samplesOnly: true });
+const examUiParsed = typeof examUiSamples === 'string' ? JSON.parse(examUiSamples) : examUiSamples;
+check(
+  'samplesOnly 从只读编辑器里取到样例',
+  examUiParsed.samples[0].input === '12' && examUiParsed.samples[0].output === '60',
+);
+check('samplesOnly 带上了页面上的语言（自动检查要按它选编译器）', examUiParsed.language === 'python3', examUiParsed);
+
+// 题面里的公式图片：alt 能读到就给出来，读不到也要说明这里有张图
+const imagePage = createExamUiPage();
+imagePage.document.querySelector('.rendered-markdown').insertAdjacentHTML(
+  'afterbegin',
+  '<p>如下图所示：<img src="https://static.pintia.cn/formula/a1b2.png" alt="等差数列求和公式" width="120" height="40"></p>',
+);
+const imageProblem = await runScript(imagePage, READ_PROBLEM_SCRIPT, {});
+check('题面里的图片会给出 alt 与链接', imageProblem.includes('等差数列求和公式') && imageProblem.includes('static.pintia.cn/formula/a1b2.png'));
+
+const noAltPage = createExamUiPage();
+noAltPage.document.querySelector('.rendered-markdown').insertAdjacentHTML(
+  'afterbegin',
+  '<p><img src="data:image/png;base64,iVBORw0KGgo=" width="30" height="20"></p>',
+);
+const noAltProblem = await runScript(noAltPage, READ_PROBLEM_SCRIPT, {});
+check('图片没有 alt 时也说明这里有张图', noAltProblem.includes('[图片') && noAltProblem.includes('data:image/png'));
 
 /* ---------- 读代码 ---------- */
 
@@ -458,7 +541,7 @@ setTimeout(() => slowPage.__setJudgeText('运行超时'), 30);
 const slow = await runScript(slowPage, SUBMIT_ANSWER_SCRIPT, { waitSeconds: 5, pollMs: 10 });
 check('轮询到结论后立刻返回', slow.includes('TLE'));
 
-// 关弹窗
+// 关弹窗：read_judge_result 拿到结论后会自动关，不再作为独立工具暴露给模型
 const dialogWindow = new JSDOM(
   `<!doctype html><html><body>
      <div class="pc-modal">
@@ -472,9 +555,274 @@ installInnerText(dialogWindow);
 dialogWindow.document.querySelector('.pc-close').addEventListener('click', () => {
   dialogWindow.document.querySelector('.pc-modal').remove();
 });
-check('close_dialogs：关闭控件在弹窗内部才会被点到', (await runScript(dialogWindow, CLOSE_DIALOGS_SCRIPT, {})).includes('已关掉 1 层弹窗'));
-check('弹窗确实被关掉了', !dialogWindow.document.querySelector('.pc-modal'));
-check('没有弹窗时如实告知', (await runScript(createPage({ withView: false }), CLOSE_DIALOGS_SCRIPT, {})).includes('没找到需要关的弹窗'));
+check('read_judge_result 拿到结论后会自动关掉弹窗', (await runScript(dialogWindow, READ_JUDGE_SCRIPT, {})).includes('判题结果'));
+check('弹窗确实被自动关掉了', !dialogWindow.document.querySelector('.pc-modal'));
+
+// close_dialogs 是独立工具：submit_answer 之前要能自己确认并关掉「提交结果 dialog」
+const closeWindow = new JSDOM(
+  `<!doctype html><html><body>
+     <div class="pc-modal">
+       <div class="pc-modal-content">Submit Result</div>
+       <button class="pc-button"><svg><use xlink:href="#pat-close"></use></svg></button>
+       <button class="pc-button">OK</button>
+     </div>
+   </body></html>`,
+  { url: 'https://pintia.cn/problem-sets/1/problems/1', runScripts: 'outside-only' },
+).window;
+installInnerText(closeWindow);
+closeWindow.document.querySelector('.pc-modal').addEventListener('click', () => {
+  closeWindow.document.querySelector('.pc-modal').remove();
+});
+check('close_dialogs 关掉了弹窗', (await runScript(closeWindow, CLOSE_DIALOGS_SCRIPT, {})).includes('已关掉'));
+check('close_dialogs 之后弹窗确实不在页面上了', !closeWindow.document.querySelector('.pc-modal'));
+check(
+  '没有弹窗时 close_dialogs 如实告知',
+  (await runScript(createPage({ withView: false }), CLOSE_DIALOGS_SCRIPT, {})).includes('没找到需要关的弹窗'),
+);
+
+// PTA 的英文考试页：关闭按钮是纯图标（<use xlink:href="#pat-close">），没有文字也没有 close 类名
+const iconCloseWindow = new JSDOM(
+  `<!doctype html><html><body>
+     <div class="modal_P0ST1 pc-modal">
+       <button class="pc-button pc-button-borderless"><svg><use xlink:href="#pat-close"></use></svg></button>
+       <button class="pc-button">OK</button>
+     </div>
+   </body></html>`,
+  { url: 'https://pintia.cn/problem-sets/1/exam/problems/type/7', runScripts: 'outside-only' },
+).window;
+installInnerText(iconCloseWindow);
+iconCloseWindow.document.querySelector('.pc-modal').addEventListener('click', () => {
+  iconCloseWindow.document.querySelector('.pc-modal').remove();
+});
+check('close_dialogs 认得英文页的图标关闭按钮', (await runScript(iconCloseWindow, CLOSE_DIALOGS_SCRIPT, {})).includes('已关掉'));
+check('英文页的弹窗确实被关掉了', !iconCloseWindow.document.querySelector('.pc-modal'));
+
+// PTA 的 bug：提交后判题结果不会自己刷新，页面上有「刷新 / Reload」按钮，
+// 不点它就一直停在「评测中 / Waiting」
+const reloadWindow = createJudgePage();
+reloadWindow.document.body.insertAdjacentHTML(
+  'beforeend',
+  '<button id="reload">刷新</button>',
+);
+let reloadClicks = 0;
+reloadWindow.document.querySelector('#reload').addEventListener('click', () => {
+  reloadClicks += 1;
+});
+const waited = await runScript(reloadWindow, SUBMIT_ANSWER_SCRIPT, { waitSeconds: 5, pollMs: 200 });
+check('提交时等待结论会点「刷新」按钮', reloadClicks > 0);
+check('等待超时会告诉模型可以刷新页面', waited.includes('refresh_page'));
+
+/* ---------- 模拟运行 / 编译器输出 ---------- */
+
+// 搭一个跟真实 PTA 一样的页面：作答区下面有「测试用例」按钮，点开才出现「运行测试」，
+// 跑完结果落在「编译器输出」区域里
+function createRunPage() {
+  const dom = new JSDOM(
+    `<!doctype html><html><body>
+       <div class="cm-editor"><div class="cm-content" contenteditable="true"></div></div>
+       <button id="tc">测试用例</button>
+       <div id="testPanel" style="display:none">
+         <button id="run">运行测试</button>
+         <div id="outputPanel">
+           <span>编译器输出</span>
+           <div id="out"></div>
+         </div>
+       </div>
+     </body></html>`,
+    {
+      url: 'https://pintia.cn/problem-sets/1/exam/problems/type/6?problemSetProblemId=1',
+      runScripts: 'outside-only',
+      pretendToBeVisual: true,
+    },
+  );
+  const window = installInnerText(dom.window);
+  const doc = window.document;
+  doc.querySelector('#tc').addEventListener('click', () => {
+    doc.querySelector('#testPanel').style.display = '';
+  });
+  doc.querySelector('#run').addEventListener('click', () => {
+    window.setTimeout(() => {
+      const out = doc.querySelector('#out');
+      out.innerHTML = '<pre>Traceback (most recent call last):\nEOFError: EOF when reading a line</pre>';
+    }, 30);
+  });
+  return window;
+}
+
+const runPage = createRunPage();
+const runOut = await runScript(runPage, SIMULATE_PTA_RUN_SCRIPT, { waitSeconds: 5, pollMs: 10 });
+check('simulate_pta_run 会先展开测试区再点运行', runPage.document.querySelector('#testPanel').style.display === '');
+check('simulate_pta_run 读回了编译器输出', runOut.includes('EOFError'));
+check('simulate_pta_run 的返回值里带编译器输出', runOut.includes('已点击「运行测试」'));
+
+const compileOut = await runScript(runPage, READ_PTA_COMPILE_RESULT_SCRIPT, {});
+check('read_pta_compile_result 读的是「编译器输出」区域', compileOut.includes('EOFError'));
+check('read_pta_compile_result 不会把题面样例混进来', !compileOut.includes('输入样例'));
+
+// 没有测试区也没有运行按钮时如实告知
+const noRunPage = createPage({ withView: false, body: '<div>没有运行入口</div>' });
+const noRunOut = await runScript(noRunPage, SIMULATE_PTA_RUN_SCRIPT, { waitSeconds: 5, pollMs: 10 });
+check('找不到运行按钮时如实告知', noRunOut.includes('没找到「运行测试 / Run Test Case」按钮'));
+
+// 还没跑过时，读取要提示怎么跑
+const notRunYet = createRunPage();
+const notRunOut = await runScript(notRunYet, READ_PTA_COMPILE_RESULT_SCRIPT, {});
+check('还没跑过时提示先点运行测试', notRunOut.includes('运行测试'));
+
+/* ---------- simulate_pta_run 传入数据集（英文考试页的真实结构） ---------- */
+
+// 复刻真实英文考试页：作答区在 CodingProblemAnswerForm 里，测试输入框是另一个可写编辑器，
+// 结果是两块只读 CodeMirror（Running Result / Expected Result）
+function createEnglishRunPage() {
+  const dom = new JSDOM(
+    `<!doctype html><html><body>
+       <div class="relative flex flex-col h-full answerInput_fu6n6">
+         <div class="CodingProblemAnswerForm_JoDvx flex flex-col flex-1">
+           <div class="cm-editor"><div class="cm-scroller">
+             <div class="cm-content" contenteditable="true"><div class="cm-line">print(1)</div></div>
+           </div></div>
+         </div>
+         <div class="flex flex-col bg-bg-base border-t border-solid border-border">
+           <button id="tc">Test Case</button>
+           <div id="panel" style="display:none">
+             <div class="codeEditor flex-1"><div class="cm-editor"><div class="cm-scroller">
+               <div class="cm-content" contenteditable="true"><div class="cm-line"></div></div>
+             </div></div></div>
+             <button id="run">Run Test Case</button>
+             <div id="results" style="display:none">
+               <span>Running Result</span>
+               <div class="cm-editor"><div class="cm-scroller">
+                 <div class="cm-content" contenteditable="false" aria-readonly="true">
+                   <div class="cm-line">42</div>
+                 </div>
+               </div></div>
+               <span>Expected Result</span>
+               <div class="cm-editor"><div class="cm-scroller">
+                 <div class="cm-content" contenteditable="false" aria-readonly="true">
+                   <div class="cm-line">42</div>
+                 </div>
+               </div></div>
+             </div>
+           </div>
+         </div>
+       </div>
+     </body></html>`,
+    {
+      url: 'https://pintia.cn/problem-sets/1/exam/problems/type/7?problemSetProblemId=1',
+      runScripts: 'outside-only',
+      pretendToBeVisual: true,
+    },
+  );
+  const window = installInnerText(dom.window);
+  const doc = window.document;
+  // 测试输入框在真实 PTA 上是有编辑器实例的（cmTile.view），插件靠它整段写入
+  let testInput = '';
+  const inputEditor = doc.querySelector('.codeEditor.flex-1 .cm-content');
+  inputEditor.cmTile = {
+    view: {
+      state: {
+        get doc() {
+          return { toString: () => testInput, length: testInput.length, lines: testInput.split('\n').length };
+        },
+        readOnly: false,
+      },
+      dispatch: (transaction) => {
+        if (transaction.changes && typeof transaction.changes.from === 'number') {
+          const from = transaction.changes.from;
+          const to = typeof transaction.changes.to === 'number' ? transaction.changes.to : from;
+          testInput = testInput.slice(0, from) + (transaction.changes.insert ?? '') + testInput.slice(to);
+        }
+      },
+    },
+  };
+  window.__testInput = () => testInput;
+  doc.querySelector('#tc').addEventListener('click', () => {
+    doc.querySelector('#panel').style.display = '';
+  });
+  doc.querySelector('#run').addEventListener('click', () => {
+    window.setTimeout(() => {
+      doc.querySelector('#results').style.display = '';
+    }, 30);
+  });
+  return window;
+}
+
+const englishRun = createEnglishRunPage();
+const englishRunOut = await runScript(englishRun, SIMULATE_PTA_RUN_SCRIPT, {
+  stdin: '7 8\n',
+  waitSeconds: 5,
+  pollMs: 10,
+});
+check('英文考试页的测试面板能展开', englishRun.document.querySelector('#panel').style.display === '');
+check('simulate_pta_run 把数据集写进了测试输入框', englishRunOut.includes('已把数据集写进测试输入框'));
+check(
+  '数据集写到了测试输入框（不是作答区）',
+  englishRun.__testInput().includes('7 8'),
+);
+check('作答区没有被数据集覆盖', englishRun.document.querySelector('.CodingProblemAnswerForm_JoDvx .cm-content').innerText.includes('print(1)'));
+check('英文页的结果读回来了', englishRunOut.includes('42'));
+check('英文页的期望输出也读回来了', englishRunOut.includes('期望输出'));
+
+// 没给 stdin 时不该动面板里原有的输入
+const englishNoStdin = createEnglishRunPage();
+const englishNoStdinOut = await runScript(englishNoStdin, SIMULATE_PTA_RUN_SCRIPT, { waitSeconds: 5, pollMs: 10 });
+check('不给数据集时不会去写测试输入框', !englishNoStdinOut.includes('已把数据集写进测试输入框'));
+
+/* ---------- 作答区的语言（Python 2 / Python 3 要分得清） ---------- */
+
+// 复刻 PTA 的 react-select：控制块显示当前语言，点开后菜单里是可选项
+function createLanguagePage(language, options = []) {
+  const dom = new JSDOM(
+    `<!doctype html><html><body>
+       <div class="select__control">${language}</div>
+       <div class="select__menu-portal" style="display:none">
+         ${options.map((option) => `<div class="select__option">${option}</div>`).join('')}
+       </div>
+     </body></html>`,
+    { url: 'https://pintia.cn/problem-sets/1/exam/problems/type/7', runScripts: 'outside-only' },
+  );
+  const window = dom.window;
+  const doc = window.document;
+  const control = doc.querySelector('.select__control');
+  const menu = doc.querySelector('.select__menu-portal');
+  doc.addEventListener('click', (event) => {
+    if (event.target === control || control.contains(event.target)) {
+      menu.style.display = '';
+      return;
+    }
+    const option = event.target.closest ? event.target.closest('.select__option') : null;
+    if (option) {
+      control.textContent = option.textContent;
+      menu.style.display = 'none';
+    }
+  });
+  return window;
+}
+
+const py3Page = createLanguagePage('Python (python3)', ['Python (python2)', 'Python (python3)']);
+const py3Info = await runScript(py3Page, LANGUAGE_SCRIPT, {});
+check('认得出页面上选的是 Python 3', py3Info.language === 'python3', py3Info);
+
+// 这里必须能分清 python2 与 python3：正则写在模板字符串里，
+// 反斜杠没转义对就会变成 /pythons*(?s*2/ 这种非法正则（实测踩过）
+const py2Page = createLanguagePage('Python (python2)', ['Python (python2)', 'Python (python3)']);
+const py2Info = await runScript(py2Page, LANGUAGE_SCRIPT, {});
+check('认得出页面上选的是 Python 2', py2Info.language === 'python2', py2Info);
+
+const cPage = createLanguagePage('C (gcc 9.2)', ['C (gcc 9.2)']);
+check('认得出页面上选的是 C', (await runScript(cPage, LANGUAGE_SCRIPT, {})).language === 'c');
+
+// 切语言：Python 2 的题切成 Python 3
+const switchPage = createLanguagePage('Python (python2)', ['Python (python2)', 'Python (python3)']);
+const switched = await runScript(switchPage, LANGUAGE_SCRIPT, { target: 'python3' });
+check('能把作答语言切到 Python 3', switched.ok === true, switched);
+check('切完之后页面上的语言变成 Python 3', switched.language === 'python3', switched);
+check('切换的说明写进了返回值', String(switched.detail || '').includes('Python (python3)'), switched);
+
+// 题组不允许切的时候要如实说明，不能假装成功
+const noPython3Page = createLanguagePage('Python (python2)', ['Python (python2)']);
+const refused = await runScript(noPython3Page, LANGUAGE_SCRIPT, { target: 'python3' });
+check('切不了的时候如实报告并列出可选语言', refused.ok === false && String(refused.detail || '').includes('Python (python2)'), refused);
 
 /* ---------- 提交按钮可用性 ---------- */
 

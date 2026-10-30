@@ -15,6 +15,12 @@ yarn-error.log*
 /public/engine/lld22-noeh
 /public/engine/sysroot22.tar
 
+# 内置 Python 运行时（由 scripts/fetch-pyodide.mjs 下载）
+/public/engine/pyodide
+
 .vscode/*
 # IDE 本地状态，不进版本库
 .idea/
+
+# Python 脚本的缓存
+__pycache__/

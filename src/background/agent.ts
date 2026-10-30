@@ -9,14 +9,16 @@ import {
 } from '../shared/tools';
 import { abortable, isAbortError, throwIfAborted } from '../shared/abort';
 import type { ApiMessage } from '../shared/types';
-import { compileAndRun, compareOutput, formatCompileResult } from './compile';
+import { compileAndRun, compareOutput, formatCompileResult, type CompileResult } from './compile';
 import { compileAndRunJs } from './compile';
 import { compileAndRunPython } from './compile';
+import { ext } from '../shared/browser';
 import { pokeEditor as poke, writeEditorCode } from './input-methods';
 import { createDebuggerIo, detach, pressKey } from './debugger-input';
 import {
   CHECK_READY_SCRIPT,
   CLOSE_DIALOGS_SCRIPT,
+  LANGUAGE_SCRIPT,
   READ_EDITOR_SCRIPT,
   READ_JUDGE_SCRIPT,
   READ_PROBLEM_SCRIPT,
@@ -252,6 +254,14 @@ export async function runTool(
   }
 
   if (name === 'write_editor_code') {
+    const notes: string[] = [];
+
+    // 作答区选的语言要是 Python 2，先切成 Python 3：
+    // 插件内置的 Python 运行器是 Python 3，模型写的也是 Python 3 的代码，
+    // 不切的话提交过去 PTA 用 Python 2 编译，直接报「Non-zero Exit Code」
+    const switched = await alignLanguage(tabId);
+    if (switched) notes.push(switched);
+
     const outcome = await abortable(
       writeEditorCode({
         tabId,
@@ -260,7 +270,6 @@ export async function runTool(
       }),
       signal,
     );
-    const notes: string[] = [];
 
     // 整段写入走的是编辑器状态，PTA 可能没标成「改过」；无条件尝试用真实按键戳一下
     try {
@@ -292,7 +301,27 @@ export async function runTool(
     const timeout = waitSeconds === undefined ? undefined : (waitSeconds + 20) * 1000;
     const result = await injectScript(tabId, PTA_SCRIPTS[name], args, timeout, signal);
     if (!result.ok) return { output: result.output, isError: true };
+    // 等超时了要当成错误报给模型：它该知道自己没拿到结论，可以刷新页面再来
+    if (name === 'submit_answer' || name === 'read_judge_result') {
+      const timedOut = /还没出结论|还没读到能归一化成状态码/.test(result.output);
+      if (timedOut) {
+        return {
+          output: result.output + '\n（等待超时。你有权调用 refresh_page 刷新页面，然后再调 read_judge_result 读一次；提交前记得先 close_dialogs 关掉提交结果 dialog。）',
+          isError: true,
+        };
+      }
+    }
     return { output: result.output, isError: false };
+  }
+
+  if (name === 'refresh_page') {
+    try {
+      await ext.tabs.reload(tabId);
+      return { output: '已刷新页面。', isError: false };
+    } catch (error) {
+      const reason = error instanceof Error ? error.message : String(error);
+      return { output: `刷新页面失败：${reason}`, isError: true };
+    }
   }
 
   if (name === 'simulate_keyboard_input') {
@@ -361,9 +390,89 @@ async function typeWithDebugger(
   }
 }
 
+/** 页面语言脚本返回的结构 */
+interface LanguageInfo {
+  language: string;
+  ok?: boolean;
+  detail?: string;
+}
+
+/** 解析页面语言脚本的返回值（它跑在页面里，返回值是 JSON 字符串） */
+function parseLanguageInfo(output: string): LanguageInfo {
+  try {
+    const parsed: unknown = JSON.parse(output);
+    if (!parsed || typeof parsed !== 'object') return { language: '' };
+    const info: LanguageInfo = { language: '' };
+    if ('language' in parsed && typeof parsed.language === 'string') info.language = parsed.language;
+    if ('ok' in parsed && typeof parsed.ok === 'boolean') info.ok = parsed.ok;
+    if ('detail' in parsed && typeof parsed.detail === 'string') info.detail = parsed.detail;
+    return info;
+  } catch {
+    return { language: '' };
+  }
+}
+
+/**
+ * 作答区选的语言是 Python 2 时，把它切成 Python 3。
+ *
+ * 有些题被题组配置成了 Python 2（页面上写「Python (python2)」），而插件内置的
+ * Python 运行器和模型写的代码都是 Python 3 的：不切的话本地自测通过，提交过去
+ * PTA 用 Python 2 编译，直接判「Non-zero Exit Code」。
+ */
+async function alignLanguage(tabId: number): Promise<string> {
+  try {
+    const read = await injectScript(tabId, LANGUAGE_SCRIPT, undefined, undefined, undefined);
+    if (parseLanguageInfo(read.output).language !== 'python2') return '';
+    const switched = await injectScript(tabId, LANGUAGE_SCRIPT, { target: 'python3' }, undefined, undefined);
+    const result = parseLanguageInfo(switched.output);
+    if (result.ok) return result.detail ?? '作答语言已切到 Python 3';
+    return `注意：这道题被配置成了 Python 2，切不到 Python 3（${result.detail ?? '下拉里没有'}）。`
+      + '本地运行器是 Python 3，自测结果可能和 PTA 实际编译的不一致；代码要按 Python 2 的写法来。';
+  } catch {
+    return '';
+  }
+}
+
+/** 语言名（用于给模型看的人话） */
+function langLabel(language: string): string {
+  switch (language) {
+    case 'python':
+    case 'python2':
+    case 'python3': return 'Python';
+    case 'js': return 'JavaScript';
+    case 'c': return 'C';
+    default: return language || '未知语言';
+  }
+}
+
+/** 页面上没认得出语言时，按代码长相猜一个（宁可不猜，也不要把 Python 当 C 报编译失败） */
+function guessLanguage(code: string): string {
+  if (/^\s*(#include|int\s+main\s*\()/m.test(code)) return 'c';
+  if (/^\s*(def |import |print\s*\(|class |if\s+__name__)/m.test(code)) return 'python';
+  if (/^\s*(function |const |let |var |console\.)/m.test(code)) return 'js';
+  return 'c';
+}
+
+/** 按语言跑一遍代码，返回统一的编译结果 */
+async function runWithLanguage(
+  language: string,
+  code: string,
+  stdin: string,
+  signal: AbortSignal,
+): Promise<CompileResult> {
+  if (language === 'python' || language === 'python2' || language === 'python3') {
+    return compileAndRunPython({ code, stdin, signal });
+  }
+  if (language === 'js') return compileAndRunJs({ code, stdin, signal });
+  return compileAndRun({ code, stdin, signal });
+}
+
 /**
  * 写入后的自动检查：拿页面上的样例把刚写的代码编译一遍并对输出，
  * 再看提交按钮现在可用不可用（确认页面认了这次修改）。
+ *
+ * 编译比对必须按**页面上选定的语言**走：PTA 的题目大部分是 Python，
+ * 一律按 C 编译会把好好的 Python 代码报成「编译失败」，那是假的。
  */
 async function verifyWrittenCode(
   inject: typeof injectScript,
@@ -379,21 +488,25 @@ async function verifyWrittenCode(
     const samplesRaw = await inject(tabId, READ_PROBLEM_SCRIPT, { samplesOnly: true }, undefined, signal);
     const parsed = JSON.parse(samplesRaw.output) as {
       samples?: { input: string; output: string }[];
+      language?: string;
     };
     const sample = parsed.samples?.[0];
+    const language = parsed.language ?? '';
     if (!sample) {
       checks.push('自动检查：题面里没识别出样例，跳过编译比对');
     } else {
-      const compiled = await abortable(compileAndRun({ code: source, stdin: sample.input, signal }), signal);
+      // 按题目语言挑编译器；语言认不出来时按代码长相猜一下
+      const lang = language || guessLanguage(source);
+      const compiled = await abortable(runWithLanguage(lang, source, sample.input, signal), signal);
       if (compiled.compileOutput) {
-        checks.push(`自动检查：编译失败——${compiled.compileOutput.split('\n')[0]}`);
+        checks.push(`自动检查：${langLabel(lang)}编译失败——${compiled.compileOutput.split('\n')[0]}`);
       } else if (!compiled.ok) {
-        checks.push(`自动检查：内置编译器返回 ${compiled.statusText}`);
+        checks.push(`自动检查：${langLabel(lang)}运行返回 ${compiled.statusText}`);
       } else {
         const diff = compareOutput(sample.output, compiled.stdout);
         checks.push(
           diff.same
-            ? `自动检查：样例 1（输入 ${JSON.stringify(sample.input.trim())}）输出一致`
+            ? `自动检查：样例 1（${langLabel(lang)}，输入 ${JSON.stringify(sample.input.trim())}）输出一致`
             : `自动检查：样例 1 输出不一致——${diff.detail}`,
         );
       }

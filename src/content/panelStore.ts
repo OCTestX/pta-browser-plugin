@@ -99,13 +99,6 @@ export function requestLayoutReset(): void {
   void persist();
 }
 
-export function resetLayoutTrigger(): void {
-  mutated = true;
-  currentState = { ...currentState, layoutResetCount: 0 };
-  emit();
-  void persist();
-}
-
 export function layoutResetCount(): number {
   return currentState.layoutResetCount;
 }

@@ -156,6 +156,16 @@ ext.runtime.onMessage.addListener((message: unknown, sender, sendResponse) => {
         }
         return;
       }
+      case 'ui/open-fullpage': {
+        // 悬浮窗最大化：打开全页面模式的标签页
+        try {
+          await ext.tabs.create({ url: ext.runtime.getURL('fullpage.html') });
+          sendResponse({ ok: true } satisfies StartChatResponse);
+        } catch (error) {
+          sendResponse({ ok: false, message: toErrorMessage(error) } satisfies StartChatResponse);
+        }
+        return;
+      }
       case 'models/list': {
         sendResponse(await listModels(message.baseURL, message.apiKey));
         return;

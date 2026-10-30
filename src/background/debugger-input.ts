@@ -37,10 +37,6 @@ export async function detach(tabId: number): Promise<void> {
   }
 }
 
-export function isAttached(tabId: number): boolean {
-  return attached.has(tabId);
-}
-
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
 /** 在页面主世界里求值（探针用），返回值必须能 JSON 化 */
@@ -109,39 +105,6 @@ export function createDebuggerIo(
       await sleep(ms);
     },
   };
-}
-
-export async function ensureAttached(tabId: number): Promise<void> {
-  await attach(tabId);
-}
-
-/** 一次性插入整段文本（CDP 的输入法式插入，单条命令） */
-export async function insertTextOnce(tabId: number, text: string): Promise<void> {
-  await attach(tabId);
-  await ext.debugger.sendCommand({ tabId }, 'Input.insertText', { text });
-}
-
-/** 带 Ctrl 的组合键（用于对照实验里的真粘贴） */
-export async function pressWithCtrl(tabId: number, key: string): Promise<void> {
-  await attach(tabId);
-  const code = `Key${key.toUpperCase()}`;
-  const keyCode = key.toUpperCase().charCodeAt(0);
-  await ext.debugger.sendCommand({ tabId }, 'Input.dispatchKeyEvent', {
-    type: 'rawKeyDown',
-    modifiers: 2,
-    windowsVirtualKeyCode: keyCode,
-    nativeVirtualKeyCode: keyCode,
-    code,
-    key,
-  });
-  await ext.debugger.sendCommand({ tabId }, 'Input.dispatchKeyEvent', {
-    type: 'keyUp',
-    modifiers: 2,
-    windowsVirtualKeyCode: keyCode,
-    nativeVirtualKeyCode: keyCode,
-    code,
-    key,
-  });
 }
 
 /**

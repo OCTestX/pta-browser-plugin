@@ -144,7 +144,7 @@ function getFirefoxWorker(): Worker {
   return firefoxWorker;
 }
 
-async function sendToEngine(data: { id: number; code: string; stdin: string }): Promise<void> {
+async function sendToEngine(data: { id: number; code: string; stdin: string; lang?: string }): Promise<void> {
   if (canOffscreen) {
     await ensureOffscreenDocument();
     await ext.runtime.sendMessage({ type: 'engine-request', data });
@@ -173,7 +173,12 @@ function keepAliveWhile(id: number): () => void {
  * 传了 signal 就能被「停止」打断：中止会直接把引擎换掉（死循环的程序没有检查点，
  * 留着它会把后面的编译一起堵住），然后以 AbortError 收场。
  */
-export function runInEngine(code: string, stdin: string, signal?: AbortSignal): Promise<EngineRunResult> {
+export function runInEngine(
+  code: string,
+  stdin: string,
+  signal?: AbortSignal,
+  lang?: 'c' | 'python',
+): Promise<EngineRunResult> {
   installListener();
   const attempt = () =>
     new Promise<EngineRunResult>((resolve, reject) => {
@@ -209,7 +214,7 @@ export function runInEngine(code: string, stdin: string, signal?: AbortSignal): 
       armTimer(id, entry, 'compile');
       signal?.addEventListener('abort', onAbort, { once: true });
 
-      void sendToEngine({ id, code, stdin }).catch((error: unknown) => {
+      void sendToEngine({ id, code, stdin, lang }).catch((error: unknown) => {
         pending.delete(id);
         clearTimeout(entry.timer);
         stopKeepAlive();

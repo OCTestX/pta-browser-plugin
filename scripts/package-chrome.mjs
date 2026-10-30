@@ -25,12 +25,28 @@ const manifest = JSON.parse(readFileSync(path.join(SOURCE_DIR, 'manifest.json'),
 // 内置编译器的大资源必须真的进了包：少了它们插件就没有本地编译器（曾经打包时漏下，
 // 结果发出去的包只有 0.6MB，用户装上才发现编译不了）
 const ENGINE_ASSETS = ['engine/clang22-noeh', 'engine/lld22-noeh', 'engine/sysroot22.tar'];
+// 内置 Python 运行时：Pyodide 三件套（约 12MB），和 C 编译器一样需要本地校验。
+// 每个文件单独设下限：pyodide.mjs 只有 13KB，不能跟 wasm 用同一个阈值。
+const PYODIDE_ASSETS = [
+  { path: 'engine/pyodide/pyodide.mjs', minSize: 10 * 1024 },
+  { path: 'engine/pyodide/pyodide.asm.wasm', minSize: 5 * 1024 * 1024 },
+  { path: 'engine/pyodide/python_stdlib.zip', minSize: 1024 * 1024 },
+  { path: 'engine/pyodide/pyodide.asm.js', minSize: 512 * 1024 },
+  { path: 'engine/pyodide/pyodide-lock.json', minSize: 50 * 1024 },
+];
 const MIN_ENGINE_SIZE = 5 * 1024 * 1024;
 for (const asset of ENGINE_ASSETS) {
   const file = path.join(SOURCE_DIR, asset);
   const size = existsSync(file) ? statSync(file).size : 0;
   if (size < MIN_ENGINE_SIZE) {
     throw new Error(`✗ ${asset} 没进包（${(size / 1024 / 1024).toFixed(1)} MB）：先跑 npm run fetch-engine`);
+  }
+}
+for (const { path: asset, minSize } of PYODIDE_ASSETS) {
+  const file = path.join(SOURCE_DIR, asset);
+  const size = existsSync(file) ? statSync(file).size : 0;
+  if (size < minSize) {
+    throw new Error(`✗ ${asset} 没进包（${(size / 1024 / 1024).toFixed(2)} MB）：先跑 npm run fetch-pyodide`);
   }
 }
 

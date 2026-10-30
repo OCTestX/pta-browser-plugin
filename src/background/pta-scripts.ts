@@ -346,7 +346,9 @@ const HELPERS = `
   // 关弹窗：ESC → 在识别到的弹窗内部找关闭控件 → 点文字按钮；最多三轮（关一层常常还压着一层）
   const dismissOverlays = () => {
     let closed = 0;
-    const dialogSelectors = ['[class*=modal]', '[class*=dialog]', '[class*=overlay]', '[class*=popup]', '.el-dialog', '.ant-modal'];
+    const dialogSelectors = ['[class*=modal]', '[class*=dialog]', '[class*=overlay]', '[class*=popup]', '.el-dialog', '.ant-modal', '.pc-modal'];
+    // PTA 的界面有中英文两套（考试页是英文的），关闭按钮的文案两种都要认
+    const CLOSE_TEXTS = ['关闭', '确定', '我知道了', '知道了', '取消', 'OK', 'Close', 'Cancel', 'Confirm'];
     for (let round = 0; round < 3; round++) {
       let did = false;
       document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', keyCode: 27, bubbles: true }));
@@ -356,11 +358,18 @@ const HELPERS = `
         try { document.querySelectorAll(selector).forEach((node) => dialogs.push(node)); } catch (e) {}
       }
       for (const dialog of dialogs) {
-        const closers = Array.from(dialog.querySelectorAll('[class*=close], [class*=dismiss], [aria-label*=close i], .pc-close, button'));
+        const closers = Array.from(dialog.querySelectorAll(
+          '[class*=close], [class*=dismiss], [aria-label*=close i], .pc-close, button',
+        ));
         for (const closer of closers) {
           const text = textOf(closer);
-          const isTextButton = ['关闭', '确定', '我知道了', '知道了', '取消'].includes(text);
-          const looksClose = /close|dismiss/i.test(closer.className || '') || /close/i.test(closer.getAttribute('aria-label') || '');
+          const isTextButton = CLOSE_TEXTS.includes(text);
+          // PTA 的关闭按钮是个纯图标：<svg><use xlink:href="#pat-close"></use></svg>，
+          // 没有文字也没有 close 类名，只能从 use 的引用里认
+          const iconClose = !!closer.querySelector('use[*|href*="close" i]');
+          const looksClose = /close|dismiss/i.test(closer.className || '')
+            || /close/i.test(closer.getAttribute('aria-label') || '')
+            || iconClose;
           if (isTextButton || looksClose) {
             try { closer.click(); closed += 1; did = true; break; } catch (e) {}
           }
@@ -387,6 +396,200 @@ const HELPERS = `
       detail: '回读比对：与目标不一致（第 ' + (at + 1) + ' 行起），期望「' + brief(want[at]) + '」，实际「' + brief(got[at]) + '」',
     };
   };
+
+  // ---- 题面里的公式与图片 ----
+
+  // KaTeX / MathML 公式：annotation 里存着原始 LaTeX，直接取出来最准
+  // （PTA 的题面用 KaTeX 渲染公式，innerText 只会得到一堆排版后的碎片字符）
+  const katexLatex = (node) => {
+    const annotation = node.querySelector('annotation[encoding="application/x-tex"]');
+    if (annotation && annotation.textContent) return annotation.textContent.trim();
+    const math = node.querySelector('math');
+    if (math) {
+      const alt = math.getAttribute('alt') || math.getAttribute('alttext');
+      if (alt) return alt.trim();
+    }
+    return '';
+  };
+
+  // 题面里的图片：多数是公式图。src 可能是 data: URI，也可能是普通链接。
+  // 能从 alt / title 里拿到文字就带出来，拿不到就告诉模型「这里有一张图」
+  const imagePlaceholder = (node) => {
+    const alt = (node.getAttribute('alt') || '').trim();
+    const title = (node.getAttribute('title') || '').trim();
+    let src = (node.getAttribute('src') || '').trim();
+    if (src.startsWith('data:')) {
+      // data: URI 太长，只留个类型标记
+      const mime = /^data:([^;,]+)/.exec(src);
+      src = mime ? 'data:' + mime[1] : 'data:…';
+    }
+    const label = alt || title;
+    const width = node.getAttribute('width');
+    const height = node.getAttribute('height');
+    const size = width && height ? '（' + width + '×' + height + '）' : '';
+    return '[图片' + size + (label ? '：' + label : '（图片，题面里没有可读的文字说明）') + (src ? ' <' + src + '>' : '') + ']';
+  };
+
+  // 把题面 DOM 摊平成纯文本：公式换回 LaTeX，图片换成占位说明，
+  // 只读编辑器（样例框）跳过（样例单独读，不掺进正文）
+  const flattenStatement = (root) => {
+    const parts = [];
+    const walk = (node) => {
+      if (node.nodeType === 3) {
+        // 源码里的换行与缩进不是内容：压成空格，段落分隔交给块级元素
+        const value = (node.nodeValue || '').replace(/\\s+/g, ' ');
+        if (value.trim()) parts.push(value);
+        return;
+      }
+      if (node.nodeType !== 1) return;
+      const tag = node.tagName;
+      if (tag === 'SCRIPT' || tag === 'STYLE' || tag === 'NOSCRIPT') return;
+      if (tag === 'IMG') {
+        parts.push(imagePlaceholder(node));
+        return;
+      }
+      // KaTeX：取 LaTeX 源码，不再展开排版碎片
+      if (node.classList && node.classList.contains('katex')) {
+        const latex = katexLatex(node);
+        parts.push(latex ? '$' + latex + '$' : '[公式]');
+        return;
+      }
+      // 只读的 CodeMirror 是样例框，正文里不要它
+      if (node.classList && node.classList.contains('cm-content')) {
+        const readonly = node.getAttribute('aria-readonly') === 'true'
+          || node.getAttribute('contenteditable') === 'false';
+        if (readonly) return;
+      }
+      if (tag === 'BR') { parts.push('\\n'); return; }
+      const isBlock = /^(P|DIV|LI|UL|OL|TABLE|TR|TD|TH|H1|H2|H3|H4|H5|H6|PRE|BLOCKQUOTE|SECTION|ARTICLE|HR)$/.test(tag);
+      if (isBlock) parts.push('\\n');
+      for (let child = node.firstChild; child; child = child.nextSibling) walk(child);
+      if (isBlock) parts.push('\\n');
+    };
+    walk(root);
+    return parts.join('')
+      .replace(/[ \\t]+\\n/g, '\\n')
+      .replace(/\\n[ \\t]+/g, '\\n')
+      .replace(/[ \\t]{2,}/g, ' ')
+      .replace(/\\n{3,}/g, '\\n\\n')
+      .trim();
+  };
+
+  // 页面上选的编程语言：自动检查要按它挑编译器，
+  // 否则 Python 题会被按 C 编译，报出来的「编译失败」是假的
+  const detectLanguage = () => {
+    const candidates = [];
+    for (const node of document.querySelectorAll('select')) {
+      const option = node.selectedOptions && node.selectedOptions[0];
+      if (option) candidates.push((option.textContent || '').trim());
+    }
+    for (const node of document.querySelectorAll(
+      '[class*=select__control], [class*=select__value-container], [role=combobox]',
+    )) {
+      candidates.push((node.innerText || node.textContent || '').trim());
+    }
+    for (const value of candidates) {
+      const text = value.toLowerCase();
+      if (!text || text.length > 40) continue;
+      // Python 要分版本：页面选的是 python2 时，插件内置的运行器（Python 3）
+      // 跑出来的结果跟 PTA 实际编译的不是一回事
+      if (/python/.test(text)) {
+        // 页面上的写法是「Python (python3)」这种，版本号在括号里
+        const version = /python[^0-9]*([23])/.exec(text);
+        if (version) return version[1] === '2' ? 'python2' : 'python3';
+        return 'python';
+      }
+      if (/^c\\b|\\bc\\s*\\(|c语言|gcc/.test(text)) return 'c';
+      if (/javascript|js语言|node/.test(text)) return 'js';
+      if (/c\\+\\+|cpp/.test(text)) return 'cpp';
+      if (/java/.test(text)) return 'java';
+      if (/golang|go语言/.test(text)) return 'go';
+    }
+    return '';
+  };
+
+  // 换掉作答区选定的语言。
+  // 有些题被题组配置成了 Python 2（页面上写「Python (python2)」），
+  // 而插件内置的 Python 运行器是 Python 3，写 Python 3 的代码提交过去会直接报
+  // 「Non-zero Exit Code」。这里把页面上的语言切到 Python 3（题组允许的话）。
+  const switchLanguage = (target) => {
+    const wanted = String(target || '').toLowerCase();
+    if (!wanted) return { ok: false, detail: '没说要切到哪个语言' };
+
+    const control = document.querySelector('.select__control');
+    if (!control) return { ok: false, detail: '页面上找不到语言选择器' };
+
+    // 先记下现在的选择，切完要对比
+    const before = textOf(control).trim();
+    control.click();
+    const options = Array.from(document.querySelectorAll('.select__option, [role=option]'));
+    const match = options.find((option) => {
+      const text = textOf(option).trim().toLowerCase();
+      if (!text || text.length > 40) return false;
+      if (option.classList.contains('select__option--is-disabled')) return false;
+      if (wanted === 'python3') return /python[^0-9]*3/.test(text);
+      if (wanted === 'python2') return /python[^0-9]*2/.test(text);
+      return text.indexOf(wanted) >= 0;
+    });
+    if (!match) {
+      // 把下拉收起来，别留个遮在页面上的菜单
+      document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', keyCode: 27, bubbles: true }));
+      return { ok: false, detail: '这个题不允许切到 ' + wanted + '（可选：' + options.map((o) => textOf(o).trim()).filter(Boolean).slice(0, 6).join(' / ') + '）' };
+    }
+    const label = textOf(match).trim();
+    match.click();
+    return { ok: true, detail: '作答语言已从「' + before + '」切到「' + label + '」' };
+  };
+
+  // PTA 有个 bug：提交后判题结果不会自己更新，页面上会出现一个「刷新 / Reload」按钮，
+  // 不点它就一直停在「评测中 / Waiting」。提交后要定时点它
+  const findReloadButton = () => {
+    const labels = ['刷新', 'Reload', 'Refresh', '重新加载'];
+    for (const label of labels) {
+      for (const node of document.querySelectorAll('button, [role=button], a')) {
+        if (buttonLabel(node) === label) return node;
+      }
+    }
+    for (const label of labels) {
+      for (const node of document.querySelectorAll('button, [role=button], a')) {
+        if (buttonLabel(node).includes(label)) return node;
+      }
+    }
+    return null;
+  };
+
+  // 测试面板里的「输入」框：它是可写编辑器，但不是作答区那个。
+  // 靠祖先里有没有 CodingProblemAnswerForm 区分（作答区在这个表单里）
+  const findTestInputEditor = () => {
+    const editors = Array.from(document.querySelectorAll('.cm-content'));
+    const writable = editors.filter((e) => (
+      isEditableElement(e) && !e.closest('[class*=CodingProblemAnswerForm]')
+    ));
+    if (writable.length === 0) return null;
+    // 多个时取内容最长的那个（通常是当前测试用例的输入）
+    return writable.reduce((a, b) => ((b.innerText || '').length > (a.innerText || '').length ? b : a));
+  };
+
+  // 把一段文本写进可写的 CodeMirror：优先用编辑器实例（能整段原子写入），
+  // 拿不到实例就退回选中原内容再插入
+  const writeIntoEditor = (element, text) => {
+    let view = null;
+    try { view = element.cmTile && element.cmTile.view ? element.cmTile.view : null; } catch (e) {}
+    if (view && view.state && view.state.doc && typeof view.dispatch === 'function') {
+      view.dispatch({ changes: { from: 0, to: view.state.doc.length, insert: text } });
+      return '编辑器实例';
+    }
+    element.focus();
+    const selection = document.getSelection();
+    if (selection) {
+      const range = document.createRange();
+      range.selectNodeContents(element);
+      selection.removeAllRanges();
+      selection.addRange(range);
+    }
+    try { document.execCommand('insertText', false, text); } catch (e) {}
+    return 'DOM 插入';
+  };
 `;
 
 /** 定位并抠出题面 */
@@ -394,9 +597,10 @@ export const READ_PROBLEM_SCRIPT = `${HELPERS}
 const maxChars = typeof __args.maxChars === 'number' ? __args.maxChars : 6000;
 const MARKERS = ['题目描述', '题目背景', '题目要求', '问题描述', '输入格式', '输出格式', '样例输入', '样例输出', '输入样例', '输出样例'];
 
-// 一、先按常见类名找，注意要遍历「所有」匹配：
-// 只取第一个匹配的话，第一个元素文本太少就会把整个选择器丢掉（PTA 的考试页就是这样）
+// 一、找题面容器。PTA 现在的考试页把题面渲染进 .rendered-markdown，
+//    公式（KaTeX）和样例框（只读 CodeMirror）都在这个容器里面
 const specific = [
+  '.rendered-markdown',
   '.problem-content', '.problem-statement', '.pt12-problem-content', '.problem-description',
   '[class*=problem-statement]', '[class*=statement]', '[class*=problem-content]',
 ];
@@ -405,13 +609,15 @@ for (const selector of specific) {
   let nodes = [];
   try { nodes = Array.from(document.querySelectorAll(selector)); } catch (e) { continue; }
   for (const node of nodes) {
-    const text = textOf(node);
-    if (text.length > 40 && (!hit || text.length > hit.text.length)) hit = { selector, text };
+    // 用摊平后的长度比：innerText 会把 KaTeX 的排版碎片算进去，长度不可靠
+    const text = flattenStatement(node);
+    if (text.length > 40 && (!hit || text.length > hit.text.length)) hit = { selector, text, node };
   }
 }
 
-// 二、类名对不上时按小标题定位：同时出现两个以上小标题标记的「最小」容器
-if (!hit || hit.text.length < 200) {
+// 二、类名对不上时按小标题定位：同时出现两个以上小标题标记的「最小」容器。
+//    只在没找到已知类名的容器时才用，否则会把已经找好的 .rendered-markdown 换掉
+if (!hit) {
   let best = null;
   let nodes = [];
   try { nodes = Array.from(document.querySelectorAll('div, section, article, main, form')); } catch (e) {}
@@ -421,19 +627,23 @@ if (!hit || hit.text.length < 200) {
     const marks = MARKERS.filter((m) => text.indexOf(m) >= 0).length;
     if (marks < 2) continue;
     if (!best || marks > best.marks || (marks === best.marks && text.length < best.text.length)) {
-      best = { selector: '按小标题定位的容器（含 ' + marks + ' 个小标题）', text, marks };
+      best = { selector: '按小标题定位的容器（含 ' + marks + ' 个小标题）', text, marks, node };
     }
   }
-  if (best) hit = best;
+  if (best) {
+    // 同样要摊平：公式得还原成 LaTeX，不能留排版碎片
+    best.text = flattenStatement(best.node);
+    hit = best;
+  }
 }
 
-let raw = hit ? hit.text : textOf(document.body);
+let text = hit ? hit.text : textOf(document.body);
 let source = hit ? hit.selector : '整页正文';
 if (!hit) {
   // 退到整页正文时，从第一个小标题开始截，把前面的导航和侧栏丢掉
-  const positions = MARKERS.map((m) => raw.indexOf(m)).filter((i) => i >= 0);
+  const positions = MARKERS.map((m) => text.indexOf(m)).filter((i) => i >= 0);
   if (positions.length > 0) {
-    raw = raw.slice(Math.min.apply(null, positions));
+    text = text.slice(Math.min.apply(null, positions));
     source = '整页正文（只取小标题之后的部分）';
   }
 }
@@ -443,20 +653,41 @@ if (!hit) {
 const NOISE = [
   '题目总览', '作答', '题数', '编程题', '图例', 'Toggle Sidebar', '上一题', '下一题',
   '全屏浏览', '切换布局', '复制内容', '格式', '全屏', '题目描述', '我的提交', '提交本题作答', '复制',
+  'Problem Description', 'View In Fullscreen', 'Switch Layout', '收起', '[ in ]', '[ out ]',
 ];
-const lines = raw.split('\\n').map((line) => line.replace(/[ \\t]+$/, '')).filter((line) => {
+const lines = text.split('\\n').map((line) => line.replace(/[ \\t]+$/, '')).filter((line) => {
   const value = line.trim();
   if (!value) return true;
   if (NOISE.indexOf(value) >= 0) return false;
   if (/^当前\\d+\\s*-\\s*\\d+项/.test(value)) return false;
   return true;
 });
-let text = lines.join('\\n').replace(/\\n{3,}/g, '\\n\\n').trim();
-if (text.length > maxChars) text = text.slice(0, maxChars) + '\\n…（题面过长，已截断）';
+text = lines.join('\\n').replace(/\\n{3,}/g, '\\n\\n').trim();
 
-// 四、顺手把样例抠出来，模型可以直接拿去当 compile_and_run_c 的 stdin
-const blocks = [];
-{
+// 四、抠出样例。PTA 的样例是只读的 CodeMirror（题面里那块只读编辑器），
+//    不是正文里的纯文本行——按文本行去猜会把「复制内容」「1」「2」这些 UI 碎片也捞进来
+const sampleValues = [];
+if (hit && hit.node) {
+  let editors = [];
+  try { editors = Array.from(hit.node.querySelectorAll('.cm-content')); } catch (e) {}
+  for (const editor of editors) {
+    const readonly = editor.getAttribute('aria-readonly') === 'true'
+      || editor.getAttribute('contenteditable') === 'false';
+    if (!readonly) continue;
+    const value = readFromDom(editor).trim();
+    if (value) sampleValues.push(value);
+  }
+}
+
+const pairs = [];
+if (sampleValues.length >= 2) {
+  // 只读编辑器在页面里的顺序就是「输入、输出、输入、输出……」
+  for (let index = 0; index + 1 < sampleValues.length; index += 2) {
+    pairs.push({ input: sampleValues[index], output: sampleValues[index + 1] });
+  }
+} else {
+  // 退路：题面是纯文本的老页面，按小标题分组
+  const blocks = [];
   let current = null;
   for (const line of text.split('\\n').map((l) => l.trim())) {
     const isInput = /^(样例\\s*输入|输入样例|示例\\s*\\d*\\s*的?输入|sample\\s*input)/i.test(line);
@@ -471,37 +702,39 @@ const blocks = [];
     if (/^(复制|Copy)$/i.test(line)) continue;
     current.lines.push(line);
   }
-}
-const pairs = [];
-let pendingInput = null;
-for (const block of blocks) {
-  const body = block.lines.join('\\n').trim();
-  if (block.kind === 'in') {
-    pendingInput = { input: body, output: '' };
-  } else if (pendingInput) {
-    pendingInput.output = body;
-    pairs.push(pendingInput);
-    pendingInput = null;
+  let pendingInput = null;
+  for (const block of blocks) {
+    const body = block.lines.join('\\n').trim();
+    if (block.kind === 'in') {
+      pendingInput = { input: body, output: '' };
+    } else if (pendingInput) {
+      pendingInput.output = body;
+      pairs.push(pendingInput);
+      pendingInput = null;
+    }
   }
 }
 
 const title = (document.title || textOf(document.querySelector('h1')) || '').trim();
 const idMatch = location.pathname.match(/\\/(\\d{6,})/);
+const language = detectLanguage();
 
 // 只取样例：给 write_editor_code 的自动检查用，返回结构化数据
 if (__args.samplesOnly === true) {
-  return { title, url: location.href, samples: pairs };
+  return { title, url: location.href, samples: pairs, language };
 }
 
 const out = ['题目：' + (title || '（没取到标题）'), '地址：' + location.href];
 if (idMatch) out.push('题目 ID：' + idMatch[1]);
+if (language) out.push('题目语言：' + language);
 if (pairs.length > 0) {
-  out.push('', '样例（共 ' + pairs.length + ' 组，可以直接当 compile_and_run_c 的 stdin）：');
+  out.push('', '样例（共 ' + pairs.length + ' 组，可以直接当 compile_and_run_* 的 stdin）：');
   pairs.slice(0, 5).forEach((pair, index) => {
     out.push('样例 ' + (index + 1) + ' 输入：' + fence + '\\n' + (pair.input || '（空）') + '\\n' + fence);
     out.push('样例 ' + (index + 1) + ' 输出：' + fence + '\\n' + (pair.output || '（空）') + '\\n' + fence);
   });
 }
+if (text.length > maxChars) text = text.slice(0, maxChars) + '\\n…（题面过长，已截断）';
 out.push('', '题面（来源：' + source + '，' + text.length + ' 字）：', text);
 return out.join('\\n');
 `;
@@ -546,6 +779,8 @@ globalThis.__ptaJudgeSnapshot = null;
 
 const deadline = Date.now() + waitSeconds * 1000;
 let latest = { text: '', status: null };
+let reloadClicks = 0;
+let lastReloadAt = 0;
 while (Date.now() < deadline) {
   await sleepOrAbort(pollMs);
   if (aborted()) return '已按用户要求停止等待判题结论';
@@ -556,9 +791,17 @@ while (Date.now() < deadline) {
   if (now.status && now.text && now.text !== before.text) {
     return '已点击提交（' + found.how + (closed ? '，先关掉了 ' + closed + ' 层弹窗' : '') + '）。\\n判题结论：' + now.status + '\\n原文：' + now.text.slice(0, 300);
   }
+  // PTA 的老毛病：判题结果不会自己刷新，页面上有「刷新 / Reload」按钮时必须点它，
+  // 否则永远停在「评测中 / Waiting」。每隔一秒点一次。
+  const reload = findReloadButton();
+  if (reload && Date.now() - lastReloadAt >= 1000) {
+    lastReloadAt = Date.now();
+    try { reload.click(); reloadClicks += 1; } catch (e) {}
+  }
 }
 
-return '已点击提交（' + found.how + '）。\\n等了 ' + waitSeconds + ' 秒还没出结论，当前页面上看到的是：' + (latest.text || '（没读到判题文字）') + '\\n可以稍后再调 read_judge_result 看结果（拿到结论之前不要关弹窗）。';
+const reloadNote = reloadClicks > 0 ? '（期间点了 ' + reloadClicks + ' 次「刷新」按钮）' : '';
+return '已点击提交（' + found.how + '）。\\n等了 ' + waitSeconds + ' 秒还没出结论' + reloadNote + '，当前页面上看到的是：' + (latest.text || '（没读到判题文字）') + '\\n你可以调用 refresh_page 刷新页面后再调 read_judge_result 看结果（拿到结论之前不要关弹窗）。';
 `;
 
 /**
@@ -577,13 +820,20 @@ const pollMs = Math.min(Math.max(Number.isFinite(askedPoll) ? askedPoll : 300, 5
 
 watchJudge();
 
+// 拿到结论后顺手把判题弹窗关掉：弹窗一直挡着作答区，用户没法继续改代码、也没法再次提交。
+// 关不掉不算失败（结论已经读到了），只在返回值里说明一下，让用户知道可能要手动关。
 const describe = (hit, source) => {
+  const closed = dismissOverlays();
   const head = hit.status ? '判题结论：' + hit.status + '\\n' : '还没出结论（页面上只有中间状态）。\\n';
-  return head + source + '原文：' + hit.text.slice(0, 400);
+  const tail = closed > 0
+    ? '\\n（已自动关掉 ' + closed + ' 层弹窗）'
+    : (hit.status ? '\\n（判题弹窗没有自动关掉，如果接下来无法提交，请你手动关闭它）' : '');
+  return head + source + '原文：' + hit.text.slice(0, 400) + tail;
 };
 
 const deadline = Date.now() + waitSeconds * 1000;
 let latest = rememberJudge(readJudgeText());
+let lastReloadAt = 0;
 if (latest.status && latest.text) return describe(latest, '');
 
 // 快照只在「弹窗已经不在页面上了」时才用来兜底：页面上还有判题文字就说明这次还在评测，
@@ -607,15 +857,29 @@ while (Date.now() < deadline) {
       return describe(late, '（判题弹窗在等待过程中被关掉了，这是页面留下的判题记录）\\n');
     }
   }
+  // 判题结果不会自己更新：页面上有「刷新 / Reload」按钮就点它，每秒一次
+  const reload = findReloadButton();
+  if (reload && Date.now() - lastReloadAt >= 1000) {
+    lastReloadAt = Date.now();
+    try { reload.click(); } catch (e) {}
+  }
 }
 
-return '等了 ' + waitSeconds + ' 秒还没读到能归一化成状态码的判题结论。\\n页面上现在看到的是：' + (latest.text || '（没读到判题文字，弹窗可能已经被关掉了）');
+return '等了 ' + waitSeconds + ' 秒还没读到能归一化成状态码的判题结论。\\n页面上现在看到的是：' + (latest.text || '（没读到判题文字，弹窗可能已经被关掉了）') + '\\n你可以调用 refresh_page 刷新页面后再读一次。';
 `;
 
-/** 关掉挡在前面的弹窗 */
+/** 读作答区选定的语言，或者把它换成另一个 */
+export const LANGUAGE_SCRIPT = `${HELPERS}
+const current = detectLanguage();
+if (!__args.target) return { language: current };
+const switched = switchLanguage(__args.target);
+return { language: detectLanguage(), ...switched };
+`;
+
+/** 关掉挡在前面的弹窗（判题结果弹窗、提交结果 dialog 等） */
 export const CLOSE_DIALOGS_SCRIPT = `${HELPERS}
 const closed = dismissOverlays();
-return closed > 0 ? '已关掉 ' + closed + ' 层弹窗' : '没找到需要关的弹窗';
+return closed > 0 ? '已关掉 ' + closed + ' 层弹窗' : '没找到需要关的弹窗（页面上没有挡路的 dialog）';
 `;
 
 /** 看提交按钮现在能不能点（写入之后确认页面有没有认这次修改） */
@@ -740,34 +1004,217 @@ if (method === 'cdpClickTyping') {
 return json ? { ok: false, method, detail: '没有实现的方法：' + method, length: -1 } : '没有实现的方法：' + method;
 `;
 
-/** 读取 PTA 页面上最近一次编译/运行的结果（编译错误、运行输出等） */
+/**
+ * 读取 PTA 页面上「编译器输出」区域的内容（最近一次运行/编译的输出）。
+ *
+ * 实测结构：点开「测试用例」后，页面上有一块标题为「编译器输出」的区域，
+ * 里面是若干个 pre/code 块（stdout、stderr、异常堆栈各一块）。
+ * 找不到「编译器输出」标题时，退到通用选择器，把页面上像输出的块都收回来。
+ */
 export const READ_PTA_COMPILE_RESULT_SCRIPT = `${HELPERS}
-const collect = () => {
-  const parts = [];
-  const selectors = ['.compile-result', '.run-result', '.judge-result', '.result', 'pre', 'code'];
+const push = (out, seen, value) => {
+  if (!value) return;
+  if (seen.has(value)) return;
+  seen.add(value);
+  out.push(value);
+};
+
+// 一、按「编译器输出」这个标题定位那块区域，最准
+const labels = Array.from(document.querySelectorAll('span, div, p, label, h1, h2, h3, h4'));
+let panel = null;
+for (const label of labels) {
+  if (label.children.length > 0) continue; // 只看叶子节点，标题本身是叶子
+  const t = textOf(label);
+  if (t !== '编译器输出' && t !== '编译输出' && t !== '运行输出') continue;
+  // 往上找一层：标题和内容通常在同一个容器里
+  let node = label.parentElement;
+  for (let depth = 0; node && depth < 4; depth += 1) {
+    const blocks = node.querySelectorAll('pre, code, [class*=output], [class*=stdout], [class*=stderr]');
+    if (blocks.length > 0) { panel = node; break; }
+    node = node.parentElement;
+  }
+  if (panel) break;
+}
+
+const out = [];
+const seen = new Set();
+if (panel) {
+  const blocks = panel.querySelectorAll('pre, code, [class*=output], [class*=stdout], [class*=stderr]');
+  for (const block of blocks) push(out, seen, textOf(block));
+  // 容器里没有 pre/code，但有直接文本（少见）：把容器自己的文字也收上
+  if (out.length === 0) {
+    const t = textOf(panel).replace(/^编译器输出/, '').trim();
+    push(out, seen, t);
+  }
+}
+
+// 二、退路：页面上所有像输出的块
+if (out.length === 0) {
+  const selectors = ['pre', 'code', 'textarea', '[class*=output]', '[class*=stdout]', '[class*=stderr]', '[class*=console]', '[class*=log]'];
   for (const sel of selectors) {
-    const nodes = Array.from(document.querySelectorAll(sel));
+    let nodes = [];
+    try { nodes = Array.from(document.querySelectorAll(sel)); } catch (e) { continue; }
     for (const node of nodes) {
+      if (node.tagName === 'SCRIPT' || node.tagName === 'STYLE') continue;
       const t = textOf(node);
-      if (t && t.length > 0) parts.push(t);
+      if (!t) continue;
+      push(out, seen, t);
     }
   }
-  const seen = new Set();
-  const out = [];
-  for (const p of parts) { if (!seen.has(p)) { seen.add(p); out.push(p); } }
-  return out.join('\\n---\\n') || '没读到编译结果';
-};
-return collect();
+}
+
+if (out.length === 0) {
+  return '没读到编译器输出。页面上可能还没跑过测试：先点「测试用例」展开测试区，再点「运行测试」。';
+}
+return out.join('\\n---\\n');
 `;
 
-/** 在 PTA 页面上用「模拟运行」按钮运行当前作答区代码并读回结果 */
+/**
+ * 在 PTA 页面上跑一次测试：点开测试面板 → 填入数据集 → 点「运行测试」→ 读回结果。
+ *
+ * 实测结构（中文页与英文考试页两套文案）：
+ *   - 作答区下方有个「测试用例 / Test Case」按钮，点它才展开测试区
+ *   - 测试区里有个「运行测试 / Run Test Case」按钮（class 里带 pc-color-pass）
+ *   - 结果落在「编译器输出 / Running Result」区域里（英文页还有 Expected Result 对照）
+ */
 export const SIMULATE_PTA_RUN_SCRIPT = `${HELPERS}
-const findRunButton = () => {
-  const candidates = Array.from(document.querySelectorAll('button'));
-  return candidates.find((b) => /模拟运行 | 运行|Run/i.test(b.textContent || '')) || null;
+const waitSeconds = Math.min(Math.max(Number(__args.waitSeconds) || 60, 5), 120);
+const pollMs = Math.min(Math.max(Number(__args.pollMs) || 500, 50), 5000);
+const stdin = typeof __args.stdin === 'string' ? __args.stdin : '';
+
+const visible = (node) => {
+  // 真实浏览器里有布局：隐藏元素的 rect 列表是空的
+  if (typeof node.getClientRects === 'function' && node.getClientRects().length > 0) return true;
+  if (node.offsetParent) return true;
+  // 没有布局引擎的环境（测试用的 jsdom）：退回看显式的 display:none / hidden
+  const hiddenAncestor = node.closest && node.closest('[hidden], [style*="display:none"], [style*="display: none"]');
+  return !hiddenAncestor;
 };
-const btn = findRunButton();
-if (!btn) return '没找到模拟运行按钮';
-btn.click();
-return '已点击模拟运行按钮，请稍后用 read_pta_compile_result 读取结果';
+
+const findButtonByText = (labels) => {
+  for (const label of labels) {
+    const nodes = Array.from(document.querySelectorAll('button, [role=button], a'));
+    for (const node of nodes) {
+      if (textOf(node) === label && visible(node)) return node;
+    }
+  }
+  return null;
+};
+
+const RUN_LABELS = ['运行测试', 'Run Test Case', '模拟运行'];
+const PANEL_LABELS = ['测试用例', 'Test Case'];
+
+// 一、测试区没展开就先展开：作答区下面那个「测试用例 / Test Case」按钮
+let runButton = findButtonByText(RUN_LABELS);
+if (!runButton) {
+  const panelButton = findButtonByText(PANEL_LABELS);
+  if (panelButton) {
+    panelButton.click();
+    // 等测试区渲染出来
+    const deadline = Date.now() + 5000;
+    while (Date.now() < deadline) {
+      await sleepOrAbort(150);
+      runButton = findButtonByText(RUN_LABELS);
+      if (runButton) break;
+    }
+  }
+}
+
+if (!runButton) {
+  return '没找到「运行测试 / Run Test Case」按钮。页面上可能有「测试用例 / Test Case」按钮，点开它就能看到运行入口；也可能这个页面（考试模式）不支持运行测试。';
+}
+
+// 二、把数据集填进测试输入框（不传 stdin 就沿用面板里原有的输入）
+let filled = '';
+if (stdin) {
+  const input = findTestInputEditor();
+  if (!input) {
+    return '找到了「运行测试」按钮，但没找到测试面板里的输入框，没法填入数据集。'
+      + '（面板里应该有一个可写的输入框，不是作答区那个）';
+  }
+  const how = writeIntoEditor(input, stdin);
+  filled = '已把数据集写进测试输入框（' + how + '，' + stdin.length + ' 字符）';
+  // 等编辑器把内容渲染出来
+  await sleepOrAbort(300);
+}
+
+// 三、记下点之前的输出，用来判断「有没有变成新结果」
+const readOutput = () => {
+  // 英文页：Running Result（实际输出）与 Expected Result（期望输出）各是一块
+  // 中文页：一块「编译器输出」
+  const OUTPUT_LABELS = ['Running Result', '编译器输出', '运行结果', '编译输出'];
+  for (const label of OUTPUT_LABELS) {
+    for (const node of document.querySelectorAll('span, div, p, label, button')) {
+      if (node.children.length > 0) continue;
+      if (textOf(node) !== label) continue;
+      let holder = node.parentElement;
+      for (let depth = 0; holder && depth < 5; depth += 1) {
+        // 结果是只读的 CodeMirror：按编辑器内容读，不要按 innerText（会带上行号槽）
+        const editors = Array.from(holder.querySelectorAll('.cm-content')).filter((e) => {
+          const readonly = e.getAttribute('aria-readonly') === 'true' || e.getAttribute('contenteditable') === 'false';
+          return readonly;
+        });
+        if (editors.length > 0) {
+          return editors.map((e) => readFromDom(e)).filter(Boolean).join('\\n---\\n');
+        }
+        const blocks = holder.querySelectorAll('pre, code, [class*=output], [class*=stdout], [class*=stderr]');
+        if (blocks.length > 0) {
+          return Array.from(blocks).map((b) => textOf(b)).filter(Boolean).join('\\n---\\n');
+        }
+        holder = holder.parentElement;
+      }
+    }
+  }
+  return '';
+};
+
+// 期望输出单独读一份，方便 AI 对比
+const readExpected = () => {
+  for (const node of document.querySelectorAll('span, div, p, label, button')) {
+    if (node.children.length > 0) continue;
+    if (textOf(node) !== 'Expected Result') continue;
+    let holder = node.parentElement;
+    for (let depth = 0; holder && depth < 5; depth += 1) {
+      const editors = Array.from(holder.querySelectorAll('.cm-content')).filter((e) => {
+        const readonly = e.getAttribute('aria-readonly') === 'true' || e.getAttribute('contenteditable') === 'false';
+        return readonly;
+      });
+      if (editors.length > 0) return editors.map((e) => readFromDom(e)).filter(Boolean).join('\\n');
+      holder = holder.parentElement;
+    }
+  }
+  return '';
+};
+
+const before = readOutput();
+runButton.click();
+
+const deadline = Date.now() + waitSeconds * 1000;
+let latest = before;
+let changed = false;
+while (Date.now() < deadline) {
+  await sleepOrAbort(pollMs);
+  if (aborted()) return '已按用户要求停止等待运行结果';
+  const now = readOutput();
+  if (now && now !== before) {
+    latest = now;
+    changed = true;
+    break;
+  }
+  if (now) latest = now;
+}
+
+const expected = readExpected();
+const expectedNote = expected ? '\\n期望输出：\\n' + expected.slice(0, 800) : '';
+
+if (!latest) {
+  return '已点击「运行测试」，但没读到输出（可能还在跑，稍后再用 read_pta_compile_result 读一次）';
+}
+if (!changed) {
+  return '已点击「运行测试」，但输出跟运行前一样（可能还在跑或这次没跑起来）。'
+    + (filled ? '\\n' + filled : '')
+    + '\\n当前输出：\\n' + latest.slice(0, 2000) + expectedNote;
+}
+return (filled ? filled + '\\n' : '')
+  + '已点击「运行测试」并读到输出：\\n' + latest.slice(0, 2000) + expectedNote;
 `;

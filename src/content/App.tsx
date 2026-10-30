@@ -37,9 +37,13 @@ export function App() {
     if (layoutReset > 0) panel.reset();
   }, [layoutReset, panel.reset]);
 
-  // 最大化：在新标签页打开全页面模式
-  const maximize = useCallback(() => {
-    void ext.tabs.create({ url: ext.runtime.getURL('fullpage.html') });
+  // 最大化：发消息给 background，由它开新标签页（content script 没有 chrome.tabs 权限）
+  const maximize = useCallback(async () => {
+    try {
+      await chrome.runtime.sendMessage({ type: 'ui/open-fullpage' } as never);
+    } catch (err) {
+      console.error('[PTA 助手] 最大化失败:', err);
+    }
   }, []);
 
   if (!open) return null;

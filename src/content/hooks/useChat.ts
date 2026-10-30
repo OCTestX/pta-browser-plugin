@@ -9,6 +9,7 @@ import {
 } from '../../shared/messages';
 import { createId, toApiMessages, type ChatMessage, type ToolCall } from '../../shared/types';
 import { diffLines, diffStats } from '../../shared/diff';
+import { clearMessages, loadMessages, saveMessages } from '../chatStore';
 
 
 const WELCOME = '你好，我是 PTA 助手。点击浏览器工具栏的插件图标可以开关这个悬浮窗。';
@@ -34,6 +35,39 @@ export function useChat(hasApiKey: boolean) {
   const [usage, setUsage] = useState<TokenUsage | null>(null);
   // 当前正在写的 assistant 气泡；为 null 表示下一段文字要新起一个气泡
   const assistantRef = useRef<string | null>(null);
+
+  // 页面被关掉/刷新时，把还没落盘的那次改动补上（防抖窗口里可能还差最后一截）
+  useEffect(() => {
+    const flush = () => {
+      void saveMessages(messagesRef.current);
+    };
+    window.addEventListener('pagehide', flush);
+    return () => window.removeEventListener('pagehide', flush);
+  }, []);
+
+  // 刷新页面后把上次的对话恢复回来（按页面地址分桶）
+  useEffect(() => {
+    let cancelled = false;
+    void loadMessages().then((restored) => {
+      if (cancelled || restored.length === 0) return;
+      setMessages(restored);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  // 对话一变就存回去：刷新、关页面再打开都还在。
+  // 必须防抖：流式输出时每个字都会触发一次 setMessages，
+  // 一次回答能写几百次，chrome.storage.local 的写入配额扛不住（每分钟 120 次）。
+  useEffect(() => {
+    // 刚挂载时的那一帧还没恢复，别把欢迎语写回去把旧对话覆盖掉
+    if (messages.length === 1 && messages[0].id === 'welcome') return;
+    const timer = setTimeout(() => {
+      void saveMessages(messages);
+    }, 800);
+    return () => clearTimeout(timer);
+  }, [messages]);
 
   useEffect(() => {
     const listener = (message: unknown) => {
@@ -388,6 +422,8 @@ export function useChat(hasApiKey: boolean) {
     setNotice(null);
     setUsage(null);
     setMessages([{ id: 'welcome', role: 'system', content: WELCOME, createdAt: 0 }]);
+    // 存盘的那份也要清掉，否则刷新一下旧对话又回来了
+    void clearMessages();
   }, []);
 
   return {

@@ -8,9 +8,10 @@ export type ToolName =
   | 'compile_and_run_js'
   | 'submit_answer'
   | 'read_judge_result'
-  | 'close_dialogs'
   | 'read_pta_compile_result'
   | 'simulate_pta_run'
+  | 'close_dialogs'
+  | 'refresh_page'
   | 'js_inject'
   | 'date'
   | 'url'
@@ -28,9 +29,10 @@ export const TOOL_NAMES: ToolName[] = [
   'compile_and_run_js',
   'submit_answer',
   'read_judge_result',
-  'close_dialogs',
   'read_pta_compile_result',
   'simulate_pta_run',
+  'close_dialogs',
+  'refresh_page',
   'js_inject',
   'date',
   'url',
@@ -51,21 +53,29 @@ export const SYSTEM_PROMPT = [
   '',
   '回答要求：',
   '- 用中文，简洁直接，先给结论再给理由。',
-  '- 代码用 ``` 代码块并标注语言（C 语言写 ```c）。',
+  '- 代码用 ``` 代码块并标注语言（C 语言写 ```c，Python 写 ```python）。',
   '- 数学公式用 $...$ 或 $$...$$。',
   '',
   '在 PTA 页面上做这些事，都有专用工具，优先用它们：',
-  '- read_problem：拿到当前这道题的题面。要解题、要写代码之前，先调它。',
+  '- read_problem：拿到当前这道题的题面（含样例、公式）。要解题、要写代码之前，先调它。',
   '- read_editor_code：读出作答区里用户现在的代码。',
-  '- write_editor_code：把代码写进作答区（默认整段覆写）。写完会自动回读比对、拿题面第一组样例编译比对输出、并看提交按钮能不能点——这三项结论都在返回值里；有「不一致/编译失败/按钮禁用」就先按结论修，别急着交付。',
+  '- write_editor_code：把代码写进作答区（默认整段覆写）。写完会自动回读比对、拿题面第一组样例编译比对输出、并看提交按钮能不能点——这三项结论都在返回值里；有「不一致/按钮禁用」就先按结论修，别急着交付。',
+  '  注意：自动检查里的编译比对**按页面上选定的语言**走（Python 题就用 Python 运行器）。',
+  '  万一它报「编译失败」而题目其实是 Python/别的语言，那是自动检查选错了语言，**以你自己用 compile_and_run_python 跑出来的结果为准**，不要照着它去改算法。',
+  '  有些题被配置成了 **Python 2**（页面上写「Python (python2)」），插件写入前会自动把作答语言切成 Python 3；切不了的话返回值里会提醒你，',
+  '  那时本地自测（Python 3）和 PTA 实际编译（Python 2）结果可能不一致，代码要按 Python 2 的写法来（比如用 print 函数、别用 f-string）。',
   '',
-  '- compile_and_run_c：用内置编译器（本地 Clang，不联网）把 C 代码编译并运行，可以给标准输入。写完代码要先用它跑一遍题目样例，确认输出对得上（首次调用要加载编译器几秒，之后很快）。',
-  '- submit_answer：把当前代码提交到 PTA 并等判题结论；read_judge_result 等判题结论（会一直等到出结论，默认 60 秒）；close_dialogs 关掉挡着的弹窗（拿到结论之后再关）。',
+  '- compile_and_run_c：用内置编译器（本地 Clang，不联网）把 C 代码编译并运行，可以给标准输入。',
+  '- compile_and_run_python：用内置 Python 运行器（本地 Pyodide，不联网）把 Python 代码跑一遍，可以给标准输入。',
+  '- compile_and_run_js：用内置 JS 运行器（本地，不联网）把 JavaScript 代码跑一遍，可以给标准输入。',
+  '- submit_answer：把当前代码提交到 PTA 并等判题结论；read_judge_result 等判题结论（会一直等到出结论，默认 60 秒），拿到结论后自动关弹窗。',
   '  结论里的 **PC 就是「部分正确」**：只拿到了部分测试点的分，**不等于这题做对了**——要么照着题目继续改，要么明确告诉用户还差哪些测试点，不要当成 AC 收工。',
   '',
   '其它工具：',
   '- ask：向用户提问并等对方选一个选项（会阻塞到用户点选）。**改用户代码前必须先问**，用不用由用户拍板。',
   '- diff：把改动前后两段文本左右对照展示给用户，标出哪一行新增、哪一行改过、哪一行删了。改完代码一定要调用一次。',
+  '- close_dialogs：关掉挡在页面上的弹窗（判题结果弹窗、提交结果 dialog 等）。',
+  '- refresh_page：刷新当前页面（重新载入 PTA）。判题一直卡住、页面状态乱了、提交按钮点不动时可以用它重来。',
   '- js_inject：在用户当前页面里执行 JavaScript 并把返回值带回来。用来**读**页面（看结构、找选择器、读文本）和做上面几个工具做不到的事。',
   '- simulate_keyboard_input：非 PTA 编辑器、或需要**真按键**（Enter/Tab/方向键）时才用。',
   '- url：拿到用户当前所在页面的地址。',
@@ -77,8 +87,11 @@ export const SYSTEM_PROMPT = [
   '   **不要**用 js_inject 去 dispatch 编辑器、改 input.value、也不要想办法模拟粘贴——都要用上面的专用工具。',
   '2. 往非 PTA 的输入框里写内容才用 simulate_keyboard_input；它不填 selector 会自动定位最大的可编辑区域，输入后会回读比对，结果里写明是否一致——不一致就别继续往下推，先查原因。',
   '3. 需要页面上的信息时先看再答，不要凭空猜测页面内容。js_inject 里用 return 返回结果，异步代码可以直接 await。',
-  '   写完 C 代码后，用 compile_and_run_c 拿题面的样例输入跑一遍：输出对不上就自己改，别把没验证的代码交给用户。',
-  '4. submit_answer 是有副作用的动作：只有用户明确要求提交时才提交；提交前确认代码已经写进作答区、样例自测通过；拿到判题结论之后再用 close_dialogs 关弹窗。',
+  '   写完代码后，用对应的 compile_and_run_* 拿题面的样例输入跑一遍：输出对不上就自己改，别把没验证的代码交给用户。',
+  '4. submit_answer 是有副作用的动作：只有用户明确要求提交时才提交；提交前确认代码已经写进作答区、样例自测通过。',
+  '   **使用 submit_answer 之前一定要先检查一下「提交结果 dialog」是不是还开着**——上一次提交留下的结果弹窗会挡住作答区和提交按钮，',
+  '   开着就先 close_dialogs 关掉再提交。（弹窗有时不会自己关掉：read_judge_result 只能关它认得出来的那些，判题没结束就关不掉。）',
+  '   提交后如果判题一直不出结论，**你有权利调用 refresh_page 刷新页面**，也可以再调 read_judge_result 等一次。',
   '5. simulate_keyboard_input 的按键是模拟的，浏览器默认行为（在输入框里换行、提交表单）不会发生，只对页面自己写的按键监听有效；要触发提交就找页面的按钮点它。',
   '',
   '动用户代码的两条硬规矩（重要）：',
@@ -110,7 +123,7 @@ export const TOOL_SCHEMAS: ToolSchema[] = [
     function: {
       name: 'read_problem',
       description:
-        '拿到用户当前这道题的题面（标题、地址、题目 ID、题目描述原文）。想解题先调它，不要靠猜页面内容。',
+        '拿到用户当前这道题的题面（标题、地址、题目 ID、题目描述原文、样例输入输出）。公式会转成 LaTeX 写进题面里；题面用图片画的公式会给出图片的 alt/链接，需要你自己看图理解。想解题先调它，不要靠猜页面内容。',
       parameters: {
         type: 'object',
         properties: {
@@ -134,7 +147,7 @@ export const TOOL_SCHEMAS: ToolSchema[] = [
     function: {
       name: 'write_editor_code',
       description:
-        '把代码写进作答区（默认整段覆写）。优先用编辑器实例的 dispatch 原子写入，绕开自动闭合与自动缩进；写完会自动检查：回读逐行比对、拿题面第一组样例编译并比对输出、看提交按钮是否可用，结果里都会写明。要改用户的代码就用它，不要用 js_inject 去改 DOM 或模拟粘贴。',
+        '把代码写进作答区（默认整段覆写）。优先用编辑器实例的 dispatch 原子写入，绕开自动闭合与自动缩进；写完会自动检查：回读逐行比对、拿题面第一组样例按**页面上选定的语言**编译并比对输出、看提交按钮是否可用，结果里都会写明。要改用户的代码就用它，不要用 js_inject 去改 DOM 或模拟粘贴。',
       parameters: {
         type: 'object',
         properties: {
@@ -173,7 +186,7 @@ export const TOOL_SCHEMAS: ToolSchema[] = [
     function: {
       name: 'submit_answer',
       description:
-        '点提交按钮把当前代码提交到 PTA 并向判题系统要结论（会等一段时间）。只在用户同意、或者用户明确让你提交时用。提交前先确认代码已经写进作答区并自己跑过样例。',
+        '点提交按钮把当前代码提交到 PTA 并向判题系统要结论（会等一段时间）。只在用户同意、或者用户明确让你提交时用。提交前先确认代码已经写进作答区并自己跑过样例。**调用之前一定要先检查「提交结果 dialog」是不是还开着**——开着就先 close_dialogs 关掉，否则点不到提交按钮。等待超时会直接报错给你，此时你可以 refresh_page 刷新页面再来一次。',
       parameters: {
         type: 'object',
         properties: {
@@ -188,7 +201,7 @@ export const TOOL_SCHEMAS: ToolSchema[] = [
     function: {
       name: 'read_judge_result',
       description:
-        '读当前判题结果（不点任何按钮）。它会每 0.3 秒检查一次页面，一直等到能读出真正的结论（AC/WA/CE…，**PC 表示「部分正确」，只拿到部分测试点的分，不等于做对了**）为止，默认最多等 60 秒（可调到 120）。submit_answer 说还没出结论时，就调它等结果，不要反复空转；弹窗被关掉也不怕，它会回看页面上留着的判题记录。',
+        '读当前判题结果（不点任何按钮）。它会每 0.3 秒检查一次页面，一直等到能读出真正的结论（AC/WA/CE…，**PC 表示「部分正确」，只拿到部分测试点的分，不等于做对了**）为止，默认最多等 60 秒（可调到 120）。拿到结论后会自动尝试关闭判题弹窗——但**弹窗不一定关得掉**（判题没结束、或者它没认出来），关不掉时你会看到提示，这时该用 close_dialogs 手动关。',
       parameters: {
         type: 'object',
         properties: {
@@ -196,14 +209,6 @@ export const TOOL_SCHEMAS: ToolSchema[] = [
         },
         required: [],
       },
-    },
-  },
-  {
-    type: 'function',
-    function: {
-      name: 'close_dialogs',
-      description: '关掉挡在页面上的弹窗（判题结果弹窗、提示框等）。拿到判题结论之后再关。',
-      parameters: { type: 'object', properties: {}, required: [] },
     },
   },
   {
@@ -357,7 +362,7 @@ export const TOOL_SCHEMAS: ToolSchema[] = [
     function: {
       name: 'read_pta_compile_result',
       description:
-        '读取 PTA 页面上最近一次编译/运行的结果（编译错误、运行输出等）。仅在编写了插件没有内置编译器的语言时，借用 PTA 的编译结果。',
+        '读取 PTA 页面上「编译器输出」区域的内容（最近一次运行的输出、异常堆栈、编译错误）。simulate_pta_run 已经带回了结果就不必再调；只是想去页面上确认一下时用它。',
       parameters: { type: 'object', properties: {}, required: [] },
     },
   },
@@ -366,26 +371,36 @@ export const TOOL_SCHEMAS: ToolSchema[] = [
     function: {
       name: 'simulate_pta_run',
       description:
-        '在 PTA 页面上用「模拟运行」按钮运行当前作答区的代码并读回结果。仅在编写了插件没有内置编译器的语言时借用 PTA 的模拟运行。一般情况下不使用。',
+        '在 PTA 页面上跑一次测试：自动点开测试面板（Test Case / 测试用例），把数据集填进测试输入框，点「运行测试 / Run Test Case」，等结果出来并把内容读回来。可以传 stdin 把它当标准输入填进去（不传就用面板里已有的输入）。用于借用 PTA 自己的运行环境（插件内置编译器覆盖不到的语言时）。返回的就是运行结果，直接用，不必再调 read_pta_compile_result。',
+      parameters: {
+        type: 'object',
+        properties: {
+          stdin: {
+            type: 'string',
+            description: '要填进测试输入框的数据集（标准输入）。不填就沿用面板里原有的输入。',
+          },
+          waitSeconds: { type: 'number', description: '最多等多少秒，默认 60，上限 120' },
+        },
+        required: [],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'close_dialogs',
+      description:
+        '关掉挡在页面上的弹窗（判题结果弹窗、提交结果 dialog、提示框等）。**submit_answer 之前一定要先确认「提交结果 dialog」是不是还开着**，开着就先调这个，否则提交按钮点不到。',
       parameters: { type: 'object', properties: {}, required: [] },
     },
   },
   {
     type: 'function',
     function: {
-      name: 'diff',
+      name: 'refresh_page',
       description:
-        '把改动前后的两段文本左右对照展示给用户（新增/修改/删除的行会分色标出），让用户一眼看出你把代码改成了什么样。改完 write_editor_code 必须调用一次。',
-      parameters: {
-        type: 'object',
-        properties: {
-          left: { type: 'string', description: '改动之前的内容（原文）' },
-          right: { type: 'string', description: '改动之后的内容' },
-          leftLabel: { type: 'string', description: '左列标题，默认「改动前」' },
-          rightLabel: { type: 'string', description: '右列标题，默认「改动后」' },
-        },
-        required: ['left', 'right'],
-      },
+        '刷新当前页面（重新载入 PTA 当前地址）。判题一直卡住不出结论、页面状态乱了、提交按钮点不动的时候，用它把页面重新载入再来一遍。',
+      parameters: { type: 'object', properties: {}, required: [] },
     },
   },
 ];

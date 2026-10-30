@@ -110,7 +110,9 @@ export type ContentRequest =
   /** 问接口「你有哪些模型」：模型下拉框用。Key 只在 background 那边用，content 传过来的是草稿值 */
   | { type: 'models/list'; baseURL: string; apiKey?: string }
   /** 设置页的「一键跳转硅基流动」：让后台开一个新标签页 */
-  | { type: 'ui/open-url'; url: string };
+  | { type: 'ui/open-url'; url: string }
+  /** 悬浮窗的「最大化」按钮：content script 没有 chrome.tabs，让后台开全页面模式的标签页 */
+  | { type: 'ui/open-fullpage' };
 
 export function isContentRequest(message: unknown): message is ContentRequest {
   return (
@@ -123,7 +125,8 @@ export function isContentRequest(message: unknown): message is ContentRequest {
       message.type === 'tool/test-input' ||
       message.type === 'code/input' ||
       message.type === 'models/list' ||
-      message.type === 'ui/open-url')
+      message.type === 'ui/open-url' ||
+      message.type === 'ui/open-fullpage')
   );
 }
 
