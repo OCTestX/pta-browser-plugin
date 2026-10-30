@@ -1,6 +1,6 @@
 {
   "name": "pta-browser-plugin",
-  "version": "3.0.0",
+  "version": "3.0.1",
   "description": "帮助学生完成 PTA 题目的浏览器插件（Chrome / Firefox）",
   "private": true,
   "type": "module",
