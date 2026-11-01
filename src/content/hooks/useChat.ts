@@ -36,6 +36,41 @@ export function useChat(hasApiKey: boolean) {
   // 当前正在写的 assistant 气泡；为 null 表示下一段文字要新起一个气泡
   const assistantRef = useRef<string | null>(null);
 
+  // 流式增量按帧合并：模型一个字一个字往下推，每个 delta 都 setState 会让
+  // 整棵消息树每字符重渲染一次，内容一多就卡。这里攒到下一帧再一次性上屏。
+  const pendingDeltaRef = useRef('');
+  const deltaFrameRef = useRef<number | null>(null);
+  const appendDeltaRef = useRef<(text: string) => void>(() => undefined);
+
+  const flushDelta = useCallback(() => {
+    if (deltaFrameRef.current !== null) {
+      cancelAnimationFrame(deltaFrameRef.current);
+      deltaFrameRef.current = null;
+    }
+    const pending = pendingDeltaRef.current;
+    pendingDeltaRef.current = '';
+    if (pending) appendDeltaRef.current(pending);
+  }, []);
+
+  const scheduleDelta = useCallback(
+    (text: string) => {
+      pendingDeltaRef.current += text;
+      if (deltaFrameRef.current !== null) return;
+      const run = () => {
+        deltaFrameRef.current = null;
+        const pending = pendingDeltaRef.current;
+        pendingDeltaRef.current = '';
+        if (pending) appendDeltaRef.current(pending);
+      };
+      if (typeof requestAnimationFrame === 'function') {
+        deltaFrameRef.current = requestAnimationFrame(run);
+      } else {
+        deltaFrameRef.current = setTimeout(run, 0) as unknown as number;
+      }
+    },
+    [],
+  );
+
   // 页面被关掉/刷新时，把还没落盘的那次改动补上（防抖窗口里可能还差最后一截）
   useEffect(() => {
     const flush = () => {
@@ -74,9 +109,12 @@ export function useChat(hasApiKey: boolean) {
       if (!isChatEvent(message)) return;
       if (message.requestId !== requestRef.current) return;
 
+      // 除增量以外的事件都要先把攒着的文字落到气泡里，保证顺序不乱
+      if (message.type !== 'chat/delta') flushDelta();
+
       switch (message.type) {
         case 'chat/delta':
-          appendDelta(message.text);
+          scheduleDelta(message.text);
           return;
         case 'chat/tool-start':
           startTool(message.callId, message.name, message.args);
@@ -144,6 +182,9 @@ export function useChat(hasApiKey: boolean) {
       return [...prev, created];
     });
   }, []);
+
+  // 监听器只注册一次，用 ref 拿最新的 appendDelta
+  appendDeltaRef.current = appendDelta;
 
   const startTool = useCallback((callId: string, name: string, rawArgs: string) => {
     setMessages((prev) => {
@@ -226,6 +267,7 @@ export function useChat(hasApiKey: boolean) {
   }, []);
 
   const finish = useCallback(() => {
+    flushDelta();
     const currentId = assistantRef.current;
     if (currentId) {
       // 模型这一轮一个字都没吐：空气泡不渲染，用户会以为卡死了，所以留个提示
@@ -299,6 +341,7 @@ export function useChat(hasApiKey: boolean) {
   );
 
   const stop = useCallback(() => {
+    flushDelta();
     // 「停止」只有一个按钮：这一轮对话和「输入」按钮的写入都归它管
     const requestId = requestRef.current;
     if (requestId) void Promise.resolve(ext.runtime.sendMessage({ type: 'chat/stop', requestId })).catch(() => undefined);
@@ -407,6 +450,7 @@ export function useChat(hasApiKey: boolean) {
 
   /** 「新会话」：掐掉还在生成的一轮，回到只剩欢迎语的干净上下文 */
   const reset = useCallback(() => {
+    flushDelta();
     const requestId = requestRef.current;
     if (requestId) void ext.runtime.sendMessage({ type: 'chat/stop', requestId });
     // 写作答区也一并掐掉：新会话之后那次写入的结果已经没有意义了

@@ -24,6 +24,30 @@ function ensureWorker() {
   return worker;
 }
 
+// 剪贴板兜底：content script 读不到剪贴板时（例如页面抢了快捷键），
+// 后台让这一页用 execCommand('paste') 读（manifest 里申请了 clipboardRead）。
+// 同一个 offscreen 文档既承载编译 Worker，也做这件事（Chrome 只允许开一个）。
+function readClipboardViaExecCommand() {
+  const area = document.createElement('textarea');
+  area.value = '';
+  area.setAttribute('readonly', '');
+  area.style.position = 'fixed';
+  area.style.top = '-1000px';
+  area.style.opacity = '0';
+  document.body.appendChild(area);
+  area.focus();
+  area.select();
+  let ok = false;
+  try {
+    ok = document.execCommand('paste');
+  } catch {
+    ok = false;
+  }
+  const text = area.value;
+  area.remove();
+  return { ok, text };
+}
+
 chrome.runtime.onMessage.addListener((message) => {
   if (message?.type === 'engine-request') {
     ensureWorker().postMessage(message.data);
@@ -31,6 +55,28 @@ chrome.runtime.onMessage.addListener((message) => {
     if (worker) worker.terminate();
     worker = null;
     ensureWorker();
+  } else if (message?.type === 'clipboard-read-request' && typeof message.id === 'string') {
+    try {
+      const result = readClipboardViaExecCommand();
+      void chrome.runtime
+        .sendMessage({
+          type: 'clipboard-read-response',
+          id: message.id,
+          ok: result.ok,
+          text: result.text,
+          message: result.ok ? undefined : '浏览器拒绝读取剪贴板（execCommand paste 被拦）',
+        })
+        .catch(() => undefined);
+    } catch (error) {
+      void chrome.runtime
+        .sendMessage({
+          type: 'clipboard-read-response',
+          id: message.id,
+          ok: false,
+          message: String(error),
+        })
+        .catch(() => undefined);
+    }
   }
   // 其他消息不归这里管（显式返回 undefined）
   return undefined;

@@ -24,3 +24,6 @@ yarn-error.log*
 
 # Python 脚本的缓存
 __pycache__/
+
+# 本地测试账号 / API Key，绝不进版本库
+/test_data.txt

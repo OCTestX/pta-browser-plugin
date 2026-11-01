@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { memo, useState } from 'react';
 import type { ChatMessage } from '../../shared/types';
 import { DiffView } from './DiffView';
 
@@ -11,9 +11,11 @@ const STATUS_LABEL: Record<NonNullable<ChatMessage['toolStatus']>, string> = {
 interface ToolCardProps {
   message: ChatMessage;
   onAnswer?: (callId: string, choice: string) => void;
+  /** diff 卡片右上角「全屏查看」：开新标签页显示完整 diff */
+  onFullscreenDiff?: (diff: { left: string; right: string; leftLabel: string; rightLabel: string }) => void;
 }
 
-export function ToolCard({ message, onAnswer }: ToolCardProps) {
+export const ToolCard = memo(function ToolCard({ message, onAnswer, onFullscreenDiff }: ToolCardProps) {
   const status = message.toolStatus ?? 'running';
   const [copied, setCopied] = useState<string | null>(null);
 
@@ -76,6 +78,11 @@ export function ToolCard({ message, onAnswer }: ToolCardProps) {
                 {...message.toolDiff}
                 onCopy={() => copy(message.toolDiff?.right ?? '', 'diff')}
                 copied={copied === 'diff'}
+                onFullscreen={
+                  onFullscreenDiff && message.toolDiff
+                    ? () => onFullscreenDiff(message.toolDiff!)
+                    : undefined
+                }
               />
             </div>
           )}
@@ -105,9 +112,9 @@ export function ToolCard({ message, onAnswer }: ToolCardProps) {
       )}
     </div>
   );
-}
+});
 
-/** 内容脚本里没有 clipboard 权限，用 execCommand 复制（用户点击触发，够用） */
+/** 面板里没有 clipboard 权限，用 execCommand 复制（用户点击触发，够用） */
 function copyText(text: string): void {
   const area = document.createElement('textarea');
   area.value = text;

@@ -18,8 +18,8 @@ const METHOD_OK_KEY = 'pta-assistant-input-method-ok';
 /** 作者信息：顶部作者卡片与底部署名共用 */
 const AUTHOR_NAME = 'OCTest';
 const AUTHOR_EMAIL = 'octestwx@qq.com';
-const AUTHOR_SITE_LABEL = 'octestpi.top';
-const AUTHOR_SITE_URL = 'http://octestpi.top';
+const AUTHOR_SITE_LABEL = 'me.octest.top';
+const AUTHOR_SITE_URL = 'https://me.octest.top';
 /** 头像放在 public/ 里随构建进 dist，设置页用扩展自己的地址去取（页面 CSP 不管用） */
 const AVATAR_URL = ext.runtime.getURL('avata.jpg');
 

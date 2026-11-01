@@ -1,0 +1,117 @@
+:root {
+  --pta-surface: #ffffff;
+  --pta-surface-alt: #f4f6fb;
+  --pta-border: #e2e6f0;
+  --pta-text: #1f2430;
+  --pta-text-muted: #8a93a6;
+  --pta-accent: #2f6bff;
+  --pta-accent-soft: #eaf0ff;
+  --pta-danger: #d64545;
+  --pta-ok: #1a9e63;
+  color-scheme: light;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  height: 100%;
+}
+
+body {
+  margin: 0;
+  background: var(--pta-surface-alt);
+  color: var(--pta-text);
+  font: 14px/1.6 -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Microsoft YaHei',
+    sans-serif;
+}
+
+#root {
+  height: 100%;
+}
+
+.diff-page {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+}
+
+.diff-page__head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 10px 16px;
+  border-bottom: 1px solid var(--pta-border);
+  background: var(--pta-surface);
+}
+
+.diff-page__titles {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  min-width: 0;
+}
+
+.diff-page__title {
+  margin: 0;
+  font-size: 15px;
+  font-weight: 600;
+}
+
+.diff-page__meta {
+  overflow: hidden;
+  color: var(--pta-text-muted);
+  font-size: 12px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.diff-page__actions {
+  display: flex;
+  gap: 8px;
+  flex: none;
+}
+
+.diff-page__button {
+  padding: 5px 12px;
+  border: 1px solid var(--pta-border);
+  border-radius: 8px;
+  background: var(--pta-surface);
+  color: var(--pta-text);
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.diff-page__button:hover {
+  border-color: var(--pta-accent);
+  color: var(--pta-accent);
+}
+
+.diff-page__body {
+  flex: 1;
+  min-height: 0;
+  padding: 16px;
+  overflow: auto;
+}
+
+.diff-page__card {
+  min-width: min-content;
+  border: 1px solid var(--pta-border);
+  border-radius: 10px;
+  background: var(--pta-surface);
+  overflow: auto;
+}
+
+.diff-page__hint {
+  margin: 24px 0;
+  color: var(--pta-text-muted);
+  text-align: center;
+}
+
+.diff-page__hint--error {
+  color: var(--pta-danger);
+}

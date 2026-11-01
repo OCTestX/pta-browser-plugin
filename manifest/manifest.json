@@ -1,8 +1,7 @@
 {
   "manifest_version": 3,
   "name": "PTA 助手",
-  "version": "3.0.1",
-
+  "version": "3.1.0",
   "description": "帮助学生完成 PTA 题目的 AI 助手插件",
   "icons": {
     "16": "icons/icon-16.png",
@@ -19,8 +18,20 @@
       "128": "icons/icon-128.png"
     }
   },
-  "permissions": ["storage", "activeTab", "scripting", "debugger", "offscreen", "tabs"],
-  "host_permissions": ["https://api.siliconflow.cn/*", "https://api.deepseek.com/*", "https://pintia.cn/*"],
+  "permissions": [
+    "storage",
+    "activeTab",
+    "scripting",
+    "debugger",
+    "offscreen",
+    "tabs",
+    "clipboardRead"
+  ],
+  "host_permissions": [
+    "https://api.siliconflow.cn/*",
+    "https://api.deepseek.com/*",
+    "https://pintia.cn/*"
+  ],
   "content_security_policy": {
     "extension_pages": "script-src 'self' 'wasm-unsafe-eval'; object-src 'self'"
   },
@@ -29,15 +40,24 @@
   },
   "content_scripts": [
     {
-      "matches": ["<all_urls>"],
-      "js": ["content.js"],
+      "matches": [
+        "<all_urls>"
+      ],
+      "js": [
+        "content.js"
+      ],
       "run_at": "document_idle"
     }
   ],
   "web_accessible_resources": [
     {
-      "resources": ["katex-fonts/*", "avata.jpg", "fullpage.html", "fullpage.js"],
-      "matches": ["<all_urls>"]
+      "resources": [
+        "katex-fonts/*",
+        "avata.jpg"
+      ],
+      "matches": [
+        "<all_urls>"
+      ]
     }
   ]
 }

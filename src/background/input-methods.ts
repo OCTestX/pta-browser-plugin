@@ -25,6 +25,39 @@ async function writeOnce(
   }
 }
 
+/**
+ * 「内置粘贴」：把剪贴板文本插到作答区光标处（不覆盖已有代码）。
+ * 拿不到编辑器实例时退回整段覆写——总比按了 Ctrl+V 什么都没发生强。
+ */
+export async function pasteIntoEditor(options: {
+  tabId: number;
+  text: string;
+  signal?: AbortSignal;
+}): Promise<ToolOutcome> {
+  const { tabId, text, signal } = options;
+  if (!text) return { output: '剪贴板是空的', isError: true };
+
+  try {
+    const result = await injectScript(tabId, INPUT_METHOD_SCRIPT, { method: 'insert', text, json: true }, undefined, signal);
+    try {
+      const parsed = JSON.parse(result.output) as { ok?: boolean; detail?: string };
+      if (parsed.ok === true) {
+        return { output: parsed.detail ?? `已粘贴 ${text.length} 个字符`, isError: false };
+      }
+    } catch {
+      // 不是 JSON 就按整段覆写兜底
+    }
+  } catch (error) {
+    if (isAbortError(error, signal)) throw error;
+  }
+
+  const replaced = await writeEditorCode({ tabId, code: text, signal });
+  if (replaced.isError) {
+    return { output: `粘贴失败：${replaced.output}`, isError: true };
+  }
+  return { output: `光标处插入不可用，已整段替换作答区（${replaced.output}）`, isError: false };
+}
+
 /** 清空作答区：换备用实现之前先把内容全部删掉 */
 async function clearEditor(tabId: number, signal?: AbortSignal): Promise<void> {
   const result = await injectScript(tabId, INPUT_METHOD_SCRIPT, { method: 'clear', text: '' }, undefined, signal);

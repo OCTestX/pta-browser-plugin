@@ -14,7 +14,7 @@ const entry = process.env.ENTRY ?? 'content';
 const ENTRY_FILES: Record<string, string> = {
   background: 'src/background/index.ts',
   content: 'src/content/index.tsx',
-  fullpage: 'src/fullpage/main.tsx',
+  diff: 'src/diff/main.tsx',
 };
 
 // manifest/manifest.json 是手写的基础清单（Chrome 用），Firefox 的差异在这里补
@@ -117,9 +117,9 @@ export default defineConfig({
             }
           : {
               format: 'es',
-              entryFileNames: 'fullpage.js',
-              chunkFileNames: 'fullpage-[hash].js',
-              assetFileNames: 'fullpage-[name]-[ext]',
+              entryFileNames: `${entry}.js`,
+              chunkFileNames: `${entry}-[hash].js`,
+              assetFileNames: `${entry}-[name][extname]`,
             },
     },
   },

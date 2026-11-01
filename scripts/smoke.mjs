@@ -68,7 +68,6 @@ const settleWindow = (window, { quietMs = 25, timeoutMs = 3000 } = {}) =>
   });
 
 /** 等当前场景那个页面安静下来（脚本按场景顺序执行，只看最后一个 boot 出来的页面） */
-/** 等当前场景那个页面安静下来（脚本按场景顺序执行，只看最后一个 boot 出来的页面） */
 const tick = () => settleWindow(booted.at(-1));
 const check = (label, ok) => {
   if (!ok) throw new Error(`✗ ${label}`);
@@ -162,6 +161,12 @@ function boot({ hasApiKey, store }) {
             };
           case 'ui/open-url':
             return { ok: true };
+          case 'ui/open-diff':
+            return { ok: true };
+          case 'clipboard/read':
+            return { ok: false, text: '', message: '测试环境没有剪贴板' };
+          case 'code/paste':
+            return { ok: true, result: '已粘贴' };
           default:
             return undefined;
         }
@@ -351,12 +356,12 @@ check('邮箱显示在昵称下面', authorCard.querySelector('.author__email').
 check('作者信息只在顶部出现一次', withKey.find('.settings').textContent.split('octestwx@qq.com').length === 2);
 
 const siteLink = authorCard.querySelector('.author__site');
-check('网站链接显示 octestpi.top', siteLink.textContent === 'octestpi.top');
+check('网站链接显示 me.octest.top', siteLink.textContent === 'me.octest.top');
 siteLink.click();
 await tick();
 check(
-  '点网站链接让后台打开 octestpi.top',
-  withKey.requests.filter((r) => r.type === 'ui/open-url').map((r) => r.url).includes('http://octestpi.top'),
+  '点网站链接让后台打开 me.octest.top',
+  withKey.requests.filter((r) => r.type === 'ui/open-url').map((r) => r.url).includes('https://me.octest.top'),
 );
 
 const tutorialButton = [...withKey.shadow().querySelectorAll('.field__jump')][0];
@@ -366,7 +371,7 @@ tutorialButton.click();
 await tick();
 check(
   '点教程让后台打开教程页面',
-  withKey.requests.some((r) => r.type === 'ui/open-url' && r.url === 'http://octestpi.top/pta-assist-plugin'),
+  withKey.requests.some((r) => r.type === 'ui/open-url' && r.url === 'https://me.octest.top/pta-assist-plugin'),
 );
 
 withKey.setValue(withKey.find('.field__input[type="password"]'), 'sk-test-key');
@@ -1003,10 +1008,17 @@ check('没删东西时不出现删除行', diffCard.querySelectorAll('.diff__row
 check(
   '左右两列表头都有标题',
   [...diffCard.querySelectorAll('.diff__head-cell')]
-    .map((n) => n.textContent.replace('复制新代码', '').replace('已复制', ''))
+    .map((n) => n.textContent.replace('全屏查看', '').replace('复制新代码', '').replace('已复制', ''))
     .join(',') === '改动前,改动后',
 );
 check('表头右侧有复制按钮', Boolean(diffCard.querySelector('.diff__copy')));
+check('表头右侧有「全屏查看」按钮', [...diffCard.querySelectorAll('.diff__copy')].some((b) => b.textContent === '全屏查看'));
+[...diffCard.querySelectorAll('.diff__copy')].find((b) => b.textContent === '全屏查看')?.click();
+await tick();
+check(
+  '点「全屏查看」把完整 diff 交给后台开新标签页',
+  tools2.requests.some((r) => r.type === 'ui/open-diff' && r.diff?.left?.includes('int b = 2;') && r.diff?.right?.includes('int b = 3;')),
+);
 check('改动聚成一个块', diffCard.querySelectorAll('.diff__hunk').length === 1);
 check('中间那条道给改动块画了头尾箭头', diffCard.querySelector('.diff__gutter--start').textContent === '»' && diffCard.querySelector('.diff__gutter--end').textContent === '«');
 check('每一行都有中间道', diffCard.querySelectorAll('.diff__row .diff__gutter').length === diffCard.querySelectorAll('.diff__row').length);

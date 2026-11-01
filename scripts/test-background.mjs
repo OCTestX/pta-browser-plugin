@@ -219,8 +219,8 @@ check('旧版本存过的调试器开关被丢掉', !('useDebuggerInput' in lega
 
 /* ---------- 教程按钮开新标签页 ---------- */
 
-const opened = await respond2({ type: 'ui/open-url', url: 'http://octestpi.top/pta-assist-plugin' });
-check('点教程会开新标签页去教程页', opened.ok === true && state.createdTabs.at(-1).url === 'http://octestpi.top/pta-assist-plugin');
+const opened = await respond2({ type: 'ui/open-url', url: 'https://me.octest.top/pta-assist-plugin' });
+check('点教程会开新标签页去教程页', opened.ok === true && state.createdTabs.at(-1).url === 'https://me.octest.top/pta-assist-plugin');
 const refused = await respond2({ type: 'ui/open-url', url: 'javascript:alert(1)' });
 check('只放行 http/https 链接', refused.ok === false);
 
@@ -256,6 +256,26 @@ check('点停止能立刻结束这次生成（不必等页面里的轮询结束�
 check('卡住的工具也收到收尾通知（面板上的工具卡片不会一直转）', state.tabEvents.some((e) => e.type === 'chat/tool-end' && e.result === '已停止'));
 check('中止时往页面里置了取消标记，页面里的轮询循环能自己退出', state.abortFlags >= 1);
 state.hangJudge = false;
+
+/* ---------- 同一页面开新对话：旧的一轮必须被强制停掉 ---------- */
+
+// 模型请求连上后一直不吐数据（上一轮还挂着），这时面板开了新会话并发消息
+state.hangStream = true;
+state.modelCalls.length = 0;
+state.tabEvents.length = 0;
+await respond2({ type: 'chat/start', requestId: 'old-chat', messages: [{ role: 'user', content: '旧问题' }] }, { tab: { id: 7 } });
+await tick(50);
+check('旧的一轮卡在模型流里', !state.tabEvents.some((e) => e.type === 'chat/done'));
+
+state.hangStream = false;
+state.modelCalls.length = 0;
+state.sse = [`data: {"choices":[{"delta":{"content":"新回答"}}]}\n\ndata: [DONE]\n\n`];
+const newChat = await respond2({ type: 'chat/start', requestId: 'new-chat', messages: [{ role: 'user', content: '新问题' }] }, { tab: { id: 7 } });
+await tick(80);
+const oldDone = state.tabEvents.find((e) => e.type === 'chat/done' && e.requestId === 'old-chat');
+check('同一页面开新对话时，旧的一轮被强制停止', Boolean(oldDone) && oldDone.aborted === true);
+check('新的一轮照常跑完', state.tabEvents.some((e) => e.type === 'chat/done' && e.requestId === 'new-chat' && e.aborted === false));
+check('新对话请求本身没有被拒绝', newChat.ok === true);
 
 /* ---------- ask：等用户点选；diff：把左右两栏交给面板 ---------- */
 

@@ -119,13 +119,18 @@ function installListener(): void {
   });
 }
 
-async function ensureOffscreenDocument(): Promise<void> {
+/**
+ * 确保承载 Worker 的 offscreen 文档存在。剪贴板兜底也复用这一页（Chrome 只允许一个 offscreen 文档），
+ * 所以创建时把 CLIPBOARD 一起声明上。
+ */
+export async function ensureOffscreenDocument(): Promise<void> {
   if (offscreenReady) return;
   try {
     await ext.offscreen.createDocument({
       url: 'engine/compiler-host.html',
-      reasons: ['WORKERS' as chrome.offscreen.Reason],
-      justification: '在本地 WebAssembly 里编译并运行 C 代码，用 Worker 承载以防死循环卡死',
+      reasons: ['WORKERS' as chrome.offscreen.Reason, 'CLIPBOARD' as chrome.offscreen.Reason],
+      justification:
+        '在本地 WebAssembly 里编译并运行代码（Worker），以及读取剪贴板给 PTA 作答区做内置粘贴',
     });
   } catch (error) {
     // service worker 重启后本地标记丢了，文档其实还开着——继续用

@@ -2,9 +2,11 @@ import { createRoot } from 'react-dom/client';
 import { App } from './App';
 import { katexStyles } from './katexStyles';
 import { runPageTool } from './pageTools';
+import { installPasteBridge } from './paste';
 import { initState, requestLayoutReset, togglePanel } from './panelStore';
 import { ext } from '../shared/browser';
 import { isResetPanelLayoutMessage, isRunToolRequest, isTogglePanelMessage } from '../shared/messages';
+import diffStyles from '../shared/diff.css?inline';
 import styles from './styles.css?inline';
 
 const HOST_ID = 'pta-assistant-host';
@@ -29,8 +31,8 @@ function mount(): void {
   const shadow = host.attachShadow({ mode: 'open' });
 
   const style = document.createElement('style');
-  // KaTeX 的样式放前面，我们的样式放后面
-  style.textContent = `${katexStyles()}\n${styles}`;
+  // KaTeX 的样式放前面，我们的样式放后面；diff 的样式两边（卡片 / 全屏页）共用
+  style.textContent = `${katexStyles()}\n${diffStyles}\n${styles}`;
   shadow.appendChild(style);
 
   const container = document.createElement('div');
@@ -44,6 +46,8 @@ function start(): void {
 
   // 初始化共享状态（从 storage.local 恢复面板开关 + 草稿等）
   void initState();
+  // 接管 Ctrl+V / Ctrl+M：PTA 禁粘贴时用插件自己的写入链路把剪贴板内容塞进作答区
+  installPasteBridge();
 
   // 在模块顶层注册，保证后台发来的 toggle 一定有人接
   ext.runtime.onMessage.addListener((message: unknown, _sender, sendResponse) => {

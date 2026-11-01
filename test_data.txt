@@ -1,6 +1,0 @@
-pta账号：15812695552
-pta密码：eG6dWOa1NqaFrjcn
-
-模型baseUrl：https://api.siliconflow.cn/v1
-模型id：deepseek-ai/DeepSeek-V4-Flash
-api key：sk-uoiowtlfstdkhnwgiuhyquwscnakapfnginbazqgobgzujld

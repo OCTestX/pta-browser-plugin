@@ -111,8 +111,12 @@ export type ContentRequest =
   | { type: 'models/list'; baseURL: string; apiKey?: string }
   /** 设置页的「一键跳转硅基流动」：让后台开一个新标签页 */
   | { type: 'ui/open-url'; url: string }
-  /** 悬浮窗的「最大化」按钮：content script 没有 chrome.tabs，让后台开全页面模式的标签页 */
-  | { type: 'ui/open-fullpage' };
+  /** diff 卡片右上角的「全屏」：content script 没有 chrome.tabs，让后台存下这份 diff 并开新标签页 */
+  | { type: 'ui/open-diff'; diff: DiffPayload }
+  /** Ctrl+V / Ctrl+M 走不通时，读系统剪贴板的兜底 */
+  | { type: 'clipboard/read' }
+  /** 页面里拦下 Ctrl+V / Ctrl+M 之后，用插件自己的写入链路把剪贴板内容塞进作答区 */
+  | { type: 'code/paste'; requestId: string; text: string };
 
 export function isContentRequest(message: unknown): message is ContentRequest {
   return (
@@ -126,7 +130,9 @@ export function isContentRequest(message: unknown): message is ContentRequest {
       message.type === 'code/input' ||
       message.type === 'models/list' ||
       message.type === 'ui/open-url' ||
-      message.type === 'ui/open-fullpage')
+      message.type === 'ui/open-diff' ||
+      message.type === 'clipboard/read' ||
+      message.type === 'code/paste')
   );
 }
 
@@ -151,6 +157,13 @@ export interface TestInputResponse {
 export interface ToolRunResponse {
   ok: boolean;
   result: string;
+}
+
+/** 后台读系统剪贴板的结果（content script 自己读不到时的兜底） */
+export interface ClipboardReadResponse {
+  ok: boolean;
+  text: string;
+  message?: string;
 }
 
 /** 模型下拉框的结果：模型 id 列表或一句人话（为什么没列出来） */

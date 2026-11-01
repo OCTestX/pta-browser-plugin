@@ -768,6 +768,77 @@ const englishNoStdin = createEnglishRunPage();
 const englishNoStdinOut = await runScript(englishNoStdin, SIMULATE_PTA_RUN_SCRIPT, { waitSeconds: 5, pollMs: 10 });
 check('不给数据集时不会去写测试输入框', !englishNoStdinOut.includes('已把数据集写进测试输入框'));
 
+/* ---------- 新版 PTA：结果区是页签，容器在标题上方第 5 层 ---------- */
+
+// 复刻真实页面（2026-11 实测）：
+//   button[Test Case | Running Result | Compiler's Log]  ->  结果容器在标题上方 5 层
+//   只有当前页签的内容会挂载；点「Run Test Case」不会自动切页签
+function createTabbedRunPage({ result = '', log = '' } = {}) {
+  const dom = new JSDOM(
+    `<!doctype html><html><body>
+       <div class="CodingProblemAnswerForm_JoDvx">
+         <div class="cm-editor"><div class="cm-content" contenteditable="true"><div class="cm-line">print(1)</div></div></div>
+       </div>
+       <div id="testPanel">
+         <div class="headerWrap"><div class="headerRow"><div class="tabs">
+           <div class="tabItem"><button id="tabCase"><div class="pc-text">Test Case</div></button></div>
+           <div class="tabItem"><button id="tabRun"><div class="pc-text">Running Result</div></button></div>
+           <div class="tabItem"><button id="tabLog"><div class="pc-text">Compiler's Log</div></button></div>
+         </div></div></div>
+         <div id="stage"></div>
+         <button id="run">Run Test Case</button>
+       </div>
+     </body></html>`,
+    {
+      url: 'https://pintia.cn/problem-sets/1/exam/problems/type/6?problemSetProblemId=2',
+      runScripts: 'outside-only',
+      pretendToBeVisual: true,
+    },
+  );
+  const window = installInnerText(dom.window);
+  const doc = window.document;
+  const makeEditor = (text, editable) => {
+    const wrap = doc.createElement('div');
+    wrap.innerHTML = `<div class="cm-editor"><div class="cm-scroller"><div class="cm-content" ${
+      editable ? 'contenteditable="true"' : 'contenteditable="false" aria-readonly="true"'
+    }><div class="cm-line">${text}</div></div></div></div>`;
+    return wrap;
+  };
+  const bodies = {
+    case: makeEditor('2\n', true),
+    run: makeEditor('', false),
+    log: makeEditor(log, false),
+  };
+  const stage = doc.querySelector('#stage');
+  const show = (name) => stage.replaceChildren(bodies[name]);
+  show('case');
+  doc.querySelector('#tabCase').addEventListener('click', () => show('case'));
+  doc.querySelector('#tabRun').addEventListener('click', () => show('run'));
+  doc.querySelector('#tabLog').addEventListener('click', () => show('log'));
+  doc.querySelector('#run').addEventListener('click', () => {
+    if (!result) return;
+    window.setTimeout(() => {
+      bodies.run.innerHTML = `<div class="cm-editor"><div class="cm-scroller"><div class="cm-content" contenteditable="false" aria-readonly="true"><div class="cm-line">${result}</div></div></div></div>`;
+    }, 30);
+  });
+  window.__activeTab = () => (stage.firstElementChild === bodies.run ? 'run' : stage.firstElementChild === bodies.log ? 'log' : 'case');
+  return window;
+}
+
+const tabbedRun = createTabbedRunPage({ result: '1\n[28]' });
+const tabbedOut = await runScript(tabbedRun, SIMULATE_PTA_RUN_SCRIPT, { waitSeconds: 5, pollMs: 10 });
+check('新版页签式结果：simulate_pta_run 读到了 Running Result', tabbedOut.includes('1\n[28]'));
+check('结果不会自动切页签时，插件会自己点开结果页签', tabbedRun.__activeTab() === 'run');
+
+const tabbedReader = await runScript(tabbedRun, READ_PTA_COMPILE_RESULT_SCRIPT, {});
+check('read_pta_compile_result 能读新版页签里的结果', tabbedReader.includes('1\n[28]'));
+
+// 运行结果为空：编译错误在 Compiler's Log 页签里
+const tabbedLogRun = createTabbedRunPage({ log: 'Traceback (most recent call last):\nNameError: name x is not defined' });
+const tabbedLogOut = await runScript(tabbedLogRun, SIMULATE_PTA_RUN_SCRIPT, { waitSeconds: 5, pollMs: 10 });
+check('结果为空时回退到 Compiler\'s Log', tabbedLogOut.includes('NameError'));
+check('回退说明来自哪个页签', tabbedLogOut.includes("Compiler's Log"));
+
 /* ---------- 作答区的语言（Python 2 / Python 3 要分得清） ---------- */
 
 // 复刻 PTA 的 react-select：控制块显示当前语言，点开后菜单里是可选项

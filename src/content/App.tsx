@@ -37,14 +37,17 @@ export function App() {
     if (layoutReset > 0) panel.reset();
   }, [layoutReset, panel.reset]);
 
-  // 最大化：发消息给 background，由它开新标签页（content script 没有 chrome.tabs 权限）
-  const maximize = useCallback(async () => {
-    try {
-      await chrome.runtime.sendMessage({ type: 'ui/open-fullpage' } as never);
-    } catch (err) {
-      console.error('[PTA 助手] 最大化失败:', err);
-    }
-  }, []);
+  // diff 卡片的「全屏查看」：content script 没有 chrome.tabs，让后台存一份并开标签页
+  const openDiffFullscreen = useCallback(
+    async (diff: { left: string; right: string; leftLabel: string; rightLabel: string }) => {
+      try {
+        await ext.runtime.sendMessage({ type: 'ui/open-diff', diff });
+      } catch (error) {
+        console.error('[PTA 助手] 打开全屏 diff 失败:', error);
+      }
+    },
+    [],
+  );
 
   if (!open) return null;
 
@@ -113,14 +116,6 @@ export function App() {
               </button>
               <button
                 type="button"
-                className="panel__maximize"
-                title="新标签页打开（最大化）"
-                onClick={maximize}
-              >
-                ⛶
-              </button>
-              <button
-                type="button"
                 className="panel__close"
                 title="设置"
                 onClick={() => setView('settings')}
@@ -148,7 +143,11 @@ export function App() {
           {(chat.busy || chat.writing) && (
             <div className="panel__progress" role="progressbar" aria-label="正在工作" />
           )}
-          <MessageList messages={chat.messages} onAnswer={chat.answerAsk} />
+          <MessageList
+            messages={chat.messages}
+            onAnswer={chat.answerAsk}
+            onFullscreenDiff={openDiffFullscreen}
+          />
           {chat.notice && (
             <div className="notice">
               <span className="notice__text">{chat.notice.text}</span>

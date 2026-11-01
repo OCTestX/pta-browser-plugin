@@ -1,240 +1,311 @@
 # PTA 助手
 
-> **本项目完全使用 AI 开发，作者只起到充钱和测试的作用。**
+> 本项目完全使用 AI 开发，作者只起到充钱和测试的作用。
 
-PTA 助手是一个帮助学生完成 PTA（拼题A）题目的浏览器插件，支持 Chrome / Edge / Brave / Vivaldi / Firefox / Zen 等浏览器（Chromium 系与 Gecko 系都支持）。
+PTA 助手是一个运行在浏览器里的 PTA（拼题A）解题助手：自带 agent loop、本地编译器和完整的页面适配，支持 Chrome / Edge / Brave / Vivaldi / Opera / Firefox / Zen。
 
-核心能力：
+- 插件下载与教程：**<https://me.octest.top/pta-assist-plugin>**
+- 作者主页：**<https://me.octest.top>**
 
-- 内置自定义 agent loop：请求模型 → 执行工具 → 回灌结果 → 再来一轮
-- 内置 C/C++、Python、JavaScript 三种语言的本地编译运行环境（无需联网、代码不出本机）
-- 完整的 PTA 页面适配：读题面、读写代码、提交、读判题结论、模拟运行
-- 悬浮窗 + 全页面最大化模式，状态全局单例同步
-- 支持 markdown 渲染、KaTeX 数学公式、工具调用卡片、多轮追问
+## 功能
+
+| 能力 | 说明 |
+|---|---|
+| 对话 agent loop | 请求模型 → 执行工具 → 回灌结果 → 再来一轮，最多 80 轮 |
+| 本地编译器 | C/C++（Clang wasm）、Python（Pyodide）、JavaScript 全部在本机运行，代码不出本机 |
+| PTA 页面适配 | 读题面、读写作答区、提交、读判题结论、模拟运行，覆盖新版页签式结果区 |
+| 禁粘贴也能贴 | 接管 `Ctrl+V` / `⌘V`，读剪贴板后走插件自己的写入链路；抢不过页面时用 `Ctrl+M` |
+| diff 全屏 | diff 卡片可在新标签页显示完整改动，不折叠没改动的行 |
+| 公式与 Markdown | 流式渲染 Markdown、表格与 KaTeX 公式 |
+| 随时停止 | 模型流、页面脚本、编译、逐字输入、写入作答区都能被「停止」打断 |
+| 对话持久化 | 按页面地址分桶存进浏览器本地，刷新不丢 |
 
 ## 安装
 
-插件**没有签名**，所以每个浏览器的装法不太一样。先记住三条铁律：
+插件没有签名，浏览器不会自动安装。下载页：<https://me.octest.top/pta-assist-plugin>。
 
-1. **Chromium 系（Chrome / Edge / Brave / Vivaldi / Opera）只认「文件夹」**：把 `pta-assistant-v3.0.1.zip` **先解压**，再在扩展管理页里「加载已解压的扩展程序」选那个文件夹。直接选 zip 会报「无法加载清单」。
-2. **Gecko 系（Firefox / Zen）可以直接选 xpi**：`about:debugging` → 临时载入附加组件 → 选 `pta-assistant-v3.0.1.xpi`。临时载入**关掉浏览器就没了**，再开一次要再载一遍。
-3. **一定要选对文件夹层级**：解压后要选**里面有 `manifest.json` 的那一层**。别选到套了两层目录的，也别选项目根目录。
+三条规则：
+
+1. **Chromium 系只认文件夹**：把 zip 解压，在扩展管理页选「加载已解压的扩展程序」；直接选 zip 会报「无法加载清单」。
+2. **Firefox / Zen 可以直接选 xpi**：`about:debugging` 里临时载入；关掉浏览器就失效。
+3. **选对层级**：要选里面有 `manifest.json` 的那一层，别选到套了两层目录的。
 
 ### Chrome / Edge / Brave / Vivaldi / Opera
 
-1. 下载 `pta-assistant-v3.0.1.zip` 并**解压**
-2. 打开扩展管理页（Chrome：`chrome://extensions`；Edge：`edge://extensions`；其它内核浏览器地址类似）
+1. 打开下载页，下载 Chrome 版 zip 并解压
+2. 打开扩展管理页（Chrome：`chrome://extensions`，Edge：`edge://extensions`）
 3. 打开「开发者模式」
-4. 点「加载已解压的扩展程序」，选中解压出来、里面有 `manifest.json` 的那个文件夹
-5. 点浏览器右上角拼图图标，把「PTA 助手」**固定**到工具栏
+4. 点「加载已解压的扩展程序」，选中解压出来、里面有 `manifest.json` 的文件夹
+5. 点工具栏拼图图标，把「PTA 助手」固定出来
 
 ### Firefox / Zen
 
-1. 下载 `pta-assistant-v3.0.1.xpi`
+1. 下载 Firefox 版 xpi
 2. 地址栏打开 `about:debugging#/runtime/this-firefox`
-3. 右上角点「临时载入附加组件…」，选择刚下载的 `.xpi`
-4. 工具栏出现拼图图标，点它找到「PTA 助手」并**固定**到工具栏
-5. 关掉浏览器就失效，下次启动要重新载入；想省这一步需要官方签名版本
+3. 点「临时载入附加组件…」，选择 xpi
+4. 工具栏拼图图标里找到「PTA 助手」并固定
 
-## 装完之后
+临时载入的插件在浏览器重启后失效，需要再载入一次；想要长期生效需要签名版本。
 
-- **点图标没反应**：页面是在装插件之前打开的，刷新一下页面；`chrome://` 这类浏览器内部页面不允许注入，属正常
-- **图标不在工具栏**：默认不固定，点拼图图标 → 找到「PTA 助手」→ 点图钉
-- **想换位置/大小**：拖标题栏移动、拉右下角改大小，位置与尺寸会被记住；**双击标题栏或双击工具栏图标**恢复默认
-- **第一次用**：点右上角齿轮填 API Key（默认接硅基流动），接口地址旁边有「教程」按钮
+## 使用
 
-## 基础工具列表
+### 打开悬浮窗
 
-插件内置以下工具供 AI 调用：
+- 点工具栏的 PTA 助手图标：开关悬浮窗
+- 双击图标或双击标题栏：恢复默认位置与大小
+- 拖标题栏移动、拉右下角改大小，位置与尺寸会被记住
+
+| 面板按钮 | 作用 |
+|---|---|
+| 新会话 | 清空对话上下文，连带清掉存盘的对话记录 |
+| 发送 / 停止 | 发送消息；生成或写入途中可随时停止 |
+| 输入 | 把输入框文本写进作答区（不走 AI） |
+| ⚙ | 进入设置 |
+| × | 关闭悬浮窗 |
+
+正在打开的页面如果是在安装插件之前加载的，刷新一次即可；`chrome://` 开头的内部页面不允许注入，属正常。
+
+### 第一次配置
+
+点面板右上角齿轮：
+
+| 配置 | 说明 |
+|---|---|
+| API Key | 模型接口密钥，只保存在 background 里，页面上拿不到 |
+| 接口地址 | OpenAI 兼容地址，默认 `https://api.siliconflow.cn/v1` |
+| 模型 | 可手填，也可以点「选模型」从接口拉取列表 |
+
+接口地址旁边有「教程」，打开的也是 <https://me.octest.top/pta-assist-plugin>。
+
+### 粘贴：Ctrl+V / Ctrl+M
+
+PTA 会拦截普通粘贴。插件只在可写作答区里接管：
+
+| 操作 | 行为 |
+|---|---|
+| `Ctrl+V` / `⌘V` | 读取系统剪贴板，在光标处插入；不触发页面的「禁止粘贴」 |
+| `Ctrl+M` | 备用快捷键，`Ctrl+V` 被页面抢先拦掉时用 |
+| 右键 / 中键粘贴 | 同样走内置粘贴 |
+| 面板「输入」按钮 | 剪贴板读不到时的兜底，把输入框里的文本整段写进作答区 |
+
+写入过程中页面底部会出现提示条。剪贴板读取失败时，content script 会转给 background（Chrome 用 offscreen 文档，Firefox 用 background 页的 DOM）。
+
+### diff 全屏
+
+diff 卡片表头有「全屏查看」：新标签页打开完整 diff，不折叠、不限高；只保留最近 8 份，过期后回到面板重新点一次。
+
+### 状态保存
+
+| 状态 | 说明 |
+|---|---|
+| 输入草稿 | 没发出去的文本保存在本地，刷新不丢 |
+| 布局位置 | 拖动/缩放，刷新页面后自动恢复 |
+| 对话记录 | 按页面地址分桶存盘（同一道题恢复同一段对话，最多 60 条、单条 8000 字符） |
+
+对话记录存在 `chrome.storage.local`，按页面地址分桶：同一道题恢复同一段对话，换题就是新的一段，不会串上下文。点「新会话」会把存盘的那份一起清掉。
+
+## AI 可用的工具
 
 | 工具 | 功能 |
 |---|---|
-| `read_problem` | 获取当前题目的完整题面（含样例、公式还原成 LaTeX） |
-| `read_editor_code` | 读取作答区中用户当前编写的代码 |
-| `write_editor_code` | 把代码写入作答区（自动验证、回读比对、样例编译） |
-| `compile_and_run_c` | 本地编译并运行 C/C++ 代码（Clang wasm 引擎） |
-| `compile_and_run_python` | 本地运行 Python 代码（Pyodide） |
-| `compile_and_run_js` | 本地运行 JavaScript 代码 |
-| `read_pta_compile_result` | 读取 PTA 页面最近一次编译/运行结果 |
-| `simulate_pta_run` | 在 PTA 页面点「运行测试」并读回结果（覆盖无内置编译器的语言） |
-| `submit_answer` | 提交当前作答区代码，等判题结论 |
+| `read_problem` | 读取当前题面（样例、公式转 LaTeX） |
+| `read_editor_code` | 读取作答区代码 |
+| `write_editor_code` | 写入作答区（自动回读比对、样例编译、检查提交按钮） |
+| `compile_and_run_c` | 本地编译运行 C/C++（Clang wasm） |
+| `compile_and_run_python` | 本地运行 Python（Pyodide） |
+| `compile_and_run_js` | 本地运行 JavaScript |
+| `read_pta_compile_result` | 读取 PTA 最近一次编译/运行结果 |
+| `simulate_pta_run` | 在 PTA 页面点「运行测试」并读回结果 |
+| `submit_answer` | 提交作答区代码并等判题结论 |
 | `read_judge_result` | 读取判题结论（AC/WA/PC/TLE 等） |
-| `close_dialogs` | 关掉挡在页面上的弹窗 |
-| `refresh_page` | 刷新当前页面（页面状态乱掉时用） |
-| `js_inject` | 在页面主世界执行任意 JS（拿到 PTA 页面自己的 JS 对象） |
-| `simulate_keyboard_input` | 模拟键盘输入到作答区或指定元素 |
-| `ask` | 向用户提选择题，在面板上点选 |
-| `diff` | 把改动前后的代码左右两列对照展示 |
-| `write_document` | 编写文档并下载到用户的浏览器 |
-| `date` | 获取当前日期时间 |
-| `url` | 获取当前页面 URL |
+| `close_dialogs` | 关闭挡在页面上的弹窗 |
+| `refresh_page` | 刷新当前页面 |
+| `js_inject` | 在页面主世界执行 JavaScript |
+| `simulate_keyboard_input` | 模拟键盘输入 |
+| `ask` | 向用户提选择题（阻塞等待点选） |
+| `diff` | 左右对照展示改动 |
+| `write_document` | 写文件并下载到本机 |
+| `date` / `url` | 获取当前时间 / 当前页面地址 |
 
-注意：只有当用户说可以发版时才可以使用 v3.0.1 等标签标记 commit。
+### 工具细节
+
+**`read_problem`**：读取标题、题目 ID、描述、输入输出格式和样例；公式还原成 LaTeX（`$...$`），图片公式会附上说明与链接。
+
+**`read_editor_code`**：读取作答区里当前代码（优先编辑器实例，DOM 只能读到渲染出来的行）。
+
+**`write_editor_code`**：写入后自动做三件事——回读逐行比对、用第一组样例编译比对输出（按页面上选定的语言挑运行器）、检查提交按钮是否可用。有「不一致 / 按钮禁用」先把结论修掉。
+
+**`submit_answer` / `read_judge_result`**：提交后等判题结论。PTA 结果页不会自己刷新，等待循环里每秒点一次页面上的「刷新 / Reload」。提交前先确认上一次的「提交结果 dialog」已经关掉（`close_dialogs`），否则它会挡住提交按钮。
+
+判题结论归一化：
+
+| 代号 | 含义 |
+|---|---|
+| `AC` | 通过（Accepted） |
+| `PC` | 部分正确（Partially Accepted）——不等于做对 |
+| `WA` | 答案错误 |
+| `RE` | 运行时错误 |
+| `TLE` | 超时 |
+| `MLE` | 内存超限 |
+| `CE` | 编译错误 |
+
+**`js_inject`**：在页面主世界执行 JavaScript，支持顶层 `await`，15 秒超时；主世界不可用时退回隔离世界。
+
+**`simulate_keyboard_input`**：向作答区或指定元素模拟输入。支持 `selector`、`text`、`clear`、`press`、`focusOnly`、`readOnly`。真实按键走 `chrome.debugger` 发 CDP 事件（trusted），用不了时自动退回模拟事件并在结果里说明。
+
+**`ask`**：向用户提选择题。等不到作答 15 分钟后按「用户没有作答」继续；面板点选项后要等后台回执，被拒绝会把卡片恢复成可点。
+
+**`diff`**：左右两列 + 中间一条道，行号夹在两边，改动块头尾画 `»` / `«`。改完代码必须调用一次；卡片可全屏。
+
+**`write_document`**：把整理好的内容写成文件下载到本机；超过面板能力的长文档用它，不要在回答里贴整篇。
+
+## 内置编译器
+
+插件内置 C/C++、Python、JavaScript 三种语言的编译运行环境：不联网、代码不出本机。
+
+| 工具 | 运行时 |
+|---|---|
+| `compile_and_run_c` | Clang 22.1.8 + wasm-ld + wasi-sdk 33 sysroot（约 91MB） |
+| `compile_and_run_python` | Pyodide 0.26（约 15MB） |
+| `compile_and_run_js` | 插件内置 JS Worker |
+
+AI 会自动调用它们验证样例。例如：
+
+```
+帮我用 Python 解决这道题：
+已知 n，求 1 到 n 的和。
+样例：输入 5，输出 15。
+```
+
+AI 会写代码并调 `compile_and_run_python`，把样例输入 `5\n` 喂进去，确认输出 `15`。
+
+对于**没有内置编译器**的语言（Java、C#、Go 等），走 PTA 自己的运行入口：
+
+- **`simulate_pta_run`**：展开测试面板 → 把 `stdin` 填进测试输入框（不传就沿用原有输入）→ 点「运行测试 / Run Test Case」→ 读回结果（英文页还会带回 Expected Result）
+- **`read_pta_compile_result`**：读取最近一次编译/运行输出
+
+这两个工具只在 PTA 页面（`pintia.cn`）上生效。
+
+## PTA 适配要点
+
+### 判题结论归一化
+
+- `Partially Accepted` 归一化成 `PC`（部分正确，不等于 AC）
+- 整体结论块（Status + 结论值）优先于逐行扫描
+- 裸状态码只在很短的一行里才算结论，避免被页面脚本里的 `you're` 命中成 `RE`
+
+### 新版测试面板
+
+新版测试区是页签：`Test Case` / `Running Result` / `Compiler's Log`，结果容器可能在第 5 层祖先里，而且跑完不一定自动切页签。
+
+- `simulate_pta_run` 会主动点开结果页签；结果为空时回退 `Compiler's Log`
+- `read_pta_compile_result` 同样先切页签再读，并排除作答区自己的代码
+- 回归测试复刻了页签结构，覆盖「不自动切页签」「只有编译日志」两种情况
+
+## 隐私与安全
+
+- **API Key 只存在 `chrome.storage.local`，只有 background 能读**；content script 拿到的设置视图里没有 Key
+- **请求由 background 发出**：避开页面 CSP，也不让 Key 进入页面上下文
+- **代码不出本机**：内置编译器完全在浏览器里跑，不联网
+- **改用户代码前必须先问**：用户没有明确要求改代码时，`write_editor_code` 之前必须先 `ask`
 
 ## 工程结构
 
 ```
-manifest/manifest.json   手写的清单文件（Chrome 用），Firefox 版本在构建时按差异打补丁
-vite.config.ts           构建配置：一次构建一个入口（background / content / fullpage），target 决定产物目录
+manifest/manifest.json   手写清单（Chrome 用），Firefox 版本在构建时按差异打补丁
+vite.config.ts           一次构建一个入口（background / content / diff），TARGET 决定产物目录
 src/
-  background/index.ts    background：图标点击、消息路由、维护进行中的请求
-  background/agent.ts    agent loop：请求模型 → 执行工具 → 回灌结果 → 再来一轮
-  background/deepseek.ts 调用 /chat/completions，解析 SSE 文本增量与 tool_calls 分片
-  background/js-inject.ts 在页面主世界执行模型给的 JS（含超时与隔离世界回退）
-  background/compile.ts   内置编译器调度：C/Python/JS 三个引擎，阶段化超时，Worker 承载
-  background/debugger-input.ts chrome.debugger 发 CDP 真实按键（Input.dispatchKeyEvent / insertText）
-  background/pta-scripts.ts PTA 页面适配脚本：读题面、读写代码、提交、判题、模拟运行
-  background/settings.ts 设置读写（chrome.storage.local），API Key 只留在这里
-  content/index.tsx      content script：注入 Shadow DOM 宿主节点并挂载 React
-  content/App.tsx        悬浮窗主体（对话 / 设置两个视图）
-  content/pageTools.ts   页面侧工具：url 取当前地址，write_document 触发下载
-  content/hooks/         useChat（消息、流式增量、工具事件）、useSettings
-  content/components/    消息列表、markdown 渲染、工具卡片、输入区、设置页
-  content/katexStyles.ts KaTeX 样式的字库地址改写成扩展地址
-  content/styles.css     悬浮窗样式（跟随 content.js 一起注入，不污染页面）
-  content/chatStore.ts   对话持久化：按页面地址分桶，chrome.storage.local
-  fullpage/              全页面最大化模式（React 组件复用 content 侧）
-  shared/                browser API 入口、消息协议、工具定义、设置与消息类型
-  shared/abort.ts        「停止」的统一语义：造/认 AbortError、随时打断任意一步
-public/engine/           内置 C 编译器：Clang/LLD 的 wasm + sysroot + WASI 运行时（见该目录 README）
-public/engine/pyodide/    内置 Python 运行时（Pyodide，约 15MB）
-public/avata.jpg         作者头像：设置页作者卡片与底部署名用
-scripts/
-  fetch-engine.mjs      下载 C 编译器的三大资源（约 91MB，build 前自动跑一次）
-  fetch-pyodide.mjs     下载 Pyodide 运行时（约 15MB，build 前自动跑一次）
-  gen-icons.py          生成 public/icons 下的图标
-  package-firefox.mjs   把 dist/firefox 打成无签名的 xpi（npm run package:firefox）
-  package-chrome.mjs    把 dist/chrome 打成 zip（npm run package:chrome）
-  zip.mjs               两个打包脚本共用的手写 zip 实现（固定时间戳，可复现打包）
-  test-typist.mjs       键盘模拟：幻影闭合符、缩进修正、回读比对
-  test-diff.mjs         diff 引擎：行配对、行号、颜色分类、超大输入降级
-  test-pta-tools.mjs    PTA 工具脚本：题面、代码读写、判题、模拟运行的集成测试
-  test-compile.mjs      内置 C 编译器：真实引擎编译运行 + 样例比对
-  test-deepseek.mjs     假的 fetch 跑 SSE 解析与错误映射
-  test-background.mjs   后台逻辑：agent loop、请求路由、工具调度
-  smoke.mjs             jsdom 冒烟测试：清单完整性、悬浮窗、流式对话、设置页
+  background/index.ts    图标点击、消息路由、进行中的请求
+  background/agent.ts    agent loop
+  background/deepseek.ts 调用 /chat/completions，解析 SSE 与 tool_calls 分片
+  background/js-inject.ts 在页面主世界执行脚本（超时 + 隔离世界回退）
+  background/compile.ts  内置编译器调度（C / Python / JS）
+  background/clipboard.ts 读剪贴板的后台兜底
+  background/pta-scripts.ts PTA 页面脚本：题面、代码、提交、判题、模拟运行
+  background/settings.ts 设置读写，API Key 只留在这里
+  content/index.tsx      content script：注入 Shadow DOM 并挂载 React
+  content/App.tsx        悬浮窗主体
+  content/paste.ts       Ctrl+V / Ctrl+M 内置粘贴
+  content/hooks/         useChat、useSettings、usePanelLayout
+  content/components/    消息列表、Markdown、工具卡片、输入区、设置页
+  content/chatStore.ts   对话持久化（按页面地址分桶）
+  diff/                  全屏 diff 标签页
+  shared/                browser API、消息协议、工具定义、diff 引擎与样式
+public/engine/           内置 C 编译器（wasm + sysroot + WASI shim，见该目录 README）
+public/engine/pyodide/   内置 Python 运行时（约 15MB）
+scripts/                 下载资源、打包、测试
 ```
 
 ## 开发与调试
 
 ```bash
 npm install
-npm run build      # fetch-engine + fetch-pyodide + 类型检查 + 产出 dist/chrome、dist/firefox
+npm run build      # 下载引擎资源 + 类型检查 + 产出 dist/chrome、dist/firefox
 npm run test       # 全部测试（需要先 build）
-npm run icons      # 重新生成图标（需要 python3 + Pillow）
-npm run package            # 两个浏览器各打一个包（dist/pta-assistant-v3.0.1.xpi 与 .zip）
-npm run package:firefox    # 只打 Firefox 的 xpi（无签名）
-npm run package:chrome     # 只打 Chrome 的 zip（上传应用商店 / 给用户手动解压安装）
+npm run package            # 两个浏览器各打一个包
+npm run package:chrome     # 只打 Chrome zip
+npm run package:firefox    # 只打 Firefox xpi
+npm run icons              # 重新生成图标（python3 + Pillow）
+```
 
 需要 Node 22.18+。
 
-构建脚本刻意不删产物目录本身（只让 Vite 清空目录内容）：目录被删掉重建后，浏览器里已加载的插件还指向旧目录，刷新时会报「File path cannot be resolved / 无法加载清单」。遇到这个报错就把插件「移除」再重新加载一次。
+加载开发产物：
 
-加载方式：
+- Chrome：`chrome://extensions` → 开发者模式 → 「加载已解压的扩展程序」→ `dist/chrome`
+- Firefox：`about:debugging#/runtime/this-firefox` → 「临时载入附加组件」→ `dist/firefox/manifest.json`
 
-- Chrome：`chrome://extensions` → 开发者模式 → 「加载已解压的扩展程序」→ 选择 `dist/chrome`
-- Firefox（开发）：`about:debugging#/runtime/this-firefox` → 「临时载入附加组件」→ 选择 `dist/firefox/manifest.json`
+改完代码重新构建，再在扩展管理页点刷新。构建脚本只清空产物目录内容、不删目录本身：目录被删掉重建后，浏览器里已加载的插件会报「File path cannot be resolved」，移除后重新加载即可。
 
-改代码后需要重新 build，再在扩展管理页点刷新按钮。
+点图标没反应时按顺序排查：页面是否在装插件之前打开（刷新）、是否 `chrome://` 内部页（预期不支持）、`chrome://extensions` 的错误页里 background 有没有报错。
 
-点图标打不开悬浮窗时的排查顺序：
+## 设计说明
 
-1. 页面是在插件安装/重载之前打开的 —— 正常情况下点图标会自动补注入（`scripting.executeScript`），实在不行刷新页面
-2. `chrome://` 开头的内部页面不允许注入，属于预期
-3. 打开 `chrome://extensions` 点「错误」看 background 有没有报错
+### 内置 C 编译器
 
-## 设计决策
-
-### 安全
-
-- **API Key 存在 `chrome.storage.local`，只有 background 能读到**：content script 拿到的视图里没有 Key，页面上也拿不到明文
-- **请求由 background 发出**（不是 content script 直连）：既避开页面自身的 CSP，也不让 Key 进入页面上下文
-- **改用户代码前必须先 ask**：系统提示里的硬规矩——用户没有明确要求改代码时，`write_editor_code` 之前必须先 ask 一次；用户选了「先别改」就停下讲思路
-
-### 内置 C 编译器（v0.9）
-
-`compile_and_run_c` 完全在插件本地编译运行：不联网、代码不出本机、不用配任何服务地址。
-
-做法：把 Clang 22.1.8 + wasm-ld（LLD）+ wasi-sdk 33 的 sysroot 全部编成 WebAssembly 塞进插件，整套引擎跑在 Web Worker 里。
+把 Clang 22.1.8 + wasm-ld（LLD）+ wasi-sdk 33 的 sysroot 编成 WebAssembly 放进插件，编译、链接、运行全在 Web Worker 里完成。
 
 | 环节 | 做法 |
 |---|---|
-| 编译 | `clang -cc1 -emit-obj`，C 头文件来自 sysroot 的 `include/wasm32-wasip1` |
-| 链接 | `wasm-ld` 链接 `crt1.o` + `libc.a` + `libclang_rt.builtins.a`，产出用户程序的 .wasm |
-| 运行 | 用 JS 实现的 WASI shim 跑这个 .wasm：stdin 预喂（题目的样例输入）、stdout / stderr 分开收集 |
+| 编译 | `clang -cc1 -emit-obj`，头文件来自 sysroot |
+| 链接 | `wasm-ld` 链接 `crt1.o` + `libc.a` + `libclang_rt.builtins.a` |
+| 运行 | JS 实现的 WASI shim：stdin 预喂样例输入，stdout / stderr 分开收集 |
 
-资源约 91MB（`public/engine/`），三个大文件不进 git，`npm run build` 会先跑 `scripts/fetch-engine.mjs` 从固定的 Release 下载并 sha256 校验（只需一次，之后永久离线）。
+- 编译 + 链接 60 秒、运行 10 秒的阶段化硬超时；超时直接杀掉 Worker 重建（死循环没有协作式检查点）
+- Chrome 用 offscreen 文档承载 Worker，Firefox 的 background 直接 `new Worker`
+- 资源约 91MB，由 `scripts/fetch-engine.mjs` 从固定 Release 下载并 sha256 校验，之后完全离线
+- 引擎来源 [cppstudio-io/wasm-clang-runtime](https://github.com/cppstudio-io/wasm-clang-runtime)（Apache-2.0）
 
-实现取舍：
+### 性能
 
-- **Worker 而不是直接跑**：编译 + 运行是同步 CPU 密集任务，更重要的是学生写错边界条件容易写出死循环，wasm 里没有协作式检查点，唯一能停下来的办法就是 `worker.terminate()` 整个杀掉再重建
-- **Chrome 用 offscreen 文档承载 Worker**：MV3 的 service worker 里建不了 Worker；Firefox 的 background 是 event page，直接 `new Worker`。编译期间后台每 20 秒戳一次扩展 API，防止 service worker 被按空闲回收
-- **阶段化超时**：编译 + 链接 60 秒（首次含引擎加载），运行 10 秒，超时就杀 Worker 并汇报「运行超时（多半是死循环）」
-- **用 noeh 版 clang/lld**：标准版有一条 exnref 指令要 Chrome 125+，剥掉它之后 Chrome 63+ / Firefox 115+ / 各种国产内核 WebView 都能跑
-- **必须在 manifest 里放行 wasm**：MV3 扩展页默认 CSP 是 `script-src 'self'`，不含 wasm 权限。manifest 里写的是 `script-src 'self' 'wasm-unsafe-eval'`
-- **语义参照 PTA 判题机**（GCC），和桌面 clang/gcc 一致：自测通过不等于提交能过，但至少不会因为编译器方言吃亏
-- 引擎来源 [cppstudio-io/wasm-clang-runtime](https://github.com/cppstudio-io/wasm-clang-runtime)（Apache-2.0，其前身是 binji/wasm-clang），`shared.js` 改成了 C 专用、补了 stderr 分流；详见 `public/engine/README.md`
+内容多时不卡依赖几件事：流式增量按 `requestAnimationFrame` 合并、消息与工具卡片 `memo`、滚动状态只在跨越阈值时更新、消息区 `contain: content` + 气泡 `content-visibility: auto`、进度条只动 `transform`。
 
-### 判题结论归一化（v2.0）
+### 「停止」在任何时刻都有效
 
-PTA 的判题结果页是英文的，结论不在弹窗里，而是「Status 标签 + 结论值」一块。
+整个 agent loop 共用同一个 `AbortSignal`：模型流、等用户作答、页面工具、页面脚本、编译器、逐字输入、写入作答区都接得上；工具跑到一半被停也会补一条收尾事件，面板不会永远转圈。
 
-- **`Partially Accepted` 才是 PTA 的「部分正确」原文**，它包含 `Accepted`，不单独列出来就会被报成 AC
-- **裸状态码只在 ≤24 字符的一行里才算结论**：页面里「不再支持旧浏览器」的提示脚本中 `you're` 的 `re` 会被 `\bRE\b` 命中，整页被报成「判题结论：RE」；脚本/样式节点不参与判题文字收集
-- **整体结论优先于明细表**：先找「Status 标签 + 结论值」的整体结论块，再退回逐行扫
-- **「部分正确」排在所有正向词前面**，归一化成 `PC`；「通过」只在真的在讲结论时才算 AC（`通过测试点 6/10`「通过率 60%」这类统计不算）
+### 新对话强制停旧对话
 
-### 全局单例状态同步（v3.0）
+同一页面里开始新一轮时，background 会把该标签页上一轮还在跑的请求 `abort()` 并释放挂起的 `ask`；不同标签页互不影响。
 
-悬浮窗与全页面最大化模式共享同一份状态，通过 `chrome.storage.local` + `storage.onChanged` 实时同步：
+### 其他
 
-| 状态 | 说明 |
+- **ask 超时 15 分钟**：问用户判题结果时可能中途去查资料；走人也可以点「停止」
+- **KaTeX 字库**：只带 woff2，构建时复制到 `dist/<target>/katex-fonts/`
+- **UTF-8 校验**：Chrome 会拒绝含 Unicode 非字符的脚本，构建时统一转义成 `\uXXXX`
+- **判题等待**：PTA 结果页不会自动刷新，等待循环里会点页面上的「刷新 / Reload」
+
+## 常见问题
+
+| 问题 | 处理 |
 |---|---|
-| 面板开关 | 在任一界面打开/关闭，所有界面同步 |
-| 输入草稿 | 未发送的文本在所有输入框实时同步 |
-| 布局位置 | 拖动/缩放，刷新页面后自动恢复 |
-| 对话记录 | 按页面地址分桶存盘（最多 60 条、单条 8000 字符） |
+| 点图标没反应 | 刷新页面；`chrome://` 页面不支持 |
+| 按 Ctrl+V 没反应 | 先点一下作答区；仍不行用 Ctrl+M 或面板「输入」 |
+| 全屏 diff 提示已过期 | 只保留最近 8 份，回面板重新点一次 |
+| API Key 无效 | 设置页重填，或检查接口地址 |
+| 编译器加载失败 | 确认扩展允许 WASM；或用 PTA 的「运行测试」 |
+| 判题一直卡住 | 插件会自动点「刷新」；超时后可让 AI 调 `refresh_page` |
 
-### 「停止」在任何时刻都有效（v2.0）
+## License
 
-整个 agent loop 的每一段都接同一个 `AbortSignal`（语义统一在 `src/shared/abort.ts`）：
-
-| 阶段 | 怎么停的 |
-|---|---|
-| 模型请求（SSE） | fetch 带 signal；中止时主动 `reader.cancel()` |
-| 等用户作答 | `chat/stop` 解掉等待，返回「用户已停止这次提问」 |
-| 页面工具 | `abortable()` 与中止赛跑，content script 不回话也能立刻放手 |
-| 页面里跑的脚本 | 往页面置 `__ptaAborted = true`，页面里的循环自己看标记 |
-| 内置编译器 | `runInEngine` 收到中止就换掉整个引擎 |
-| 逐字敲键盘 | `runTypist` 每个字符前看一眼标记 |
-| 写入作答区 | 每次换写入实现之前看一眼标记 |
-
-另两层保险：
-
-- **工具跑到一半被停**：照样补一条 `chat/tool-end`（内容「已停止」），卡片不会永远转圈
-- **面板不等后台回话**：点「停止」立刻自己收尾，之后迟到的 `chat/*` 事件一律不上屏
-
-### 其他工程细节
-
-- **ask 的 15 分钟超时**：问用户判题结果这类问题，用户可能中途去查资料；真有走人的情况点「停止」一样能收工
-- **对话持久化**：对话记在 `chrome.storage.local`，按页面地址分桶，刷新页面不丢
-- **KaTeX 字库**：只带 woff2（20 个文件 296K），构建时复制到 `dist/<target>/katex-fonts/`，CSS 里的相对地址改写成扩展地址
-- **UTF-8 校验坑**：Chrome 会用 `base::IsStringUTF8` 校验脚本，Unicode 非字符（U+FFFE / U+FFFF 之类）会被判成「不是 UTF-8 编码」而拒绝加载整个插件。构建里已经统一把非字符转义成 `\uXXXX`
-- **判题等待**：PTA 的判题结果页不会自己刷新，等待循环里每秒点一次页面上的「刷新 / Reload」按钮
-
-## 版本历史
-
-| 版本 | 主要内容 |
-|---|---|
-| v3.0.1 | 版本号同步、文档整理 |
-| v3.0 | 全页面最大化模式、全局单例状态同步、内置 Python/JavaScript 编译器、PTA 编译结果读取与模拟运行 |
-| v2.0 | 模型下拉框、判题结论修正（部分正确不再报成 AC）、「停止」随时可用 |
-| v1.0 | 设置页作者卡片、默认接硅基流动、面板可改大小 |
-| v0.9 | 内置 C 编译器（Clang wasm，完全本地） |
-| v0.8 | 面板可拖动缩放、智能滚动、工具卡片折叠 |
-| v0.7 | PTA 三件套：读题面 / 读写代码 / 提交与判题 |
-| v0.5 | 模拟键盘输入（CDP 真实按键 + 幻影闭合符对抗） |
-| v0.4 | agent loop、js_inject / url / date / write_document 四工具 |
-| v0.3 | markdown + KaTeX 流式渲染 |
-| v0.2 | 接入 DeepSeek，单轮流式对话 |
-| v0.1 | 基础悬浮窗 UI |
+[LICENSE](LICENSE)

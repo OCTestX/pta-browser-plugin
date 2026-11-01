@@ -3,6 +3,7 @@ import { ext } from '../shared/browser';
 import { isContentRequest } from '../shared/messages';
 import type {
   BackgroundEvent,
+  DiffPayload,
   ModelsListResponse,
   RunToolRequest,
   StartChatResponse,
@@ -13,7 +14,8 @@ import { isCompleteBaseURL, normalizeBaseURL } from '../shared/settings';
 import { createId, type ApiMessage } from '../shared/types';
 import { runAgent, type ToolOutcome } from './agent';
 import { DEFAULT_INPUT_METHOD, findInputMethod } from '../shared/input-methods';
-import { runInputMethod, writeEditorCode } from './input-methods';
+import { pasteIntoEditor, runInputMethod, writeEditorCode } from './input-methods';
+import { readClipboardText } from './clipboard';
 import { loadSettings, saveSettings, toSettingsView } from './settings';
 
 const TOGGLE_PANEL: BackgroundEvent = { type: 'toggle-panel' };
@@ -21,6 +23,14 @@ const RESET_PANEL_LAYOUT: BackgroundEvent = { type: 'panel/reset-layout' };
 
 /** requestId -> AbortController，用于「停止生成」 */
 const runningRequests = new Map<string, AbortController>();
+
+/** requestId -> 标签页 id：新对话开始时要把同一个页面里上一轮还在跑的那一轮掐掉 */
+const runningRequestTabs = new Map<string, number>();
+
+/** 全屏 diff 存在 chrome.storage.local 里的键前缀（diff.html 按 id 取回） */
+const DIFF_STORAGE_PREFIX = 'pta-assistant-diff:';
+/** 最多留几份全屏 diff，旧的顺手清掉 */
+const DIFF_KEEP = 8;
 
 /**
  * requestId -> AbortController，「输入」按钮的写作答区任务。
@@ -156,14 +166,48 @@ ext.runtime.onMessage.addListener((message: unknown, sender, sendResponse) => {
         }
         return;
       }
-      case 'ui/open-fullpage': {
-        // 悬浮窗最大化：打开全页面模式的标签页
+      case 'ui/open-diff': {
+        // diff 卡片的「全屏」：先落盘一份完整数据，再开标签页按 id 取回
         try {
-          await ext.tabs.create({ url: ext.runtime.getURL('fullpage.html') });
+          const id = await storeDiff(message.diff);
+          await ext.tabs.create({ url: ext.runtime.getURL(`diff.html?id=${encodeURIComponent(id)}`) });
           sendResponse({ ok: true } satisfies StartChatResponse);
         } catch (error) {
           sendResponse({ ok: false, message: toErrorMessage(error) } satisfies StartChatResponse);
         }
+        return;
+      }
+      case 'clipboard/read': {
+        const clip = await readClipboardText();
+        sendResponse({ ok: clip.ok, text: clip.text, message: clip.message });
+        return;
+      }
+      case 'code/paste': {
+        // 页面里拦下的 Ctrl+V / Ctrl+M：用「内置粘贴」在光标处插入剪贴板内容
+        if (tabId === undefined) {
+          sendResponse({ ok: false, result: '当前页面不支持（请刷新页面后重试）' } satisfies ToolRunResponse);
+          return;
+        }
+        const controller = new AbortController();
+        const requestId = message.requestId ?? createId();
+        runningInputs.set(requestId, controller);
+        const stopKeepAlive = keepServiceWorkerAlive(() => runningInputs.has(requestId));
+        let outcome: ToolOutcome;
+        try {
+          outcome = await pasteIntoEditor({ tabId, text: message.text, signal: controller.signal });
+        } catch (error) {
+          outcome = {
+            output: isAbortError(error, controller.signal) ? '已停止，剪贴板内容没有写进去' : toErrorMessage(error),
+            isError: true,
+          };
+        } finally {
+          stopKeepAlive();
+          runningInputs.delete(requestId);
+        }
+        sendResponse({
+          ok: !outcome.isError,
+          result: outcome.output,
+        } satisfies ToolRunResponse);
         return;
       }
       case 'models/list': {
@@ -320,8 +364,19 @@ async function startChat(
     return { ok: false, message: '这个消息已经在生成中了' };
   }
 
+  // 同一个页面只保留一轮：面板点了「新会话」再发消息时，上一轮即使还没收完尾也强制停掉，
+  // 否则旧请求的结果会和新上下文交错着回来
+  for (const [oldId, oldController] of runningRequests) {
+    if (oldId !== requestId && runningRequestTabs.get(oldId) === tabId) {
+      oldController.abort();
+      releaseAsks(oldId);
+      runningRequestTabs.delete(oldId);
+    }
+  }
+
   const controller = new AbortController();
   runningRequests.set(requestId, controller);
+  runningRequestTabs.set(requestId, tabId);
   const stopKeepAlive = keepServiceWorkerAlive(() => runningRequests.has(requestId));
 
   void (async () => {
@@ -361,10 +416,26 @@ async function startChat(
       stopKeepAlive();
       releaseAsks(requestId);
       runningRequests.delete(requestId);
+      runningRequestTabs.delete(requestId);
     }
   })();
 
   return { ok: true };
+}
+
+/**
+ * 把一份 diff 存进 storage.local，返回 id。
+ * 只保留最近几份：全屏页刷新时还能按 id 取回，关掉后也不会把 storage 撑满。
+ */
+async function storeDiff(diff: DiffPayload): Promise<string> {
+  const id = createId();
+  const all = await ext.storage.local.get(null);
+  const keys = Object.keys(all).filter((key) => key.startsWith(DIFF_STORAGE_PREFIX)).sort();
+  // 键里带时间戳前缀，按名字排序就是时间顺序
+  const stale = keys.slice(0, Math.max(0, keys.length - (DIFF_KEEP - 1)));
+  if (stale.length > 0) await ext.storage.local.remove(stale);
+  await ext.storage.local.set({ [`${DIFF_STORAGE_PREFIX}${id}`]: { ...diff, createdAt: Date.now() } });
+  return id;
 }
 
 /** url / write_document 要在页面里执行，转给 content script */

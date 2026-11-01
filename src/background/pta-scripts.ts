@@ -995,6 +995,23 @@ if (method === 'replaceSelection') {
   moveCursorToEnd();
   return finish('view.state.replaceSelection 后 dispatch');
 }
+if (method === 'insert') {
+  // 「内置粘贴」：在光标处插入，不覆盖用户已有的代码
+  view.focus();
+  const before = view.state.doc.length;
+  const head = view.state.selection.main.head;
+  view.dispatch({
+    changes: { from: head, to: head, insert: text },
+    selection: { anchor: head + text.length },
+    scrollIntoView: true,
+  });
+  await new Promise((resolve) => setTimeout(resolve, 80));
+  const after = view.state.doc.length;
+  const ok = after === before + text.length;
+  return json
+    ? { ok, method, detail: ok ? '已在光标处插入 ' + text.length + ' 个字符' : '插入后长度对不上（' + before + ' → ' + after + '）', length: after }
+    : (ok ? '已在光标处插入 ' + text.length + ' 个字符' : '插入失败');
+}
 if (method === 'cdpClickTyping') {
   // 输入由 background 的 CDP 逐字按键完成，这里只负责聚焦
   view.focus();
@@ -1012,43 +1029,61 @@ return json ? { ok: false, method, detail: '没有实现的方法：' + method, 
  * 找不到「编译器输出」标题时，退到通用选择器，把页面上像输出的块都收回来。
  */
 export const READ_PTA_COMPILE_RESULT_SCRIPT = `${HELPERS}
-const push = (out, seen, value) => {
-  if (!value) return;
-  if (seen.has(value)) return;
-  seen.add(value);
-  out.push(value);
+const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+// 结果区在新版页面上是页签：Test Case / Running Result / Compiler's Log。
+// 先点开目标页签，再按标题找容器，最后只收只读编辑器里的内容。
+const OUTPUT_LABELS = ['Running Result', '运行结果', '运行输出', '编译器输出', '编译输出', "Compiler's Log", '编译日志', '编译信息'];
+
+const findLabelNode = (label) => {
+  for (const node of document.querySelectorAll('span, div, p, label, button, h1, h2, h3, h4')) {
+    if (node.children.length > 0) continue;
+    if (textOf(node) === label) return node;
+  }
+  return null;
 };
 
-// 一、按「编译器输出」这个标题定位那块区域，最准
-const labels = Array.from(document.querySelectorAll('span, div, p, label, h1, h2, h3, h4'));
-let panel = null;
-for (const label of labels) {
-  if (label.children.length > 0) continue; // 只看叶子节点，标题本身是叶子
-  const t = textOf(label);
-  if (t !== '编译器输出' && t !== '编译输出' && t !== '运行输出') continue;
-  // 往上找一层：标题和内容通常在同一个容器里
-  let node = label.parentElement;
-  for (let depth = 0; node && depth < 4; depth += 1) {
-    const blocks = node.querySelectorAll('pre, code, [class*=output], [class*=stdout], [class*=stderr]');
-    if (blocks.length > 0) { panel = node; break; }
-    node = node.parentElement;
+const readFromHolder = (holder) => {
+  // 结果是只读的 CodeMirror：按编辑器内容读，不要按 innerText（会带上行号槽）
+  const editors = Array.from(holder.querySelectorAll('.cm-content')).filter((e) => {
+    const readonly = e.getAttribute('aria-readonly') === 'true' || e.getAttribute('contenteditable') === 'false';
+    return readonly;
+  });
+  if (editors.length > 0) {
+    const text = editors.map((e) => readFromDom(e)).filter(Boolean).join('\\n---\\n');
+    if (text) return text;
   }
-  if (panel) break;
-}
+  const blocks = Array.from(holder.querySelectorAll('pre, code, [class*=output], [class*=stdout], [class*=stderr]'));
+  return blocks.map((b) => textOf(b)).filter(Boolean).join('\\n---\\n');
+};
 
 const out = [];
 const seen = new Set();
-if (panel) {
-  const blocks = panel.querySelectorAll('pre, code, [class*=output], [class*=stdout], [class*=stderr]');
-  for (const block of blocks) push(out, seen, textOf(block));
-  // 容器里没有 pre/code，但有直接文本（少见）：把容器自己的文字也收上
-  if (out.length === 0) {
-    const t = textOf(panel).replace(/^编译器输出/, '').trim();
-    push(out, seen, t);
+for (const label of OUTPUT_LABELS) {
+  const node = findLabelNode(label);
+  if (!node) continue;
+  // 页签按钮：点一下把内容切出来（已经是当前页签时点一下也无副作用）
+  const tab = node.closest('button, [role=button]');
+  if (tab) {
+    tab.click();
+    await wait(200);
   }
+  let holder = node.parentElement;
+  for (let depth = 0; holder && depth < 10; depth += 1) {
+    const value = readFromHolder(holder);
+    if (value) {
+      if (!seen.has(value)) {
+        seen.add(value);
+        out.push(value);
+      }
+      break;
+    }
+    holder = holder.parentElement;
+  }
+  if (out.length > 0) break;
 }
 
-// 二、退路：页面上所有像输出的块
+// 退路：页面上所有像输出的块（排除作答区自己的代码）
 if (out.length === 0) {
   const selectors = ['pre', 'code', 'textarea', '[class*=output]', '[class*=stdout]', '[class*=stderr]', '[class*=console]', '[class*=log]'];
   for (const sel of selectors) {
@@ -1056,15 +1091,18 @@ if (out.length === 0) {
     try { nodes = Array.from(document.querySelectorAll(sel)); } catch (e) { continue; }
     for (const node of nodes) {
       if (node.tagName === 'SCRIPT' || node.tagName === 'STYLE') continue;
+      if (node.closest('[class*=CodingProblemAnswerForm]')) continue;
       const t = textOf(node);
       if (!t) continue;
-      push(out, seen, t);
+      if (seen.has(t)) continue;
+      seen.add(t);
+      out.push(t);
     }
   }
 }
 
 if (out.length === 0) {
-  return '没读到编译器输出。页面上可能还没跑过测试：先点「测试用例」展开测试区，再点「运行测试」。';
+  return '没读到编译器输出。页面上可能还没跑过测试：先点「测试用例 / Test Case」展开测试区，再点「运行测试 / Run Test Case」。';
 }
 return out.join('\\n---\\n');
 `;
@@ -1140,15 +1178,16 @@ if (stdin) {
 
 // 三、记下点之前的输出，用来判断「有没有变成新结果」
 const readOutput = () => {
-  // 英文页：Running Result（实际输出）与 Expected Result（期望输出）各是一块
-  // 中文页：一块「编译器输出」
-  const OUTPUT_LABELS = ['Running Result', '编译器输出', '运行结果', '编译输出'];
+  // 英文页：Running Result（实际输出）/ Compiler's Log（编译日志）与 Expected Result（期望输出）
+  // 中文页：一块「编译器输出」。新版页面这三块是页签，容器在标题上方第 5 层，
+  // 所以祖先链要多找几层（以前卡在 5 层，永远读不到新版页面的输出）。
+  const OUTPUT_LABELS = ['Running Result', '运行结果', '运行输出', '编译器输出', '编译输出', "Compiler's Log", '编译日志', '编译信息'];
   for (const label of OUTPUT_LABELS) {
     for (const node of document.querySelectorAll('span, div, p, label, button')) {
       if (node.children.length > 0) continue;
       if (textOf(node) !== label) continue;
       let holder = node.parentElement;
-      for (let depth = 0; holder && depth < 5; depth += 1) {
+      for (let depth = 0; holder && depth < 10; depth += 1) {
         // 结果是只读的 CodeMirror：按编辑器内容读，不要按 innerText（会带上行号槽）
         const editors = Array.from(holder.querySelectorAll('.cm-content')).filter((e) => {
           const readonly = e.getAttribute('aria-readonly') === 'true' || e.getAttribute('contenteditable') === 'false';
@@ -1174,7 +1213,7 @@ const readExpected = () => {
     if (node.children.length > 0) continue;
     if (textOf(node) !== 'Expected Result') continue;
     let holder = node.parentElement;
-    for (let depth = 0; holder && depth < 5; depth += 1) {
+    for (let depth = 0; holder && depth < 10; depth += 1) {
       const editors = Array.from(holder.querySelectorAll('.cm-content')).filter((e) => {
         const readonly = e.getAttribute('aria-readonly') === 'true' || e.getAttribute('contenteditable') === 'false';
         return readonly;
@@ -1186,8 +1225,23 @@ const readExpected = () => {
   return '';
 };
 
+// 结果区是页签（Test Case / Running Result / Compiler's Log）：
+// 有的页面跑完不会自动切过去，这里显式点一下目标页签。
+const activateTab = (labels) => {
+  for (const label of labels) {
+    for (const node of document.querySelectorAll('button, [role=button]')) {
+      if (textOf(node) !== label) continue;
+      node.click();
+      return label;
+    }
+  }
+  return '';
+};
+
 const before = readOutput();
 runButton.click();
+await sleepOrAbort(500);
+const resultTab = activateTab(['Running Result', '运行结果', '运行输出']);
 
 const deadline = Date.now() + waitSeconds * 1000;
 let latest = before;
@@ -1204,6 +1258,21 @@ while (Date.now() < deadline) {
   if (now) latest = now;
 }
 
+// 运行结果为空时，编译错误/异常通常落在 Compiler's Log 页签里
+let logNote = '';
+if (!changed) {
+  const logTab = activateTab(["Compiler's Log", '编译日志', '编译信息']);
+  if (logTab) {
+    await sleepOrAbort(300);
+    const log = readOutput();
+    if (log) {
+      latest = log;
+      changed = true;
+      logNote = '（来自 ' + logTab + '）';
+    }
+  }
+}
+
 const expected = readExpected();
 const expectedNote = expected ? '\\n期望输出：\\n' + expected.slice(0, 800) : '';
 
@@ -1215,6 +1284,7 @@ if (!changed) {
     + (filled ? '\\n' + filled : '')
     + '\\n当前输出：\\n' + latest.slice(0, 2000) + expectedNote;
 }
+const tabNote = (logNote || (resultTab ? '（' + resultTab + '）' : ''));
 return (filled ? filled + '\\n' : '')
-  + '已点击「运行测试」并读到输出：\\n' + latest.slice(0, 2000) + expectedNote;
+  + '已点击「运行测试」并读到输出' + tabNote + '：\\n' + latest.slice(0, 2000) + expectedNote;
 `;
