@@ -13,7 +13,7 @@ import { compileAndRun, compareOutput, formatCompileResult, type CompileResult }
 import { compileAndRunJs } from './compile';
 import { compileAndRunPython } from './compile';
 import { ext } from '../shared/browser';
-import { pokeEditor as poke, writeEditorCode } from './input-methods';
+import { pokeEditor as poke, readEditorCode, writeEditorCode } from './input-methods';
 import { createDebuggerIo, detach, pressKey } from './debugger-input';
 import {
   CHECK_READY_SCRIPT,
@@ -33,6 +33,13 @@ import { streamChat } from './deepseek';
 import { injectScript } from './js-inject';
 import { loadSettings } from './settings';
 import { diffLines, diffStats } from '../shared/diff';
+import {
+  choiceDeniesSubmit,
+  choiceDeniesWrite,
+  parseOptionQuestion,
+  submitGuardReason,
+  writeGuardReason,
+} from '../shared/guardrails';
 import type { DiffPayload, TokenUsage } from '../shared/messages';
 
 export interface ToolOutcome {
@@ -40,6 +47,8 @@ export interface ToolOutcome {
   isError: boolean;
   /** diff 工具带这个，卡片左右对照显示 */
   diff?: DiffPayload;
+  /** 写入成功后的「自动 diff」：agent loop 用它额外合成一张 diff 卡片 */
+  autoDiff?: DiffPayload;
 }
 
 export interface AgentEvents {
@@ -76,6 +85,13 @@ export async function runAgent(options: RunAgentOptions): Promise<void> {
   // 一轮对话往往要多次请求模型，用量累加起来才是这一轮真实花掉的 token
   const usage: TokenUsage = { promptTokens: 0, completionTokens: 0, totalTokens: 0 };
 
+  const lastUserText = [...messages].reverse().find((message) => message.role === 'user')?.content ?? '';
+  // 护栏状态：每次 runAgent 对应用户的一条新消息；ask 的回答会更新 denied
+  let askUsedThisTurn = false;
+  let writeDenied = false;
+  let submitDenied = false;
+  let lastAutoDiffRight: string | null = null;
+
   for (let round = 0; round < MAX_TOOL_ROUNDS; round += 1) {
     // 用户随时可以按「停止」：上一轮工具刚收工还没发下一次请求时也要立刻退出
     throwIfAborted(signal);
@@ -96,7 +112,34 @@ export async function runAgent(options: RunAgentOptions): Promise<void> {
       events.onUsage({ ...usage });
     }
 
-    if (toolCalls.length === 0) return;
+    if (toolCalls.length === 0) {
+      // 模型在正文里列了选项却没调 ask：把它解析成真的 ask 卡片，等用户点选后再继续
+      const optionQuestion = askUsedThisTurn ? null : parseOptionQuestion(content);
+      if (optionQuestion) {
+        askUsedThisTurn = true;
+        const autoAskId = `auto-ask-${round}`;
+        events.onToolStart({ callId: autoAskId, name: 'ask', args: JSON.stringify(optionQuestion) });
+        const choice = await events.askUser(autoAskId, optionQuestion.question, optionQuestion.options);
+        if (choiceDeniesWrite(choice)) writeDenied = true;
+        if (choiceDeniesSubmit(choice)) submitDenied = true;
+        events.onToolEnd(autoAskId, `用户选择了「${choice}」`, false);
+        conversation.push({
+          role: 'assistant',
+          content: content.trim() ? content : null,
+          tool_calls: [
+            {
+              id: autoAskId,
+              type: 'function',
+              function: { name: 'ask', arguments: JSON.stringify(optionQuestion) },
+            },
+          ],
+        });
+        conversation.push({ role: 'tool', tool_call_id: autoAskId, content: `用户选择了「${choice}」` });
+        throwIfAborted(signal);
+        continue;
+      }
+      return;
+    }
 
     conversation.push({
       role: 'assistant',
@@ -111,21 +154,65 @@ export async function runAgent(options: RunAgentOptions): Promise<void> {
         name: call.function.name,
         args: call.function.arguments,
       });
+      const toolName = call.function.name;
+      // 硬门：没 ask 过（且用户本条没明确授权）时，直接拦下改代码/提交，逼模型先问
+      const blockedReason =
+        toolName === 'write_editor_code'
+          ? writeGuardReason({ askUsed: askUsedThisTurn, denied: writeDenied, lastUserText })
+          : toolName === 'submit_answer'
+            ? submitGuardReason({ askUsed: askUsedThisTurn, denied: submitDenied, lastUserText })
+            : null;
+
       let outcome: ToolOutcome;
-      try {
-        outcome = await runTool(call.function.name, call.function.arguments, {
-          tabId,
-          callId: call.id,
-          signal,
-          runPageTool: events.runPageTool,
-          askUser: events.askUser,
-        });
-      } catch (error) {
-        // 工具跑到一半被停：先给面板一个收尾（卡片不会一直转），再按中止退出这一轮
-        if (!isAbortError(error, signal)) throw error;
-        outcome = { output: '已停止', isError: true };
+      if (blockedReason) {
+        outcome = { output: blockedReason, isError: true };
+      } else {
+        try {
+          outcome = await runTool(call.function.name, call.function.arguments, {
+            tabId,
+            callId: call.id,
+            signal,
+            runPageTool: events.runPageTool,
+            askUser: events.askUser,
+          });
+        } catch (error) {
+          // 工具跑到一半被停：先给面板一个收尾（卡片不会一直转），再按中止退出这一轮
+          if (!isAbortError(error, signal)) throw error;
+          outcome = { output: '已停止', isError: true };
+        }
       }
-      events.onToolEnd(call.id, outcome.output, outcome.isError, outcome.diff);
+
+      if (toolName === 'ask' && !outcome.isError) {
+        askUsedThisTurn = true;
+        if (choiceDeniesWrite(outcome.output)) writeDenied = true;
+        if (choiceDeniesSubmit(outcome.output)) submitDenied = true;
+      }
+
+      // 后台刚自动展示过同一份改动时，模型再调 diff 就不重复画一张
+      let diffPayload = outcome.diff;
+      if (toolName === 'diff' && diffPayload && lastAutoDiffRight !== null && diffPayload.right === lastAutoDiffRight) {
+        diffPayload = undefined;
+      }
+      events.onToolEnd(call.id, outcome.output, outcome.isError, diffPayload);
+
+      // 写入成功后自动合成一张 diff 卡片（用户一定看得到改动，不依赖模型自觉）
+      if (outcome.autoDiff) {
+        const auto = outcome.autoDiff;
+        const autoDiffId = `auto-diff-${call.id}`;
+        const stats = diffStats(diffLines(auto.left, auto.right));
+        events.onToolStart({
+          callId: autoDiffId,
+          name: 'diff',
+          args: JSON.stringify(auto),
+        });
+        events.onToolEnd(
+          autoDiffId,
+          `已自动展示本次改动：新增 ${stats.added} 行，修改 ${stats.changed} 行，删除 ${stats.removed} 行`,
+          false,
+          auto,
+        );
+        lastAutoDiffRight = auto.right;
+      }
       // 工具执行期间用户点了「停止」：不再喂下一轮，直接按中止收尾
       throwIfAborted(signal);
       conversation.push({
@@ -256,6 +343,9 @@ export async function runTool(
   if (name === 'write_editor_code') {
     const notes: string[] = [];
 
+    // 先留一份写入前的原文：写入成功后用它自动合成 diff 卡片（用户一定看得到改动）
+    const beforeCode = await readEditorCode(tabId, signal);
+
     // 作答区选的语言要是 Python 2，先切成 Python 3：
     // 插件内置的 Python 运行器是 Python 3，模型写的也是 Python 3 的代码，
     // 不切的话提交过去 PTA 用 Python 2 编译，直接报「Non-zero Exit Code」
@@ -286,7 +376,25 @@ export async function runTool(
       notes.push(await verifyWrittenCode(injectScript, tabId, args.code, signal));
     }
 
-    return { output: [outcome.output, ...notes].join('；'), isError: outcome.isError };
+    // 自动 diff：写入前后的原文都拿到了才算（读不到就不硬造一张残缺的 diff）
+    let autoDiff: DiffPayload | undefined;
+    const written = typeof args.code === 'string' ? args.code : '';
+    if (!outcome.isError && beforeCode !== null && written && beforeCode !== written) {
+      const stats = diffStats(diffLines(beforeCode, written));
+      autoDiff = {
+        left: beforeCode,
+        right: written,
+        leftLabel: '改动前',
+        rightLabel: '改动后',
+      };
+      notes.push(`改动已自动展示：新增 ${stats.added} 行，修改 ${stats.changed} 行，删除 ${stats.removed} 行`);
+    }
+
+    return {
+      output: [outcome.output, ...notes].join('；'),
+      isError: outcome.isError,
+      ...(autoDiff ? { autoDiff } : {}),
+    };
   }
 
   // PTA 相关动作都在页面主世界跑（编辑器实例、判题弹窗都是页面自己的东西）

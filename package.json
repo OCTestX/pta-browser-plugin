@@ -1,6 +1,6 @@
 {
   "name": "pta-browser-plugin",
-  "version": "3.2.0",
+  "version": "3.3.0",
   "description": "帮助学生完成 PTA 题目的浏览器插件（Chrome / Firefox）",
   "private": true,
   "type": "module",
@@ -15,7 +15,7 @@
     "fetch-pyodide": "node scripts/fetch-pyodide.mjs",
     "typecheck": "tsc --noEmit && tsc --noEmit -p tsconfig.node.json",
     "pretest": "npm run build",
-    "test": "node scripts/test-typist.mjs && node scripts/test-diff.mjs && node scripts/test-pta-tools.mjs && node scripts/test-compile.mjs && node scripts/test-deepseek.mjs && node scripts/test-background.mjs chrome && node scripts/test-background.mjs firefox && npm run smoke",
+    "test": "node scripts/test-typist.mjs && node scripts/test-diff.mjs && node scripts/test-guardrails.mjs && node scripts/test-pta-tools.mjs && node scripts/test-compile.mjs && node scripts/test-deepseek.mjs && node scripts/test-background.mjs chrome && node scripts/test-background.mjs firefox && npm run smoke",
     "smoke": "node scripts/smoke.mjs chrome && node scripts/smoke.mjs firefox",
     "icons": "python3 scripts/gen-icons.py"
   },

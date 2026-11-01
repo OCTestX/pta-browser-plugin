@@ -6,6 +6,7 @@ PTA 助手是一个运行在浏览器里的 PTA（拼题A）解题助手：自�
 
 - 插件下载与教程：**<https://me.octest.top/pta-assist-plugin>**
 - 作者主页：**<https://me.octest.top>**
+- 代码仓库：[GitHub](https://github.com/OCTestX/pta-browser-plugin) · [Gitee](https://gitee.com/octestx/pta-browser-plugin)
 
 ## 功能
 
@@ -155,9 +156,9 @@ diff 卡片表头有「全屏查看」：新标签页打开完整 diff，不折�
 
 **`simulate_keyboard_input`**：向作答区或指定元素模拟输入。支持 `selector`、`text`、`clear`、`press`、`focusOnly`、`readOnly`。真实按键走 `chrome.debugger` 发 CDP 事件（trusted），用不了时自动退回模拟事件并在结果里说明。
 
-**`ask`**：向用户提选择题。等不到作答 15 分钟后按「用户没有作答」继续；面板点选项后要等后台回执，被拒绝会把卡片恢复成可点。
+**`ask`**：向用户提选择题。等不到作答 15 分钟后按「用户没有作答」继续；面板点选项后要等后台回执，被拒绝会把卡片恢复成可点。凡是能列选项的问题（要不要改、要不要提交、选哪种做法）都必须用它，正文里列选项会被护栏转成 ask 卡片。
 
-**`diff`**：左右两列 + 中间一条道，行号夹在两边，改动块头尾画 `»` / `«`。改完代码必须调用一次；卡片可全屏。
+**`diff`**：左右两列 + 中间一条道，行号夹在两边，改动块头尾画 `»` / `«`。`write_editor_code` 成功后插件会**自动展示**这次改动，模型不用再调；卡片可全屏。
 
 **`write_document`**：把整理好的内容写成文件下载到本机；超过面板能力的长文档用它，不要在回答里贴整篇。
 
@@ -278,6 +279,20 @@ npm run icons              # 重新生成图标（python3 + Pillow）
 - 资源约 91MB，由 `scripts/fetch-engine.mjs` 从固定 Release 下载并 sha256 校验，之后完全离线
 - 引擎来源 [cppstudio-io/wasm-clang-runtime](https://github.com/cppstudio-io/wasm-clang-runtime)（Apache-2.0）
 
+### 护栏（提示词 + 代码双重约束）
+
+提示词之外，agent loop 里有三层确定性护栏：
+
+| 护栏 | 行为 |
+|---|---|
+| 自动 diff | `write_editor_code` 成功后，后台用「写入前原文 + 写入的代码」**合成一张 diff 卡片**，不依赖模型自觉；模型再调同一份 diff 会去重 |
+| ask 硬门 | 未 ask 过、且用户本条没明确要求时，`write_editor_code` / `submit_answer` 直接返回失败并提示先 ask；用户选了「先别改 / 先不提交」后这一轮继续拦住 |
+| 正文选项转 ask | 模型在正文里列选项（1./- / A.、还是、是/否问题）时，解析成真正的 ask 卡片并等用户点选，再继续下一轮 |
+
+授权判定按操作区分：提交一律先问（用户本条明确说「提交」除外）；改代码只有本条明确要求「改 / 写 / 修 / 重写 / 补全 / 实现 / 优化」时才免问。识别不到的问题宁可漏转，也不会把普通疑问句硬塞进 ask。
+
+局限：正文是流式上屏的，转 ask 时原文已经显示；护栏不撤回已输出的文字，只额外给出可点卡片。
+
 ### 性能
 
 内容多时不卡依赖几件事：流式增量按 `requestAnimationFrame` 合并、消息与工具卡片 `memo`、滚动状态只在跨越阈值时更新、消息区 `contain: content` + 气泡 `content-visibility: auto`、进度条只动 `transform`。
@@ -312,6 +327,7 @@ npm run icons              # 重新生成图标（python3 + Pillow）
 
 | 版本 | 主要内容 |
 |---|---|
+| v3.3.0 | 提示词强化；自动 diff 护栏、ask 工具硬门、正文选项自动转 ask 卡片 |
 | v3.2.0 | 移除面板「输入」按钮，改为复制后用 `Ctrl+V` / `Ctrl+M` 内置粘贴 |
 | v3.1.1 | 文档与发布：Manual 合并进 README、站点链接改为 `me.octest.top`、Release 打包补齐 Pyodide、产物名跟随完整版本号 |
 | v3.1 | **移除全页面最大化模式**；新增 `Ctrl+V` / `Ctrl+M` 内置粘贴、diff 全屏、流式渲染与滚动性能优化、新版 PTA 页签式测试结果、新对话强制停旧对话 |

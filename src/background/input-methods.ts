@@ -25,6 +25,19 @@ async function writeOnce(
   }
 }
 
+/** 读取编辑器里的原始代码（不做行号/描述包装），给自动 diff 用 */
+export async function readEditorCode(tabId: number, signal?: AbortSignal): Promise<string | null> {
+  try {
+    const result = await injectScript(tabId, INPUT_METHOD_SCRIPT, { method: 'readDoc', text: '' }, undefined, signal);
+    if (!result.ok || !result.output) return null;
+    if (/^(页面上没有|没找到|没有|无法)/.test(result.output)) return null;
+    return result.output;
+  } catch (error) {
+    if (isAbortError(error, signal)) throw error;
+    return null;
+  }
+}
+
 /**
  * 「内置粘贴」：把剪贴板文本插到作答区光标处（不覆盖已有代码）。
  * 拿不到编辑器实例时退回整段覆写——总比按了 Ctrl+V 什么都没发生强。

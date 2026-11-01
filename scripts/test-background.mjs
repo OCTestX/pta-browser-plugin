@@ -232,9 +232,68 @@ state.sse = [
   `data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"c1","function":{"name":"write_editor_code","arguments":"{\\"code\\":\\"int main(){}\\"}"}}]}}]}\n\ndata: [DONE]\n\n`,
   `data: {"choices":[{"delta":{"content":"写好了。"}}]}\n\ndata: [DONE]\n\n`,
 ];
-await respond2({ type: 'chat/start', requestId: 'r1', messages: [{ role: 'user', content: 'hi' }] }, { tab: { id: 7 } });
+// 用户本条明确要求改代码，才不用先 ask（护栏按操作区分授权）
+await respond2({ type: 'chat/start', requestId: 'r1', messages: [{ role: 'user', content: '帮我改一下代码' }] }, { tab: { id: 7 } });
 await tick(50);
 check('默认方法一次写入成功', state.injectArgs.some((a) => a.method === 'dispatchFocus'));
+check(
+  '写入成功后自动合成 diff 卡片',
+  state.tabEvents.some((e) => e.type === 'chat/tool-start' && e.name === 'diff') &&
+    state.tabEvents.some(
+      (e) => e.type === 'chat/tool-end' && e.diff && e.diff.right === 'int main(){}',
+    ),
+);
+
+/* ---------- 护栏：没问过就改代码/提交会被硬拦 ---------- */
+
+state.writeResult = '写入成功';
+state.injectArgs.length = 0;
+state.tabEvents.length = 0;
+state.modelCalls.length = 0;
+state.sse = [
+  `data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"c_block","function":{"name":"write_editor_code","arguments":"{\\"code\\":\\"int main(){}\\"}"}}]}}]}\n\ndata: [DONE]\n\n`,
+  `data: {"choices":[{"delta":{"content":"先问一下再改。"}}]}\n\ndata: [DONE]\n\n`,
+];
+await respond2({ type: 'chat/start', requestId: 'r-block', messages: [{ role: 'user', content: '这道题怎么写' }] }, { tab: { id: 7 } });
+await tick(80);
+const blockedWrite = state.tabEvents.find((e) => e.type === 'chat/tool-end' && e.isError);
+check('未询问时 write_editor_code 被拦下', blockedWrite?.result?.includes('未先询问'));
+check('被拦下时没有真的写作答区', !state.injectArgs.some((a) => a.method === 'dispatchFocus'));
+check('被拦后模型还能继续收尾', state.tabEvents.some((e) => e.type === 'chat/done'));
+
+state.tabEvents.length = 0;
+state.modelCalls.length = 0;
+state.sse = [
+  `data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"c_submit","function":{"name":"submit_answer","arguments":"{}"}}]}}]}\n\ndata: [DONE]\n\n`,
+  `data: {"choices":[{"delta":{"content":"先确认再提交。"}}]}\n\ndata: [DONE]\n\n`,
+];
+await respond2({ type: 'chat/start', requestId: 'r-submit', messages: [{ role: 'user', content: '继续' }] }, { tab: { id: 7 } });
+await tick(80);
+const blockedSubmit = state.tabEvents.find((e) => e.type === 'chat/tool-end' && e.isError);
+check('未询问时 submit_answer 被拦下', blockedSubmit?.result?.includes('提交前必须'));
+
+/* ---------- 护栏：正文里的选项自动转成 ask 卡片 ---------- */
+
+state.tabEvents.length = 0;
+state.modelCalls.length = 0;
+state.sse = [
+  `data: {"choices":[{"delta":{"content":"需要我帮你提交吗？\\n1. 提交\\n2. 先不提交"}}]}\n\ndata: [DONE]\n\n`,
+  `data: {"choices":[{"delta":{"content":"好的，先不提交。"}}]}\n\ndata: [DONE]\n\n`,
+];
+await respond2({ type: 'chat/start', requestId: 'r-autoask', messages: [{ role: 'user', content: 'hi' }] }, { tab: { id: 7 } });
+await tick(80);
+const autoAsk = state.tabEvents.find((e) => e.type === 'chat/ask');
+check(
+  '正文里的可选项问题被转成 ask 卡片',
+  autoAsk && autoAsk.options.join('/') === '提交/先不提交',
+);
+await respond2({ type: 'chat/ask-answer', requestId: 'r-autoask', callId: autoAsk.callId, choice: '先不提交' });
+await tick(100);
+check('点完选项后模型继续回答', state.tabEvents.some((e) => e.type === 'chat/done'));
+check(
+  '转出的 ask 卡片记录了用户选择',
+  state.tabEvents.some((e) => e.type === 'chat/tool-end' && e.result.includes('先不提交')),
+);
 
 /* ---------- 停止能打断正在等待的工具 ---------- */
 
