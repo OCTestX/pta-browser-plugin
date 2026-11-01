@@ -36,7 +36,7 @@ jobs:
           set -o pipefail
           npm run package 2>&1 | tee build.log
 
-      # 失败时把日志末尾写成注解，公开仓库的 check-run annotations 不用登录也能读到
+      # 失败时把日志末尾写成一条多行注解，公开仓库的 check-run annotations 不用登录也能读到
       - name: 失败时输出构建日志
         if: failure()
         run: |
@@ -44,9 +44,18 @@ jobs:
             echo "::error title=build-log::build.log 没有生成，命令在启动阶段就失败了"
             exit 0
           fi
-          tail -n 80 build.log | while IFS= read -r line; do
-            echo "::error title=build-log::$line"
-          done
+          echo "=== build.log 共 $(wc -l < build.log) 行 ==="
+          MSG=$(tail -n 60 build.log | sed 's/%/%25/g' | sed 's/\r//g' | tr '\n' '\v')
+          MSG=${MSG//$'\v'/%0A}
+          echo "::error title=build-log::$MSG"
+
+      - name: 上传构建日志
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-log
+          path: build.log
+          if-no-files-found: ignore
 
       - name: 确认产物都在（且带着内置编译器的大资源）
         run: |
