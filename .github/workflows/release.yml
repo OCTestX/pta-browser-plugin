@@ -23,14 +23,30 @@ jobs:
 
       - uses: actions/setup-node@v4
         with:
-          node-version: 20
+          node-version: 22
           cache: npm
 
       - run: npm ci
 
       # npm run package 会先 build（顺带下载内置编译器的三个大资源），再打成 xpi 与 zip
       - name: 构建并打包（Chrome zip + Firefox xpi）
-        run: npm run package
+        run: |
+          node -v
+          npm -v
+          set -o pipefail
+          npm run package 2>&1 | tee build.log
+
+      # 失败时把日志末尾写成注解，公开仓库的 check-run annotations 不用登录也能读到
+      - name: 失败时输出构建日志
+        if: failure()
+        run: |
+          if [ ! -f build.log ]; then
+            echo "::error title=build-log::build.log 没有生成，命令在启动阶段就失败了"
+            exit 0
+          fi
+          tail -n 80 build.log | while IFS= read -r line; do
+            echo "::error title=build-log::$line"
+          done
 
       - name: 确认产物都在（且带着内置编译器的大资源）
         run: |
