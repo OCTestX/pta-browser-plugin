@@ -56,10 +56,6 @@ export function App() {
     setDraft('');
   };
 
-  // 「输入」按钮：整段写进作答区，写成功才清空输入框，失败时文本留着好重试
-  const inputToEditor = async () => {
-    if (await chat.inputCode(draft)) setDraft('');
-  };
 
   // 顶栏 token：接口回传的精确值 + 正在流式输出的实时估算
   const tokenText = formatTokenUsage(chat.usage, chat.liveOutputTokens);
@@ -140,7 +136,7 @@ export function App() {
       ) : (
         <>
           {/* 干活时（生成 / 等用户回答 / 写作答区）顶上有一条来回跑的进度条 */}
-          {(chat.busy || chat.writing) && (
+          {chat.busy && (
             <div className="panel__progress" role="progressbar" aria-label="正在工作" />
           )}
           <MessageList
@@ -170,9 +166,7 @@ export function App() {
             onChange={setDraft}
             onSend={send}
             onStop={chat.stop}
-            onInput={() => void inputToEditor()}
             streaming={chat.streaming}
-            writing={chat.writing}
           />
         </>
       )}

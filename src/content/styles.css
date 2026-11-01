@@ -777,26 +777,6 @@
   gap: 8px;
 }
 
-.composer__write {
-  padding: 6px 14px;
-  border: 1px solid var(--pta-border);
-  border-radius: 8px;
-  background: var(--pta-surface);
-  color: var(--pta-text);
-  font: inherit;
-  cursor: pointer;
-}
-
-.composer__write:hover:not(:disabled) {
-  border-color: var(--pta-accent);
-  color: var(--pta-accent);
-}
-
-.composer__write:disabled {
-  color: var(--pta-text-muted);
-  cursor: not-allowed;
-}
-
 .composer__send {
   padding: 6px 16px;
   border: none;

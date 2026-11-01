@@ -5,7 +5,6 @@ import {
   type DiffPayload,
   type StartChatResponse,
   type TokenUsage,
-  type ToolRunResponse,
 } from '../../shared/messages';
 import { createId, toApiMessages, type ChatMessage, type ToolCall } from '../../shared/types';
 import { diffLines, diffStats } from '../../shared/diff';
@@ -24,11 +23,8 @@ export function useChat(hasApiKey: boolean) {
     { id: 'welcome', role: 'system', content: WELCOME, createdAt: 0 },
   ]);
   const [streaming, setStreaming] = useState(false);
-  const [writing, setWriting] = useState(false);
   const [notice, setNotice] = useState<ChatNotice | null>(null);
   const requestRef = useRef<string | null>(null);
-  /** 「输入」按钮那次写入的 requestId：它也要能被「停止」打断 */
-  const inputRef = useRef<string | null>(null);
   // 收尾时要知道「这一轮到底吐没吐字」，state 更新是异步的，所以留一份同镜像
   const messagesRef = useRef<ChatMessage[]>(messages);
   messagesRef.current = messages;
@@ -342,15 +338,8 @@ export function useChat(hasApiKey: boolean) {
 
   const stop = useCallback(() => {
     flushDelta();
-    // 「停止」只有一个按钮：这一轮对话和「输入」按钮的写入都归它管
     const requestId = requestRef.current;
     if (requestId) void Promise.resolve(ext.runtime.sendMessage({ type: 'chat/stop', requestId })).catch(() => undefined);
-    const inputId = inputRef.current;
-    if (inputId) {
-      inputRef.current = null;
-      setWriting(false);
-      void Promise.resolve(ext.runtime.sendMessage({ type: 'chat/stop', requestId: inputId })).catch(() => undefined);
-    }
 
     // 面板不等后台回话：先把「停下来了」做出来（进度条停、工具卡片收尾），
     // 否则某一阶段没接上停止信号时，界面会一直转、用户以为按钮按不动。
@@ -368,47 +357,8 @@ export function useChat(hasApiKey: boolean) {
         return message;
       }),
     );
-    appendSystem(requestId ? '已停止这一轮' : '已停止写入作答区');
+    appendSystem('已停止这一轮');
   }, [appendSystem]);
-
-  /**
-   * 「输入」按钮：把输入框里的文本整段写进作答区（PTA 禁粘贴时的快捷通道）。
-   * 走后台写入工具同一条链路，成功返回 true，调用方据此清空输入框。
-   */
-  const inputCode = useCallback(
-    async (code: string): Promise<boolean> => {
-      if (!code.trim() || writing || streaming) return false;
-
-      // 整段写入可能要几十秒，给它一个 requestId，用户点「停止」就能中途收手
-      const requestId = createId();
-      inputRef.current = requestId;
-      setWriting(true);
-      try {
-        const response = (await ext.runtime.sendMessage({
-          type: 'code/input',
-          requestId,
-          code,
-        })) as ToolRunResponse | undefined;
-        // 已经被停止的话，这次写入的结果不该再冒出来
-        if (inputRef.current !== requestId) return false;
-        setNotice({
-          text: response?.result ?? '插件后台没有响应，请在扩展管理页重新加载插件',
-          needsApiKey: false,
-        });
-        return response?.ok === true;
-      } catch {
-        if (inputRef.current !== requestId) return false;
-        setNotice({ text: '插件后台没有响应，请在扩展管理页重新加载插件', needsApiKey: false });
-        return false;
-      } finally {
-        if (inputRef.current === requestId) {
-          inputRef.current = null;
-          setWriting(false);
-        }
-      }
-    },
-    [streaming, writing],
-  );
 
   /**
    * 用户在 ask 卡片上点了某个选项：把答案回给后台，卡片显示「已选择」。
@@ -453,13 +403,6 @@ export function useChat(hasApiKey: boolean) {
     flushDelta();
     const requestId = requestRef.current;
     if (requestId) void ext.runtime.sendMessage({ type: 'chat/stop', requestId });
-    // 写作答区也一并掐掉：新会话之后那次写入的结果已经没有意义了
-    const inputId = inputRef.current;
-    if (inputId) {
-      inputRef.current = null;
-      setWriting(false);
-      void ext.runtime.sendMessage({ type: 'chat/stop', requestId: inputId });
-    }
     requestRef.current = null;
     assistantRef.current = null;
     setStreaming(false);
@@ -473,9 +416,8 @@ export function useChat(hasApiKey: boolean) {
   return {
     messages,
     streaming,
-    /** 后台还有活没干完（生成中——含等用户回答 ask 的那段时间、或正在写作答区） */
-    busy: streaming || writing,
-    writing,
+    /** 后台还有活没干完（生成中——含等用户回答 ask 的那段时间） */
+    busy: streaming,
     usage,
     /** 接口没回传 usage 时也要让数字动起来：按中英文字符粗估**当前这一轮**的输出 */
     liveOutputTokens: streaming
@@ -487,7 +429,6 @@ export function useChat(hasApiKey: boolean) {
     dismissNotice: useCallback(() => setNotice(null), []),
     send,
     stop,
-    inputCode,
     answerAsk,
     reset,
   };

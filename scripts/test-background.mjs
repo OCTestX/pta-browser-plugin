@@ -347,26 +347,21 @@ check(
   usageEvent?.promptTokens === 1234 && usageEvent?.completionTokens === 56 && usageEvent?.totalTokens === 1290,
 );
 
-/* ---------- 「输入」按钮：面板输入框 → 作答区（PTA 禁粘贴时的快捷通道） ---------- */
+/* ---------- 内置粘贴：Ctrl+V / Ctrl+M 把剪贴板内容插到光标处 ---------- */
 
 state.injectArgs.length = 0;
-state.writeOk = true;
-const inputOk = await respond2({ type: 'code/input', code: 'int main(){return 0;}' }, { tab: { id: 7 } });
+const paste = await respond2({ type: 'code/paste', requestId: 'p1', text: 'print(1)' }, { tab: { id: 7 } });
 check(
-  'code/input 走写入链路：先清空再用默认实现写',
-  state.injectArgs.some((a) => a.method === 'clear') &&
-    state.injectArgs.some((a) => a.method === 'dispatchFocus' && a.text === 'int main(){return 0;}'),
+  'code/paste 用页面脚本在光标处插入（不是整段覆写）',
+  state.injectArgs.some((a) => a.method === 'insert' && a.text === 'print(1)'),
 );
-check('写入成功时回一句能直接展示的结果', inputOk.ok === true && inputOk.result.includes('已写入作答区'));
+check('粘贴成功时返回可直接展示的结果', paste.ok === true && typeof paste.result === 'string');
 
-state.writeOk = false;
-const inputFail = await respond2({ type: 'code/input', code: 'int main(){return 0;}' }, { tab: { id: 7 } });
-check('四种方法都失败时如实回报失败（面板据此不清空输入框）', inputFail.ok === false);
-check('失败时把每一次尝试的原因带回去', inputFail.result.includes('四种写入方法全部失败'));
-state.writeOk = true;
-
-const inputNoTab = await respond2({ type: 'code/input', code: 'x' });
-check('拿不到标签页时给出提示而不是抛异常', inputNoTab.ok === false && inputNoTab.result.includes('当前页面不支持'));
+const pasteNoTab = await respond2({ type: 'code/paste', requestId: 'p2', text: 'x' });
+check(
+  '拿不到标签页时给出提示而不是抛异常',
+  pasteNoTab.ok === false && pasteNoTab.result.includes('当前页面不支持'),
+);
 
 /* ---------- 停止在任何时刻都有效 ---------- */
 
@@ -436,24 +431,6 @@ check(
     state.tabEvents.some((e) => e.type === 'chat/done' && e.aborted === false),
 );
 check('超时之后再来作答会被拒绝', (await respond2({ type: 'chat/ask-answer', requestId: 'r10', callId: 'c7', choice: 'A' })).ok === false);
-
-/* ---------- 写入作答区也能被停止 ---------- */
-
-state.writeOk = true;
-state.hangWrite = true;
-state.injectArgs.length = 0;
-const inputPromise = respond2(
-  { type: 'code/input', requestId: 'w1', code: 'int main(){return 0;}' },
-  { tab: { id: 7 } },
-);
-await tick(50);
-await respond2({ type: 'chat/stop', requestId: 'w1' });
-const stoppedInput = await inputPromise;
-state.hangWrite = false;
-check(
-  '写作答区卡住时点停止会如实回报没写完',
-  stoppedInput.ok === false && stoppedInput.result.includes('已停止'),
-);
 
 /* ---------- 模型列表：设置页的下拉框 ---------- */
 

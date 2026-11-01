@@ -14,7 +14,7 @@ import { isCompleteBaseURL, normalizeBaseURL } from '../shared/settings';
 import { createId, type ApiMessage } from '../shared/types';
 import { runAgent, type ToolOutcome } from './agent';
 import { DEFAULT_INPUT_METHOD, findInputMethod } from '../shared/input-methods';
-import { pasteIntoEditor, runInputMethod, writeEditorCode } from './input-methods';
+import { pasteIntoEditor, runInputMethod } from './input-methods';
 import { readClipboardText } from './clipboard';
 import { loadSettings, saveSettings, toSettingsView } from './settings';
 
@@ -33,8 +33,8 @@ const DIFF_STORAGE_PREFIX = 'pta-assistant-diff:';
 const DIFF_KEEP = 8;
 
 /**
- * requestId -> AbortController，「输入」按钮的写作答区任务。
- * 它也会跑很久（整段代码要写进编辑器），所以「停止」同样要能打断它。
+ * requestId -> AbortController，页面里的「内置粘贴」写入任务。
+ * 整段代码写进编辑器可能要几十秒，所以同样要能被「停止」打断。
  */
 const runningInputs = new Map<string, AbortController>();
 
@@ -218,7 +218,7 @@ ext.runtime.onMessage.addListener((message: unknown, sender, sendResponse) => {
         sendResponse(await startChat(message.requestId, message.messages, tabId));
         return;
       case 'chat/stop': {
-        // 面板只有一个「停止」：这一轮对话在跑、或者「输入」按钮正在写作答区，都归它管
+        // 面板只有一个「停止」：这一轮对话在跑、或者正在写作答区，都归它管
         runningRequests.get(message.requestId)?.abort();
         runningInputs.get(message.requestId)?.abort();
         releaseAsks(message.requestId);
@@ -252,36 +252,6 @@ ext.runtime.onMessage.addListener((message: unknown, sender, sendResponse) => {
           result: `【${method.label}】${outcome.output}`,
           method: method.id,
         } satisfies TestInputResponse);
-        return;
-      }
-      case 'code/input': {
-        // 输入框的「输入」按钮：走写入工具同一条链路（默认实现 → 清空 → 备用实现依次重试），
-        // PTA 禁粘贴时用它把整段代码塞进作答区
-        if (tabId === undefined) {
-          sendResponse({ ok: false, result: '当前页面不支持（请刷新页面后重试）' } satisfies ToolRunResponse);
-          return;
-        }
-        const controller = new AbortController();
-        // 面板一定会带 requestId；缺了就自己造一个，保证「停止」这条路仍然能接上
-        const requestId = message.requestId ?? createId();
-        runningInputs.set(requestId, controller);
-        const stopKeepAlive = keepServiceWorkerAlive(() => runningInputs.has(requestId));
-        let outcome: ToolOutcome;
-        try {
-          outcome = await writeEditorCode({ tabId, code: message.code, signal: controller.signal });
-        } catch (error) {
-          outcome = {
-            output: isAbortError(error, controller.signal) ? '已停止，作答区没写完' : toErrorMessage(error),
-            isError: true,
-          };
-        } finally {
-          stopKeepAlive();
-          runningInputs.delete(requestId);
-        }
-        sendResponse({
-          ok: !outcome.isError,
-          result: outcome.isError ? `写入作答区失败：${outcome.output}` : `已写入作答区：${outcome.output}`,
-        } satisfies ToolRunResponse);
         return;
       }
     }

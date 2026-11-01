@@ -91,10 +91,6 @@ function boot({ hasApiKey, store }) {
   const storageWrites = [];
   // 真的存一份：布局恢复、跨 boot 读设置这类断言都要靠它
   const stored = { ...(store ?? {}) };
-  // 「输入」按钮打回后台的写入结果，失败路径要能换
-  let inputResult = { ok: true, result: '已写入作答区：写入成功（先 focus 再 dispatch）' };
-  // 按住 code/input 的回复，模拟一次很慢的写入
-  const pending = { input: null };
 
   window.chrome = {
     storage: {
@@ -150,10 +146,6 @@ function boot({ hasApiKey, store }) {
               : { ok: false, message: '尚未配置 API Key，点右上角齿轮填入后即可开始对话' };
           case 'chat/stop':
             return { ok: true };
-          case 'code/input':
-            // 测试「写入途中点停止」时要能按住后台的回复，模拟一次很慢的写入
-            if (pending.input) await pending.input;
-            return inputResult;
           case 'models/list':
             return {
               ok: true,
@@ -187,19 +179,6 @@ function boot({ hasApiKey, store }) {
     requests,
     storageWrites,
     stored,
-    setInputResult: (value) => {
-      inputResult = value;
-    },
-    /** 按住 code/input 的回复，直到 releaseInput 被调用 */
-    holdInput: () => {
-      pending.input = new Promise((resolve) => {
-        pending.release = resolve;
-      });
-    },
-    releaseInput: () => {
-      pending.release?.();
-      pending.input = null;
-    },
     shadow: () => window.document.getElementById('pta-assistant-host')?.shadowRoot,
     toggle: () => listeners.forEach((fn) => fn({ type: 'toggle-panel' })),
     emit: (event) => listeners.forEach((fn) => fn(event)),
@@ -838,48 +817,14 @@ ui.find('.messages__jump').click();
 await tick();
 check('点回到底部后按钮消失', !ui.find('.messages__jump'));
 
-/* ---------- 场景七：「输入」与「新会话」快捷通道 ---------- */
+/* ---------- 场景七：「新会话」快捷通道 ---------- */
 
 const shortcut = boot({ hasApiKey: true });
 await tick();
 shortcut.toggle();
 await tick();
-
-check('「输入」按钮在发送按钮左边', (() => {
-  const footer = shortcut.find('.composer__footer');
-  const buttons = [...footer.querySelectorAll('button')];
-  return buttons[0].classList.contains('composer__write') && buttons[1].classList.contains('composer__send');
-})());
-check('输入框为空时「输入」按钮不可点', shortcut.find('.composer__write').disabled);
-
-shortcut.setValue(shortcut.find('.composer__input'), 'int main() { return 0; }');
-await tick();
-check('输入框有文本后「输入」按钮可用', !shortcut.find('.composer__write').disabled);
-shortcut.find('.composer__write').click();
-await tick();
-check(
-  '点「输入」把输入框文本交给后台写进作答区',
-  shortcut.requests.find((r) => r.type === 'code/input')?.code === 'int main() { return 0; }',
-);
-check('写成功后清空输入框', shortcut.find('.composer__input').value === '');
-check('写入结果回显在提示条上', shortcut.find('.notice__text').textContent.includes('已写入作答区'));
-check('走的是写入工具那条链路，不经过对话', shortcut.requests.every((r) => r.type !== 'chat/start'));
-check('写进作答区不会留下对话气泡', shortcut.find('.messages').textContent.includes('我是 PTA 助手'));
-
-// 写失败时输入框要留着文本，用户才能改完再试
-shortcut.setInputResult({ ok: false, result: '写入作答区失败：四种写入方法全部失败' });
-shortcut.setValue(shortcut.find('.composer__input'), 'int main() { return 1; }');
-await tick();
-shortcut.find('.composer__write').click();
-await tick();
-check('写入失败时输入框内容保留', shortcut.find('.composer__input').value === 'int main() { return 1; }');
-check('写入失败原因显示出来', shortcut.find('.notice__text').textContent.includes('四种写入方法全部失败'));
-check('提示条不带「去设置」（不是 Key 的问题）', shortcut.find('.notice__action') === null);
-
-// 空格文本不触发写入
-shortcut.setValue(shortcut.find('.composer__input'), '   \n  ');
-await tick();
-check('只有空白时「输入」按钮不可点', shortcut.find('.composer__write').disabled);
+check('面板不再有「输入」按钮（改用 Ctrl+V / Ctrl+M）', shortcut.find('.composer__write') === null);
+check('输入区只剩发送按钮', shortcut.find('.composer__footer').querySelectorAll('button').length === 1);
 
 // 新会话：先聊一轮，再清空
 shortcut.setValue(shortcut.find('.composer__input'), '帮我看看这道题');
@@ -1118,30 +1063,5 @@ check('面板说明这一轮已停', stopper.find('.messages').textContent.inclu
 stopper.emit({ type: 'chat/delta', requestId: stopId, text: '迟到的回答' });
 await tick();
 check('停止后迟到的增量不会上屏', !stopper.find('.messages').textContent.includes('迟到的回答'));
-
-// 写作答区时同样有「停止」可按
-const writer = boot({ hasApiKey: true });
-await tick();
-writer.toggle();
-await tick();
-writer.setValue(writer.find('.composer__input'), 'int main(){return 0;}');
-await tick();
-writer.holdInput();
-writer.find('.composer__write').click();
-await tick();
-check('写入作答区时按钮变成「停止」', writer.find('.composer__send--stop') !== null);
-check('写入中进度条出现', Boolean(writer.find('.panel__progress')));
-writer.find('.composer__send--stop').click();
-await tick();
-const writeRequest = writer.requests.filter((r) => r.type === 'code/input').at(-1);
-const writeStop = writer.requests.filter((r) => r.type === 'chat/stop').at(-1);
-check(
-  '写作答区时点停止会带着这次写入的 id 通知后台',
-  Boolean(writeRequest?.requestId) && writeStop?.requestId === writeRequest.requestId,
-);
-check('写入被停后进度条消失', !writer.find('.panel__progress'));
-writer.releaseInput();
-await tick();
-check('被停的写入结果不会再冒出来', !writer.find('.notice'));
 
 console.log(`\n${target} 冒烟测试通过`);

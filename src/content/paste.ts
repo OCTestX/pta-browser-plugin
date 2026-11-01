@@ -143,7 +143,7 @@ async function pasteClipboardText(): Promise<void> {
     const clip = await readClipboard();
     if (!clip.ok || !clip.text) {
       showToast(
-        `读不到剪贴板：${clip.message ?? '浏览器没有授权'}。也可以按 Ctrl+M，或在面板里用「输入」按钮`,
+        `读不到剪贴板：${clip.message ?? '浏览器没有授权'}。可以再按一次 Ctrl+M 试试`,
         'error',
       );
       return;
