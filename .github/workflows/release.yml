@@ -3,7 +3,7 @@
 # 用法：改好 manifest/manifest.json 的 version → npm test → git commit && git push
 #       → git tag v2.0 && git push origin v2.0
 #
-# 产物名里的版本从清单版本推出来（2.0.0 → v2.0），和面板标题栏的徽标一致。
+# 产物名里的版本从清单版本推出来（3.1.1 → v3.1.1），与 tag 名一致。
 name: Release
 
 on:

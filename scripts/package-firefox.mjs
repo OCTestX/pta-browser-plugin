@@ -15,7 +15,7 @@ const SOURCE_DIR = path.join('dist', 'firefox');
 
 // 产物名跟面板标题栏上的版本号一致：版本从构建好的清单里取（2.0.0 → v2.0），
 // 这样发版只要改 manifest/manifest.json 的 version，产物名自动跟上
-const ARTIFACT_LABEL = `v${JSON.parse(readFileSync(path.join(SOURCE_DIR, 'manifest.json'), 'utf8')).version.split('.').slice(0, 2).join('.')}`;
+const ARTIFACT_LABEL = `v${JSON.parse(readFileSync(path.join(SOURCE_DIR, 'manifest.json'), 'utf8')).version}`;
 const OUT_DIR = 'dist';
 
 if (!existsSync(path.join(SOURCE_DIR, 'manifest.json'))) {
