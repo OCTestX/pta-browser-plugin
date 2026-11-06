@@ -25,5 +25,5 @@ yarn-error.log*
 # Python 脚本的缓存
 __pycache__/
 
-# 本地测试账号 / API Key，绝不进版本库
+# 用户敏感数据（PTA 账号、模型密钥等），不提交到版本库
 /test_data.txt

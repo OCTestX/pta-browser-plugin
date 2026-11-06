@@ -1,6 +1,7 @@
-// 悬浮窗开关状态 + 全局共享的输入草稿
-// 通过 chrome.storage.local 实现跨标签页、跨页面同步：
-// 刷新页面、关掉重开都能恢复草稿，拖动/缩放的位置也一起记住
+// 全局共享的输入草稿 + 本标签页私有的悬浮窗开关
+// 草稿通过 chrome.storage.local 跨标签页、跨页面同步：
+// 刷新页面、关掉重开都能恢复草稿，拖动/缩放的位置也一起记住。
+// 悬浮窗开关（panelOpen）只在当前标签页内存里，不进 storage、不跨标签页同步。
 
 import { ext } from '../shared/browser';
 
@@ -9,13 +10,11 @@ type Listener = () => void;
 const STATE_KEY = 'pta-assistant-state';
 
 interface AssistantState {
-  panelOpen: boolean;
   layoutResetCount: number;
   draft: string;
 }
 
 const DEFAULT_STATE: AssistantState = {
-  panelOpen: false,
   layoutResetCount: 0,
   draft: '',
 };
@@ -39,11 +38,7 @@ export async function initState(): Promise<void> {
   const result = await ext.storage.local.get([STATE_KEY]);
   const stored = result[STATE_KEY] as AssistantState | undefined;
   if (stored && !mutated) {
-    currentState = {
-      ...DEFAULT_STATE,
-      ...stored,
-      panelOpen: false, // 刷新后默认关闭，点击图标再打开
-    };
+    currentState = { ...DEFAULT_STATE, ...stored };
     emit();
   }
 }
@@ -67,20 +62,23 @@ if (onChanged && typeof onChanged.addListener === 'function') {
   });
 }
 
+// 本标签页悬浮窗开关：只在当前 tab 内有效。
+// 不写 storage、不参与 storage 变更同步，
+// 这样在 A 标签页打开悬浮窗不会让 B 标签页的面板也弹出来。
+let panelOpen = false;
+
 export function isPanelOpen(): boolean {
-  return currentState.panelOpen;
+  return panelOpen;
 }
 
 export function setPanelOpen(next: boolean): void {
-  if (currentState.panelOpen === next) return;
-  mutated = true;
-  currentState = { ...currentState, panelOpen: next };
+  if (panelOpen === next) return;
+  panelOpen = next;
   emit();
-  void persist();
 }
 
 export function togglePanel(): void {
-  setPanelOpen(!currentState.panelOpen);
+  setPanelOpen(!panelOpen);
 }
 
 export function subscribePanel(listener: Listener): () => void {
