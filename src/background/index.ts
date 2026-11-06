@@ -16,7 +16,7 @@ import { runAgent, type ToolOutcome } from './agent';
 import { DEFAULT_INPUT_METHOD, findInputMethod } from '../shared/input-methods';
 import { pasteIntoEditor, runInputMethod } from './input-methods';
 import { readClipboardText } from './clipboard';
-import { loadSettings, saveSettings, toSettingsView } from './settings';
+import { checkForUpdates, loadSettings, saveSettings, toSettingsView } from './settings';
 
 const TOGGLE_PANEL: BackgroundEvent = { type: 'toggle-panel' };
 const RESET_PANEL_LAYOUT: BackgroundEvent = { type: 'panel/reset-layout' };
@@ -146,9 +146,12 @@ ext.runtime.onMessage.addListener((message: unknown, sender, sendResponse) => {
   const tabId = sender.tab?.id;
   void (async () => {
     switch (message.type) {
-      case 'settings/get':
-        sendResponse(toSettingsView(await loadSettings()));
+      case 'settings/get': {
+        const view = toSettingsView(await loadSettings());
+        const update = await checkForUpdates();
+        sendResponse({ ...view, updateAvailable: update.available, latestVersion: update.latest });
         return;
+      }
       case 'settings/save':
         sendResponse(toSettingsView(await saveSettings(message.patch)));
         return;

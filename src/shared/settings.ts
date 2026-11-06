@@ -25,6 +25,10 @@ export interface SettingsView {
   baseURL: string;
   model: string;
   hasApiKey: boolean;
+  /** 是否检测到有新版本可用 */
+  updateAvailable?: boolean;
+  /** 最新发布的标签名（如 v3.4.0），用于在提示里展示 */
+  latestVersion?: string;
 }
 
 export const DEFAULT_SETTINGS: Settings = {

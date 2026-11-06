@@ -28,6 +28,8 @@
     "clipboardRead"
   ],
   "host_permissions": [
+    "https://api.github.com/*",
+    "https://gitee.com/api/v5/*",
     "https://api.siliconflow.cn/*",
     "https://api.deepseek.com/*",
     "https://pintia.cn/*"

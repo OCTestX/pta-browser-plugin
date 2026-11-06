@@ -172,11 +172,20 @@ export function SettingsPanel({ view, onSave, onBack }: SettingsPanelProps) {
         </div>
       </section>
 
+      {view?.updateAvailable && (
+        <div className="settings__banner settings__banner--update">
+          发现新版本 <b>{view.latestVersion}</b>（当前 {ext.runtime.getManifest().version}），建议在
+          <a>GitHub Releases</a> 或 <a>Gitee Releases</a> 更新，以获取新功能与修复。
+        </div>
+      )}
+
       <label className="field">
         <span className="field__label">API Key</span>
         <input
           className="field__input"
           type="password"
+          autoComplete="off"
+          data-lpignore="true"
           value={apiKey}
           placeholder={view?.hasApiKey ? '已保存，留空表示不修改' : '填硅基流动的 API Key'}
           onChange={(event) => setApiKey(event.target.value)}

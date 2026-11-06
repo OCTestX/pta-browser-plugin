@@ -983,6 +983,27 @@
   white-space: pre-wrap;
   word-break: break-word;
 }
+/* ---------- 设置页：新版本提醒横幅 ---------- */
+
+.settings__banner {
+  margin-top: 8px;
+  padding: 8px 10px;
+  border-radius: 8px;
+  background: var(--pta-surface-alt);
+  border: 1px solid var(--pta-border);
+  color: var(--pta-text);
+  font-size: 13px;
+  line-height: 1.4;
+}
+.settings__banner--update {
+  border-color: var(--pta-accent);
+  color: var(--pta-accent);
+  background: color-mix(in srgb, var(--pta-accent) 8%, transparent);
+}
+.settings__banner a {
+  color: var(--pta-accent);
+  text-decoration: underline;
+}
 
 /* ---------- 模拟输入测试：一种方法一个按钮 ---------- */
 

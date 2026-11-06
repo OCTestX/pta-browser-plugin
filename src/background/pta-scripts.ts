@@ -792,9 +792,9 @@ while (Date.now() < deadline) {
     return '已点击提交（' + found.how + (closed ? '，先关掉了 ' + closed + ' 层弹窗' : '') + '）。\\n判题结论：' + now.status + '\\n原文：' + now.text.slice(0, 300);
   }
   // PTA 的老毛病：判题结果不会自己刷新，页面上有「刷新 / Reload」按钮时必须点它，
-  // 否则永远停在「评测中 / Waiting」。每隔一秒点一次。
+  // 否则永远停在「评测中 / Waiting」。每隔五秒点一次。
   const reload = findReloadButton();
-  if (reload && Date.now() - lastReloadAt >= 1000) {
+  if (reload && Date.now() - lastReloadAt >= 5000) {
     lastReloadAt = Date.now();
     try { reload.click(); reloadClicks += 1; } catch (e) {}
   }
@@ -857,9 +857,9 @@ while (Date.now() < deadline) {
       return describe(late, '（判题弹窗在等待过程中被关掉了，这是页面留下的判题记录）\\n');
     }
   }
-  // 判题结果不会自己更新：页面上有「刷新 / Reload」按钮就点它，每秒一次
+  // 判题结果不会自己更新：页面上有「刷新 / Reload」按钮就点它，每隔五秒点一次
   const reload = findReloadButton();
-  if (reload && Date.now() - lastReloadAt >= 1000) {
+  if (reload && Date.now() - lastReloadAt >= 5000) {
     lastReloadAt = Date.now();
     try { reload.click(); } catch (e) {}
   }
