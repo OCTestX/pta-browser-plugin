@@ -26,6 +26,7 @@ export function toSettingsView(settings: Settings): SettingsView {
     baseURL: settings.baseURL,
     model: settings.model,
     hasApiKey: settings.apiKey.length > 0,
+    vlmMode: settings.vlmMode,
   };
 }
 

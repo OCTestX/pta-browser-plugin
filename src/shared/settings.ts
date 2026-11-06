@@ -2,6 +2,8 @@ export interface Settings {
   apiKey: string;
   baseURL: string;
   model: string;
+  /** 视觉模式：auto 按题面是否有图片自动切换；on 强制开启；off 强制关闭 */
+  vlmMode: 'auto' | 'on' | 'off';
 }
 
 /** 内置的模型提供商：设置页点一下就把接口地址填上，省得手打 */
@@ -25,6 +27,8 @@ export interface SettingsView {
   baseURL: string;
   model: string;
   hasApiKey: boolean;
+  /** 视觉模式（自/开/关） */
+  vlmMode?: 'auto' | 'on' | 'off';
   /** 是否检测到有新版本可用 */
   updateAvailable?: boolean;
   /** 最新发布的标签名（如 v3.4.0），用于在提示里展示 */
@@ -36,6 +40,7 @@ export const DEFAULT_SETTINGS: Settings = {
   // 默认走硅基流动：OpenAI 兼容，/v1/chat/completions 正好对上下面拼的 /chat/completions
   baseURL: 'https://api.siliconflow.cn/v1',
   model: 'deepseek-ai/DeepSeek-V4.1-Flash',
+  vlmMode: 'auto',
 };
 
 /** 设置页「教程」按钮跳到的地址（作者自己的站点，讲清楚怎么配 Key 怎么用） */
@@ -55,4 +60,23 @@ export function isCompleteBaseURL(baseURL: string): boolean {
   } catch {
     return false;
   }
+}
+
+/** 已知能看图的模型前缀，命中才允许按 VLM 模式工作 */
+export function modelSupportsVlm(model: string): boolean {
+  if (!model) return false;
+  const m = model.toLowerCase();
+  const visionPrefixes = [
+    'qwen-vl', 'qwen-vl-',
+    'deepseek-vl',
+    'gpt-4o', 'gpt-4-turbo', 'gpt-4-vision',
+    'claude-3', 'claude-3.5', 'claude-4',
+    'gemini-',
+  ];
+  return visionPrefixes.some((prefix) => m.startsWith(prefix));
+}
+
+/** 判断题面文字里是否包含图片占位（read_problem 把图片摊平成 [图片 ...]） */
+export function statementHasImages(text: string): boolean {
+  return /\[图片/.test(text ?? '');
 }

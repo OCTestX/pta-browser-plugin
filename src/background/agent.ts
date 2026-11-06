@@ -32,6 +32,7 @@ const DEFAULT_PER_CHAR_DELAY_MS = 8;
 import { streamChat } from './deepseek';
 import { injectScript } from './js-inject';
 import { loadSettings } from './settings';
+import { modelSupportsVlm, statementHasImages } from '../shared/settings';
 import { diffLines, diffStats } from '../shared/diff';
 import {
   choiceDeniesSubmit,
@@ -90,6 +91,11 @@ export async function runAgent(options: RunAgentOptions): Promise<void> {
   let askUsedThisTurn = false;
   let writeDenied = false;
   let submitDenied = false;
+  // 本轮是否检测到图片、是否启用 VLM、是否已提示降级
+  let problemHasImage = false;
+  let vlmActiveForTurn = false;
+  let remindedVlmDowngrade = false;
+  let vlmHintPushed = false;
   let lastAutoDiffRight: string | null = null;
 
   for (let round = 0; round < MAX_TOOL_ROUNDS; round += 1) {
@@ -186,6 +192,27 @@ export async function runAgent(options: RunAgentOptions): Promise<void> {
         askUsedThisTurn = true;
         if (choiceDeniesWrite(outcome.output)) writeDenied = true;
         if (choiceDeniesSubmit(outcome.output)) submitDenied = true;
+      }
+      // VLM：读到题面后看是否包含图片占位，按设置决定是否按 VLM 模式工作。
+      // 模型本身不看图时，先提醒一次降级，不阻断工具链。
+      if (toolName === 'read_problem' && !outcome.isError) {
+        problemHasImage = statementHasImages(outcome.output);
+        if (problemHasImage) {
+          const wantsVlm = settings.vlmMode === 'on' || settings.vlmMode === 'auto';
+          if (wantsVlm && !modelSupportsVlm(settings.model)) {
+            vlmActiveForTurn = false;
+            if (!remindedVlmDowngrade) {
+              events.onNotice(`题面包含图片，但当前模型（${settings.model}）不支持看图，已按纯文本模式处理。可在设置里把视觉模式改为 off，或换一台看图模型再试。`);
+              remindedVlmDowngrade = true;
+            }
+          } else {
+            vlmActiveForTurn = true;
+          }
+        }
+      }
+      if (vlmActiveForTurn && !vlmHintPushed) {
+        conversation.push({ role: 'system', content: '【视觉模式】本题题面包含图片，当前模型支持看图，可结合图像内容理解题面。' });
+        vlmHintPushed = true;
       }
 
       // 后台刚自动展示过同一份改动时，模型再调 diff 就不重复画一张
