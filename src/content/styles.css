@@ -648,6 +648,37 @@
   color: #ffffff;
 }
 
+/* ---------- 分段选择器（视觉模式这类几选一的设置） ---------- */
+/* 故意不叫 .provider：那个类专指「内置模型提供商」按钮，测试按类名数它们 */
+
+.segment {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.segment__item {
+  padding: 4px 12px;
+  border: 1px solid var(--pta-border);
+  border-radius: 999px;
+  background: transparent;
+  color: var(--pta-text);
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.segment__item:hover {
+  border-color: var(--pta-accent);
+  color: var(--pta-accent);
+}
+
+.segment__item--on {
+  border-color: var(--pta-accent);
+  background: var(--pta-accent);
+  color: #ffffff;
+}
+
 .field__jump--on {
   border-color: var(--pta-accent);
   color: var(--pta-accent);

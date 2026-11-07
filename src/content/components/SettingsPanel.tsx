@@ -34,6 +34,19 @@ export function isMethodTestSuccess(ok: boolean, result: string): boolean {
   return ok && result.includes('回读比对：与目标一致') && !/禁止粘贴|不允许粘贴|不能粘贴|请勿粘贴/.test(result);
 }
 
+/** 视觉模式的三个选项 */
+const VLM_MODES: { id: Settings['vlmMode']; label: string; hint: string }[] = [
+  { id: 'auto', label: '自动', hint: '题面里有图片才切视觉模式（默认）' },
+  { id: 'on', label: '开', hint: '始终按视觉模式工作' },
+  { id: 'off', label: '关', hint: '始终按纯文本模式工作，不看图' },
+];
+
+const VLM_MODE_HINTS: Record<Settings['vlmMode'], string> = {
+  auto: '题面里有图片才切视觉模式（默认）',
+  on: '始终按视觉模式工作',
+  off: '始终按纯文本模式工作，不看图',
+};
+
 interface SettingsPanelProps {
   view: SettingsView | null;
   onSave: (patch: Partial<Settings>) => Promise<unknown>;
@@ -44,6 +57,7 @@ export function SettingsPanel({ view, onSave, onBack }: SettingsPanelProps) {
   const [apiKey, setApiKey] = useState('');
   const [baseURL, setBaseURL] = useState(view?.baseURL ?? DEFAULT_SETTINGS.baseURL);
   const [model, setModel] = useState(view?.model ?? DEFAULT_SETTINGS.model);
+  const [vlmMode, setVlmMode] = useState<Settings['vlmMode']>(view?.vlmMode ?? DEFAULT_SETTINGS.vlmMode);
   const [status, setStatus] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
   // 模拟输入测试：默认拿系统提示词当测试文本，方便对照回读结果是不是一字不差
@@ -67,6 +81,12 @@ export function SettingsPanel({ view, onSave, onBack }: SettingsPanelProps) {
       }
     })();
   }, []);
+
+  // 设置是异步取回来的：view 到了之后把已保存的视觉模式同步回来
+  // （面板可能比 view 先打开，只靠 useState 的初值会显示成默认值）
+  useEffect(() => {
+    if (view?.vlmMode) setVlmMode(view.vlmMode);
+  }, [view?.vlmMode]);
 
 
   const runTest = async (methodId: string) => {
@@ -140,7 +160,7 @@ export function SettingsPanel({ view, onSave, onBack }: SettingsPanelProps) {
 
   // 输入框留空表示不修改已保存的 Key
   const saveCurrent = () => {
-    const patch: Partial<Settings> = { baseURL, model };
+    const patch: Partial<Settings> = { baseURL, model, vlmMode };
     if (apiKey.trim()) patch.apiKey = apiKey.trim();
     return save(patch, '已保存');
   };
@@ -211,6 +231,24 @@ export function SettingsPanel({ view, onSave, onBack }: SettingsPanelProps) {
             </button>
           ))}
         </span>
+      </div>
+
+      <div className="field">
+        <span className="field__label">视觉模式</span>
+        <div className="segment" role="group" aria-label="视觉模式">
+          {VLM_MODES.map((item) => (
+            <button
+              key={item.id}
+              type="button"
+              className={`segment__item${vlmMode === item.id ? ' segment__item--on' : ''}`}
+              title={item.hint}
+              onClick={() => setVlmMode(item.id)}
+            >
+              {item.label}
+            </button>
+          ))}
+        </div>
+        <span className="field__hint">{VLM_MODE_HINTS[vlmMode]}</span>
       </div>
 
       <label className="field">

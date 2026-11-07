@@ -8,14 +8,24 @@ PTA 助手是一个运行在浏览器里的 PTA（拼题A）解题助手：自�
 - 作者主页：**<https://me.octest.top>**
 - 代码仓库：[GitHub](https://github.com/OCTestX/pta-browser-plugin) · [Gitee](https://gitee.com/octestx/pta-browser-plugin)
 
+> **本文档描述的是当前源码树的真实状态。** 改动功能时请同步改这里：插件的行为由本文档、提示词（`src/shared/tools.ts` 的 `SYSTEM_PROMPT`）和代码三者共同决定，任何一处说错，AI 就会按错的认知去动手。
+
 ## 功能
 
 | 能力 | 说明 |
 |---|---|
 | 对话 agent loop | 请求模型 → 执行工具 → 回灌结果 → 再来一轮，最多 80 轮 |
-| 本地编译器 | C/C++（Clang wasm）、Python（Pyodide）、JavaScript 全部在本机运行，代码不出本机 |
-| PTA 页面适配 | 读题面、读写作答区、提交、读判题结论、模拟运行，覆盖新版页签式结果区 |
-| 禁粘贴也能贴 | 接管 `Ctrl+V` / `⌘V`，读剪贴板后走插件自己的写入链路；抢不过页面时用 `Ctrl+M` |
+| 本地编译器 | **C**（Clang 22 wasm）、Python（Pyodide 0.26）、JavaScript 全部在本机运行，代码不出本机 |
+| 借用 PTA 的运行环境 | Java、C++ 等没有内置编译器的语言，用 `simulate_pta_run` 在 PTA 上真跑一遍并读回结果 |
+| 读取 PTA 的编译错误 | `read_pta_compile_result` 读页面上的「编译器输出」（输出、异常堆栈、编译错误） |
+| 禁粘贴也能贴 | 接管 `Ctrl+V` / `⌘V`，读剪贴板后走插件自己的写入链路；抢不过页面时用 `Ctrl+M`；右键粘贴同样接管 |
+| 粘贴焦点判定 | 只有焦点在 PTA 的可写作答区里才接管，别的地方照常粘贴 |
+| 视觉模式（VLM） | 题面含图片时自动切视觉模式；模型不支持看图时主动提醒本次已被降级为纯文本 |
+| 提交后自动刷新 | 等待判题结论时，每 5 秒点一次页面上的「刷新 / Reload」按钮 |
+| 多标签页独立 | 面板开关、agent 会话、图标节流都按标签页隔离，可以同时开好几个 |
+| 检查更新 | 设置页顶部比对 GitHub / Gitee 的 release 标签，有新版本就提示 |
+| API Key 防误填 | Key 输入框关掉自动填充，密码管理器不会把 PTA 的密码套进来 |
+| 快捷键 | `Alt+G` 打开悬浮窗并把光标放进输入框，`Esc` 关闭悬浮窗 |
 | diff 全屏 | diff 卡片可在新标签页显示完整改动，不折叠没改动的行 |
 | 公式与 Markdown | 流式渲染 Markdown、表格与 KaTeX 公式 |
 | 随时停止 | 模型流、页面脚本、编译、逐字输入、写入作答区都能被「停止」打断 |
@@ -54,9 +64,15 @@ PTA 助手是一个运行在浏览器里的 PTA（拼题A）解题助手：自�
 
 ### 打开悬浮窗
 
-- 点工具栏的 PTA 助手图标：开关悬浮窗
-- 双击图标或双击标题栏：恢复默认位置与大小
-- 拖标题栏移动、拉右下角改大小，位置与尺寸会被记住
+| 操作 | 行为 |
+|---|---|
+| 点工具栏的 PTA 助手图标 | 开关悬浮窗 |
+| **`Alt+G`** | **打开悬浮窗，并把光标直接放进输入框**——按完就能立刻打字，不用再点一下输入框 |
+| **`Esc`** | **关闭悬浮窗**（面板没开着时不拦，页面自己的 Esc 行为保持原样） |
+| 双击图标或双击标题栏 | 恢复默认位置与大小 |
+| 拖标题栏移动、拉右下角改大小 | 位置与尺寸会被记住 |
+
+`Alt+G` 在面板已经开着时按也一样：不会重复打开，只把光标送回输入框。
 
 | 面板按钮 | 作用 |
 |---|---|
@@ -76,18 +92,35 @@ PTA 助手是一个运行在浏览器里的 PTA（拼题A）解题助手：自�
 | API Key | 模型接口密钥，只保存在 background 里，页面上拿不到 |
 | 接口地址 | OpenAI 兼容地址，默认 `https://api.siliconflow.cn/v1` |
 | 模型 | 可手填，也可以点「选模型」从接口拉取列表 |
+| 视觉模式 | 自动 / 开 / 关，见下 |
 
 接口地址旁边有「教程」，打开的也是 <https://me.octest.top/pta-assist-plugin>。
 
+**API Key 不会被密码管理器自动填**：输入框上关掉了浏览器自动填充，并标记成「请密码管理器忽略」，所以不会把你在 PTA 上用的密码误套进来。
+
+### 视觉模式（VLM）
+
+题目里有图片时，插件按设置决定要不要让模型「看图」：
+
+| 模式 | 行为 |
+|---|---|
+| 自动（默认） | 读到的题面含图片占位才切视觉模式；没图就走纯文本 |
+| 开 | 始终按视觉模式工作 |
+| 关 | 始终按纯文本模式，不看图 |
+
+**当前模型不支持看图时会主动提醒一次**：插件会明确告诉你「题面包含图片，但当前模型（xxx）不支持看图，已按纯文本模式处理」——这次运行是被强制降级的，题面里的图可能没被读进去，需要换一台看图模型或把视觉模式关掉。这条提醒只出现一次，不会反复刷屏。
+
 ### 粘贴：Ctrl+V / Ctrl+M
 
-PTA 会拦截普通粘贴。插件只在可写作答区里接管：
+PTA 会拦截普通粘贴。插件**只在焦点位于 PTA 的可写作答区时**才接管粘贴，别的网站、别的输入框一律照常：
 
 | 操作 | 行为 |
 |---|---|
 | `Ctrl+V` / `⌘V` | 读取系统剪贴板，在光标处插入；不触发页面的「禁止粘贴」 |
 | `Ctrl+M` | 备用快捷键，`Ctrl+V` 被页面抢先拦掉时用 |
-| 右键 / 中键粘贴 | 同样走内置粘贴 |
+| 右键 / 中键粘贴 | 同样走内置粘贴（粘贴事件也接管） |
+
+判断依据：事件落在 CodeMirror 编辑区里（`.cm-content`，任意网站），或落在 `pintia.cn` 上的可编辑元素里；只读编辑器（`aria-readonly="true"` 或 `contenteditable="false"`）不接管，所以题面里只读的样例框粘贴照常。
 
 写入过程中页面底部会出现提示条。剪贴板读取失败时，content script 会转给 background（Chrome 用 offscreen 文档，Firefox 用 background 页的 DOM）。
 
@@ -107,17 +140,23 @@ diff 卡片表头有「全屏查看」：新标签页打开完整 diff，不折�
 
 对话记录存在 `chrome.storage.local`，按页面地址分桶：同一道题恢复同一段对话，换题就是新的一段，不会串上下文。点「新会话」会把存盘的那份一起清掉。
 
+### 多个标签页同时用
+
+面板开关只活在**当前标签页的内存里**，不写 storage、不跨标签页同步——在 A 页打开悬浮窗不会让 B 页的面板也弹出来。每个标签页各跑各的 agent 会话，互不干扰；在某个标签页开始新一轮对话时，只会中止**该标签页**上一轮还在跑的请求。
+
 ## AI 可用的工具
+
+一共 19 个工具：
 
 | 工具 | 功能 |
 |---|---|
 | `read_problem` | 读取当前题面（样例、公式转 LaTeX） |
 | `read_editor_code` | 读取作答区代码 |
 | `write_editor_code` | 写入作答区（自动回读比对、样例编译、检查提交按钮） |
-| `compile_and_run_c` | 本地编译运行 C/C++（Clang wasm） |
+| `compile_and_run_c` | 本地编译运行 C（Clang wasm） |
 | `compile_and_run_python` | 本地运行 Python（Pyodide） |
 | `compile_and_run_js` | 本地运行 JavaScript |
-| `read_pta_compile_result` | 读取 PTA 最近一次编译/运行结果 |
+| `read_pta_compile_result` | 读取 PTA 最近一次编译/运行结果（含编译错误） |
 | `simulate_pta_run` | 在 PTA 页面点「运行测试」并读回结果 |
 | `submit_answer` | 提交作答区代码并等判题结论 |
 | `read_judge_result` | 读取判题结论（AC/WA/PC/TLE 等） |
@@ -138,7 +177,17 @@ diff 卡片表头有「全屏查看」：新标签页打开完整 diff，不折�
 
 **`write_editor_code`**：写入后自动做三件事——回读逐行比对、用第一组样例编译比对输出（按页面上选定的语言挑运行器）、检查提交按钮是否可用。有「不一致 / 按钮禁用」先把结论修掉。
 
-**`submit_answer` / `read_judge_result`**：提交后等判题结论。PTA 结果页不会自己刷新，等待循环里每秒点一次页面上的「刷新 / Reload」。提交前先确认上一次的「提交结果 dialog」已经关掉（`close_dialogs`），否则它会挡住提交按钮。
+**`compile_and_run_c`**：用内置的 Clang 22（wasm）编译并运行 **C** 代码，可以给标准输入。引擎按 `.c` 编译，**不含 C++ 模式**。
+
+**`compile_and_run_python`** / **`compile_and_run_js`**：本地运行 Python（Pyodide）与 JavaScript，可以给标准输入。
+
+**`simulate_pta_run`**：在 PTA 页面上真跑一次测试——自动点开测试面板（Test Case / 测试用例）→ 把 `stdin` 填进测试输入框（不传就沿用面板里原有的输入）→ 点「运行测试 / Run Test Case」→ 轮询读回结果。英文页还会带回 Expected Result；跑完没有输出时回退去读 `Compiler's Log` 页签。
+
+**`read_pta_compile_result`**：读 PTA 页面上的「编译器输出」区域：最近一次运行的输出、异常堆栈、编译错误。
+
+> **没有内置编译器的语言（Java、C++、Go、C# 等）走这两个工具。** 插件**不内置 JRE**，Java 这类语言本地跑不了，只能借 PTA 自己的编译器：先 `simulate_pta_run` 跑一遍拿结果，需要看编译错误再 `read_pta_compile_result`。不要因为本地跑不了就以为代码是对的。
+
+**`submit_answer` / `read_judge_result`**：提交后等判题结论。PTA 结果页不会自己刷新，等待循环里**每 5 秒点一次**页面上的「刷新 / Reload」按钮。提交前先确认上一次的「提交结果 dialog」已经关掉（`close_dialogs`），否则它会挡住提交按钮。
 
 判题结论归一化：
 
@@ -162,14 +211,27 @@ diff 卡片表头有「全屏查看」：新标签页打开完整 diff，不折�
 
 **`write_document`**：把整理好的内容写成文件下载到本机；超过面板能力的长文档用它，不要在回答里贴整篇。
 
+### 提示词里的硬规矩
+
+提示词（`src/shared/tools.ts` 的 `SYSTEM_PROMPT`）里写死的规则，代码之外还有一层确定性护栏兜底：
+
+| 规则 | 内容 |
+|---|---|
+| 改代码/提交前先问 | 用户本条没明确要求改代码或提交时，`write_editor_code` / `submit_answer` 会被系统直接拦下 |
+| 少动用户代码 | 能局部修补就别整段重写，保留用户原来的变量名、注释和写法风格 |
+| **不内联用户已提取的函数** | 用户把代码抽成函数了，就保持函数形态，**不要又内联回调用处**；也不要删掉或改名他已经写好的辅助函数、常量、工具类 |
+| **命名用英文表意** | 变量名、函数名用英文并准确表达含义（`totalScore` 而不是 `s1`/`tmp`/`a`，`calculateAverage` 而不是 `doIt`），同一份代码里风格一致，注释只写「为什么」 |
+| 能问就问 | 凡是能列成选项的问题一律用 `ask`，不要在正文里写「要不要…？」再跟列表 |
+| 自动展示 diff | `write_editor_code` 成功后自动生成 diff 卡片，模型不用再调 `diff` |
+
 ## 内置编译器
 
-插件内置 C/C++、Python、JavaScript 三种语言的编译运行环境：不联网、代码不出本机。
+插件内置 **C**、Python、JavaScript 三种语言的编译运行环境：不联网、代码不出本机。
 
 | 工具 | 运行时 |
 |---|---|
 | `compile_and_run_c` | Clang 22.1.8 + wasm-ld + wasi-sdk 33 sysroot（约 91MB） |
-| `compile_and_run_python` | Pyodide 0.26（约 15MB） |
+| `compile_and_run_python` | Pyodide 0.26.4（约 15MB） |
 | `compile_and_run_js` | 插件内置 JS Worker |
 
 AI 会自动调用它们验证样例。例如：
@@ -182,7 +244,7 @@ AI 会自动调用它们验证样例。例如：
 
 AI 会写代码并调 `compile_and_run_python`，把样例输入 `5\n` 喂进去，确认输出 `15`。
 
-对于**没有内置编译器**的语言（Java、C#、Go 等），走 PTA 自己的运行入口：
+对于**没有内置编译器**的语言（Java、C++、Go、C# 等），走 PTA 自己的运行入口：
 
 - **`simulate_pta_run`**：展开测试面板 → 把 `stdin` 填进测试输入框（不传就沿用原有输入）→ 点「运行测试 / Run Test Case」→ 读回结果（英文页还会带回 Expected Result）
 - **`read_pta_compile_result`**：读取最近一次编译/运行输出
@@ -190,6 +252,8 @@ AI 会写代码并调 `compile_and_run_python`，把样例输入 `5\n` 喂进去
 这两个工具只在 PTA 页面（`pintia.cn`）上生效。
 
 ## PTA 适配要点
+
+更细的实测笔记（怎么找题面、怎么认作答区、怎么逐字敲代码、判题结论怎么归一化、踩过的坑）见 **[docs/pta-page-notes.md](docs/pta-page-notes.md)**。
 
 ### 判题结论归一化
 
@@ -210,7 +274,9 @@ AI 会写代码并调 `compile_and_run_python`，把样例输入 `5\n` 喂进去
 - **API Key 只存在 `chrome.storage.local`，只有 background 能读**；content script 拿到的设置视图里没有 Key
 - **请求由 background 发出**：避开页面 CSP，也不让 Key 进入页面上下文
 - **代码不出本机**：内置编译器完全在浏览器里跑，不联网
+- **Key 输入框不让密码管理器碰**：`autocomplete="off"` + `data-lpignore="true"`，避免把 PTA 的密码误套进来
 - **改用户代码前必须先问**：用户没有明确要求改代码时，`write_editor_code` 之前必须先 `ask`
+- **唯一的外部出口**是模型接口与 release 标签检查（`api.github.com`、`gitee.com`）
 
 ## 工程结构
 
@@ -218,25 +284,44 @@ AI 会写代码并调 `compile_and_run_python`，把样例输入 `5\n` 喂进去
 manifest/manifest.json   手写清单（Chrome 用），Firefox 版本在构建时按差异打补丁
 vite.config.ts           一次构建一个入口（background / content / diff），TARGET 决定产物目录
 src/
-  background/index.ts    图标点击、消息路由、进行中的请求
-  background/agent.ts    agent loop
-  background/deepseek.ts 调用 /chat/completions，解析 SSE 与 tool_calls 分片
-  background/js-inject.ts 在页面主世界执行脚本（超时 + 隔离世界回退）
-  background/compile.ts  内置编译器调度（C / Python / JS）
-  background/clipboard.ts 读剪贴板的后台兜底
-  background/pta-scripts.ts PTA 页面脚本：题面、代码、提交、判题、模拟运行
-  background/settings.ts 设置读写，API Key 只留在这里
-  content/index.tsx      content script：注入 Shadow DOM 并挂载 React
-  content/App.tsx        悬浮窗主体
-  content/paste.ts       Ctrl+V / Ctrl+M 内置粘贴
-  content/hooks/         useChat、useSettings、usePanelLayout
-  content/components/    消息列表、Markdown、工具卡片、输入区、设置页
-  content/chatStore.ts   对话持久化（按页面地址分桶）
-  diff/                  全屏 diff 标签页
-  shared/                browser API、消息协议、工具定义、diff 引擎与样式
+  background/
+    index.ts             图标点击、消息路由、进行中的请求、设置读写入口
+    agent.ts             agent loop、工具分发、视觉模式判断
+    deepseek.ts          调用 /chat/completions，解析 SSE 与 tool_calls 分片
+    pta-scripts.ts       PTA 页面脚本：题面、代码、提交、判题、模拟运行、编译输出
+    js-inject.ts         在页面主世界执行脚本（超时 + 隔离世界回退）
+    input-methods.ts     写入作答区（编辑器事务 / 逐字输入）
+    typist.ts            逐字输入
+    debugger-input.ts    chrome.debugger 发 CDP 真实按键
+    compile.ts           内置运行器调度（C / Python / JS）
+    compiler-host.ts     承载 wasm 引擎的 Worker（Chrome 走 offscreen 文档）
+    clipboard.ts         读剪贴板的后台兜底
+    settings.ts          设置读写、检查更新（GitHub / Gitee release 标签）
+  content/
+    index.tsx            content script：注入 Shadow DOM 并挂载 React
+    App.tsx              悬浮窗主体
+    shortcuts.ts         Alt+G 打开并聚焦输入框、Esc 关闭
+    paste.ts             Ctrl+V / Ctrl+M / 右键粘贴的内置粘贴与焦点判定
+    pageTools.ts         需要页面上下文的工具
+    panelStore.ts        面板开关、布局、草稿（按标签页隔离的内存状态）
+    chatStore.ts         对话持久化（按页面地址分桶）
+    hooks/               useChat、useSettings、usePanelLayout
+    components/          Composer（输入区）、MessageList、ToolCard、DiffView、Markdown、SettingsPanel
+  diff/                  全屏 diff 标签页（main.tsx + DiffPage.tsx）
+  shared/
+    browser.ts           chrome / browser API 垫片
+    messages.ts          消息协议与类型
+    tools.ts             工具定义 + 系统提示词
+    settings.ts          设置类型、默认值、视觉模式判定
+    guardrails.ts        写入与提交护栏、ask 选项解析
+    abort.ts             统一的 AbortSignal 工具
+    types.ts             通用类型
+    diff.ts / diff.css   diff 引擎与样式
+    input-methods.ts     输入方法清单
+scripts/                 下载资源、打包、测试
+docs/                    PTA 页面适配的实测笔记
 public/engine/           内置 C 编译器（wasm + sysroot + WASI shim，见该目录 README）
 public/engine/pyodide/   内置 Python 运行时（约 15MB）
-scripts/                 下载资源、打包、测试
 ```
 
 ## 开发与调试
@@ -251,7 +336,7 @@ npm run package:firefox    # 只打 Firefox xpi
 npm run icons              # 重新生成图标（python3 + Pillow）
 ```
 
-需要 Node 22.18+。
+需要 Node 22.18+（测试脚本直接跑 `src` 里的 TS，用的是 Node 的类型擦除）。
 
 加载开发产物：
 
@@ -293,6 +378,13 @@ npm run icons              # 重新生成图标（python3 + Pillow）
 
 局限：正文是流式上屏的，转 ask 时原文已经显示；护栏不撤回已输出的文字，只额外给出可点卡片。
 
+### 视觉模式怎么判断的
+
+1. AI 调 `read_problem` 读题面，题面里的图片会被摊平成 `[图片 …]` 占位
+2. 插件用 `statementHasImages()` 看有没有这个占位
+3. 有图片就按设置（自动 / 开 / 关）决定要不要走视觉模式
+4. 当前模型不支持看图（`modelSupportsVlm()` 按模型名判断）时，**提醒一次**本次被降级成纯文本，然后照常继续跑，不中断工具链
+
 ### 性能
 
 内容多时不卡依赖几件事：流式增量按 `requestAnimationFrame` 合并、消息与工具卡片 `memo`、滚动状态只在跨越阈值时更新、消息区 `contain: content` + 气泡 `content-visibility: auto`、进度条只动 `transform`。
@@ -310,23 +402,28 @@ npm run icons              # 重新生成图标（python3 + Pillow）
 - **ask 超时 15 分钟**：问用户判题结果时可能中途去查资料；走人也可以点「停止」
 - **KaTeX 字库**：只带 woff2，构建时复制到 `dist/<target>/katex-fonts/`
 - **UTF-8 校验**：Chrome 会拒绝含 Unicode 非字符的脚本，构建时统一转义成 `\uXXXX`
-- **判题等待**：PTA 结果页不会自动刷新，等待循环里会点页面上的「刷新 / Reload」
+- **判题等待**：PTA 结果页不会自动刷新，等待循环里每 5 秒点一次「刷新 / Reload」
+- **检查更新**：设置页读取设置时顺手查一次 release 标签，1 小时内缓存一次结果
 
 ## 常见问题
 
 | 问题 | 处理 |
 |---|---|
 | 点图标没反应 | 刷新页面；`chrome://` 页面不支持 |
+| `Alt+G` 没反应 | 先点一下页面让内容脚本拿到焦点；某些页面会吞掉 Alt 组合键 |
 | 按 Ctrl+V 没反应 | 先点一下作答区；仍不行用 Ctrl+M |
+| 题目里有图，但 AI 没看懂 | 模型不支持看图，插件会提示被降级了：换看图模型，或把视觉模式改成「关」避免误判 |
 | 全屏 diff 提示已过期 | 只保留最近 8 份，回面板重新点一次 |
 | API Key 无效 | 设置页重填，或检查接口地址 |
-| 编译器加载失败 | 确认扩展允许 WASM；或用 PTA 的「运行测试」 |
-| 判题一直卡住 | 插件会自动点「刷新」；超时后可让 AI 调 `refresh_page` |
+| 编译器加载失败 | 确认扩展允许 WASM；或用 PTA 的「运行测试」（`simulate_pta_run`） |
+| Java / C++ 这类语言跑不了 | 本来就不内置 JRE：让 AI 用 `simulate_pta_run` 借 PTA 的环境跑 |
+| 判题一直卡住 | 插件每 5 秒自动点一次「刷新」；超时后可让 AI 调 `refresh_page` |
 
 ## 更新记录
 
 | 版本 | 主要内容 |
 |---|---|
+| v3.4.0 | 视觉模式（VLM）：题面含图自动切换、模型不支持看图时主动提醒降级、设置页新增「视觉模式」开关；`Alt+G` 打开悬浮窗并聚焦输入框、`Esc` 关闭；设置页顶部检查 GitHub/Gitee release 提示新版本；API Key 输入框防密码管理器误填；提示词补充英文表意命名与「不内联用户已提取的函数」；按代码校正文档中过时的描述（刷新按钮点击频率、内置编译语言范围等） |
 | v3.3.0 | 提示词强化；自动 diff 护栏、ask 工具硬门、正文选项自动转 ask 卡片 |
 | v3.2.0 | 移除面板「输入」按钮，改为复制后用 `Ctrl+V` / `Ctrl+M` 内置粘贴 |
 | v3.1.1 | 文档与发布：Manual 合并进 README、站点链接改为 `me.octest.top`、Release 打包补齐 Pyodide、产物名跟随完整版本号 |

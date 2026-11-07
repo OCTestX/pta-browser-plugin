@@ -377,6 +377,20 @@ providerChips[0].click();
 await tick();
 check('点「硅基流动」把接口地址换回来', withKey.find('.field__input[type="text"]').value === 'https://api.siliconflow.cn/v1');
 
+// 视觉模式：几选一的分段选择器，保存时跟着走
+const vlmSegments = [...withKey.shadow().querySelectorAll('.segment__item')];
+check('设置页里有视觉模式的三档', vlmSegments.length === 3);
+check('三档是自动、开、关', vlmSegments.map((el) => el.textContent).join('、') === '自动、开、关');
+check('默认选中「自动」', vlmSegments[0].className.includes('segment__item--on'));
+vlmSegments[2].click();
+await tick();
+check('点「关」后高亮跟着换', vlmSegments[2].className.includes('segment__item--on') && !vlmSegments[0].className.includes('segment__item--on'));
+const vlmSave = withKey.shadow().querySelectorAll('.button');
+[...vlmSave].find((el) => el.textContent === '保存')?.click();
+await tick();
+const lastSave = withKey.requests.filter((r) => r.type === 'settings/save').at(-1);
+check('保存时把视觉模式一起交给 background', lastSave?.patch?.vlmMode === 'off');
+
 // Key 与接口地址都齐了，模型旁边出现下拉框
 check('模型旁边的下拉框出现了', Boolean(withKey.find('.field__models')));
 withKey.find('.field__models').click();
@@ -1063,5 +1077,36 @@ check('面板说明这一轮已停', stopper.find('.messages').textContent.inclu
 stopper.emit({ type: 'chat/delta', requestId: stopId, text: '迟到的回答' });
 await tick();
 check('停止后迟到的增量不会上屏', !stopper.find('.messages').textContent.includes('迟到的回答'));
+
+/* ---------- 场景十：Alt+G 打开并聚焦输入框，Esc 关闭悬浮窗 ---------- */
+
+const keys = boot({ hasApiKey: true });
+await tick();
+check('一开始没有悬浮窗', !keys.find('.panel'));
+
+const pressKey = (init) => {
+  keys.window.dispatchEvent(new keys.window.KeyboardEvent('keydown', { bubbles: true, ...init }));
+};
+
+pressKey({ key: 'g', altKey: true });
+await tick();
+check('Alt+G 打开悬浮窗', Boolean(keys.find('.panel')));
+check(
+  'Alt+G 之后光标停在输入框上',
+  keys.shadow()?.activeElement?.classList.contains('composer__input'),
+  keys.shadow()?.activeElement?.className,
+);
+
+pressKey({ key: 'Escape' });
+await tick();
+check('Esc 关闭悬浮窗', !keys.find('.panel'));
+
+pressKey({ key: 'Escape' });
+await tick();
+check('面板没开着时 Esc 不会出错', !keys.find('.panel'));
+
+pressKey({ key: 'g', altKey: true });
+await tick();
+check('关掉之后 Alt+G 还能再打开', Boolean(keys.find('.panel')));
 
 console.log(`\n${target} 冒烟测试通过`);

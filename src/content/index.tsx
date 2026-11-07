@@ -3,6 +3,7 @@ import { App } from './App';
 import { katexStyles } from './katexStyles';
 import { runPageTool } from './pageTools';
 import { installPasteBridge } from './paste';
+import { installPanelShortcuts } from './shortcuts';
 import { initState, requestLayoutReset, togglePanel } from './panelStore';
 import { ext } from '../shared/browser';
 import { isResetPanelLayoutMessage, isRunToolRequest, isTogglePanelMessage } from '../shared/messages';
@@ -48,6 +49,8 @@ function start(): void {
   void initState();
   // 接管 Ctrl+V / Ctrl+M：PTA 禁粘贴时用插件自己的写入链路把剪贴板内容塞进作答区
   installPasteBridge();
+  // Alt+G 打开悬浮窗并聚焦输入框，Esc 关闭悬浮窗
+  installPanelShortcuts();
 
   // 在模块顶层注册，保证后台发来的 toggle 一定有人接
   ext.runtime.onMessage.addListener((message: unknown, _sender, sendResponse) => {

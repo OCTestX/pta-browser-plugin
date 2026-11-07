@@ -33,7 +33,11 @@ const state = {
 
 globalThis.chrome = {
   action: { onClicked: { addListener: (fn) => state.channels.action.push(fn) } },
-  runtime: { onMessage: { addListener: (fn) => state.channels.message.push(fn) } },
+  runtime: {
+    onMessage: { addListener: (fn) => state.channels.message.push(fn) },
+    // 检查更新那套逻辑在模块加载时就读一次清单版本（MANIFEST_VERSION），mock 里得给上
+    getManifest: () => ({ version: '3.4.0' }),
+  },
   tabs: {
     create: async (options) => { state.createdTabs.push(options); return { id: 99 }; },
     sendMessage: async (tabId, message) => {

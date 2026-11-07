@@ -126,3 +126,25 @@ export function subscribeDraft(listener: Listener): () => void {
     listeners.delete(listener);
   };
 }
+
+// 聚焦输入框的请求计数。
+// Alt+G 要「打开面板并让光标停在输入框」，但面板关闭时 React 根本不渲染输入框，
+// 所以这里用一个自增计数把这个意图记下来：Composer 挂载后看到计数变了就主动 focus。
+// 只放内存里、不进 storage——刷新页面后没有「待聚焦」这回事。
+let composerFocusCount = 0;
+
+export function requestComposerFocus(): void {
+  composerFocusCount += 1;
+  emit();
+}
+
+export function composerFocusRequest(): number {
+  return composerFocusCount;
+}
+
+export function subscribeComposerFocus(listener: Listener): () => void {
+  listeners.add(listener);
+  return () => {
+    listeners.delete(listener);
+  };
+}

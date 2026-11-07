@@ -1,3 +1,4 @@
+import { useEffect, useRef } from 'react';
 import type { KeyboardEvent } from 'react';
 
 interface ComposerProps {
@@ -6,9 +7,22 @@ interface ComposerProps {
   onSend: () => void;
   onStop: () => void;
   streaming: boolean;
+  /**
+   * 聚焦信号：每次自增就表示「把光标放进输入框」。
+   * Alt+G 打开悬浮窗时会自增，这样用户不用再点一下输入框就能直接打字。
+   */
+  focusSignal?: number;
 }
 
-export function Composer({ value, onChange, onSend, onStop, streaming }: ComposerProps) {
+export function Composer({ value, onChange, onSend, onStop, streaming, focusSignal = 0 }: ComposerProps) {
+  const inputRef = useRef<HTMLTextAreaElement>(null);
+
+  // 面板刚挂载时输入框还不存在，autoFocus 已经把光标放进去了；
+  // 这里补的是「面板早就开着、再按一次 Alt+G」的情况——那时组件不会重新挂载。
+  useEffect(() => {
+    if (focusSignal > 0) inputRef.current?.focus();
+  }, [focusSignal]);
+
   const handleKeyDown = (event: KeyboardEvent<HTMLTextAreaElement>) => {
     // 中文输入法组词期间的回车不能被当成发送
     if (event.key === 'Enter' && !event.shiftKey && !event.nativeEvent.isComposing) {
@@ -21,6 +35,7 @@ export function Composer({ value, onChange, onSend, onStop, streaming }: Compose
     <div className="composer">
       <textarea
         className="composer__input"
+        ref={inputRef}
         value={value}
         rows={2}
         autoFocus

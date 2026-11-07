@@ -7,11 +7,11 @@
 
 | 文件 | 体积 | 来源 | 进 git |
 | --- | --- | --- | --- |
-| `shared.js` | ~30KB | 改编自 cppstudio-io/wasm-clang-runtime 的 shared.js（C 模式、stderr 分流、ESM 导出） | 是 |
-| `engine-core.js` | ~5KB | 改编自其 compiler-bridge.js（C 专用配置 + 结构化结果） | 是 |
-| `compile-worker.js` | ~2KB | 自写：Worker 侧协议与引擎单例 | 是 |
-| `compiler-host.js` / `.html` | ~1KB | 自写：Chrome offscreen 页承载 Worker | 是 |
-| `memfs` | ~97KB | 用 wasi-sdk 33 按上游 build.sh 从 memfs.c 编出的 wasm 内存文件系统 | 是 |
+| `shared.js` | ~31KB | 改编自 cppstudio-io/wasm-clang-runtime 的 shared.js（C 模式、stderr 分流、ESM 导出） | 是 |
+| `engine-core.js` | ~6KB | 改编自其 compiler-bridge.js（C 专用配置 + 结构化结果） | 是 |
+| `compile-worker.js` | ~4KB | 自写：Worker 侧协议与引擎单例 | 是 |
+| `compiler-host.js` / `.html` | ~3KB | 自写：Chrome offscreen 页承载 Worker | 是 |
+| `memfs` | ~95KB | 用 wasi-sdk 33 按上游 build.sh 从 memfs.c 编出的 wasm 内存文件系统 | 是 |
 | `clang22-noeh` | ~34MB | 上游 Release（剥掉 exnref 指令的兼容版） | 否（fetch-engine.mjs 下载） |
 | `lld22-noeh` | ~18MB | 同上 | 否 |
 | `sysroot22.tar` | ~38MB | wasi-sdk 33 的 sysroot（C/C++ 头文件 + libc.a 等） | 否 |
@@ -19,6 +19,14 @@
 三个大文件由 `npm run build`（前置的 `scripts/fetch-engine.mjs`）从
 [cppstudio-io/wasm-clang-runtime v0.1.0](https://github.com/cppstudio-io/wasm-clang-runtime/releases/tag/v0.1.0)
 下载，带 sha256 校验；只在缺失时下载，装好后就完全离线。
+
+## 语言范围：只编 C
+
+引擎把待编译的代码写成 `${name}.c` 交给 clang，**没有 `-x c++` 之类的模式切换**，
+所以这套环境只服务 `compile_and_run_c`（C 代码）。
+
+sysroot 里确实带了 C++ 头文件，但插件没有为 C++ 准备编译入口；C++、Java、Go 等语言一律走
+PTA 自己的运行环境（`simulate_pta_run` / `read_pta_compile_result`），插件不内置 JRE。
 
 ## 为什么用「noeh」版本
 

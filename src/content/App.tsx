@@ -7,11 +7,13 @@ import { useChat } from './hooks/useChat';
 import { usePanelLayout } from './hooks/usePanelLayout';
 import { useSettings } from './hooks/useSettings';
 import {
+  composerFocusRequest,
   getDraft,
   isPanelOpen,
   layoutResetCount,
   setDraft,
   setPanelOpen,
+  subscribeComposerFocus,
   subscribeDraft,
   subscribeLayoutReset,
   subscribePanel,
@@ -26,6 +28,8 @@ export function App() {
   const open = useSyncExternalStore(subscribePanel, isPanelOpen, isPanelOpen);
   const layoutReset = useSyncExternalStore(subscribeLayoutReset, layoutResetCount, layoutResetCount);
   const draft = useSyncExternalStore(subscribeDraft, getDraft, getDraft);
+  // Alt+G 的聚焦请求：面板打开后由 Composer 消费
+  const focusSignal = useSyncExternalStore(subscribeComposerFocus, composerFocusRequest, composerFocusRequest);
   const [view, setView] = useState<View>('chat');
   const settings = useSettings();
   const chat = useChat(settings.hasApiKey);
@@ -167,6 +171,7 @@ export function App() {
             onSend={send}
             onStop={chat.stop}
             streaming={chat.streaming}
+            focusSignal={focusSignal}
           />
         </>
       )}
