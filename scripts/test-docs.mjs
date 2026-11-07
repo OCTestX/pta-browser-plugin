@@ -110,6 +110,20 @@ check('提示词要求不内联用户已提取的函数', tools.includes('内联
 check('README 记录了命名规矩', readme.includes('命名用英文表意'));
 check('README 记录了不内联规矩', readme.includes('不内联用户已提取的函数'));
 
+/* ---------- 强制用 PTA 运行环境 ---------- */
+
+check('设置里有 forcePtaRun 字段（代码）', settings.includes('forcePtaRun'));
+check('默认关闭（代码）', /forcePtaRun:\s*false/.test(settings));
+check('设置视图把它传给页面（代码）', read('src/background/settings.ts').includes('forcePtaRun'));
+check('agent 里会把内置编译器改走 PTA（代码）', read('src/background/agent.ts').includes('forcePtaRunEnabled'));
+check('提示词告诉 AI 这三个工具可能被改道（代码）', tools.includes('已按设置改用 PTA 自己的编译器与运行环境'));
+check('本地路径也标明用的是内置编译器（代码）', read('src/background/agent.ts').includes('（用插件内置的编译器）'));
+check('README 写明了重新加载扩展这一步', readme.includes('只重建不重新加载扩展'));
+check('README 记录了「运行环境」', readme.includes('运行环境：内置编译器 vs PTA'));
+check('README 说清了默认走内置', readme.includes('内置（默认）'));
+check('README 说明了会覆盖作答区代码', readme.includes('覆盖作答区里的代码'));
+check('设置页有「运行环境」两档', settingsPanel.includes('PTA_RUN_MODES'));
+
 /* ---------- 清单与版本 ---------- */
 
 check('清单版本与 README 更新记录一致', readme.includes(`| v${manifest.version} |`), { manifest: manifest.version });

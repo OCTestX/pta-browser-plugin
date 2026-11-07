@@ -27,6 +27,7 @@ export function toSettingsView(settings: Settings): SettingsView {
     model: settings.model,
     hasApiKey: settings.apiKey.length > 0,
     vlmMode: settings.vlmMode,
+    forcePtaRun: settings.forcePtaRun,
   };
 }
 

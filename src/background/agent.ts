@@ -273,6 +273,69 @@ export interface ToolContext {
   askUser: (callId: string, question: string, options: string[]) => Promise<string>;
 }
 
+/**
+ * 在 PTA 页面主世界里跑一个页面脚本（题面、代码、提交、判题、模拟运行、编译输出）。
+ * 「强制用 PTA 运行环境」时，内置编译器的调用也会转到这里来。
+ */
+async function runPtaScript(
+  name: keyof typeof PTA_SCRIPTS,
+  args: Record<string, unknown>,
+  context: ToolContext,
+): Promise<ToolOutcome> {
+  const { tabId, signal } = context;
+  // 这两条会轮询到出结论为止，页面里的等待时间必须比页面超时留得久
+  const defaults: Record<string, number> = { submit_answer: 20, read_judge_result: 60 };
+  const fallback = defaults[name];
+  const asked = Number(args.waitSeconds);
+  const waitSeconds = fallback === undefined
+    ? undefined
+    : Math.min(Math.max(Number.isFinite(asked) && asked > 0 ? asked : fallback, name === 'submit_answer' ? 5 : 0), 120);
+  const timeout = waitSeconds === undefined ? undefined : (waitSeconds + 20) * 1000;
+  const result = await injectScript(tabId, PTA_SCRIPTS[name], args, timeout, signal);
+  if (!result.ok) return { output: result.output, isError: true };
+  // 等超时了要当成错误报给模型：它该知道自己没拿到结论，可以刷新页面再来
+  if (name === 'submit_answer' || name === 'read_judge_result') {
+    const timedOut = /还没出结论|还没读到能归一化成状态码/.test(result.output);
+    if (timedOut) {
+      return {
+        output: result.output + '\n（等待超时。你有权调用 refresh_page 刷新页面，然后再调 read_judge_result 读一次；提交前记得先 close_dialogs 关掉提交结果 dialog。）',
+        isError: true,
+      };
+    }
+  }
+  return { output: result.output, isError: false };
+}
+
+/** 「强制用 PTA 运行环境」这个开关开了没有 */
+async function forcePtaRunEnabled(): Promise<boolean> {
+  try {
+    const settings = await loadSettings();
+    return settings.forcePtaRun === true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * 把一段代码交给 PTA 自己的编译器与机器跑。
+ *
+ * 走的正是 simulate_pta_run 那条路：展开测试面板 → 填数据集 → 点「运行测试」→ 读回结果；
+ * 编译不过时结果里带的是 PTA「编译器输出」里的编译错误。
+ * 区别只有一个：代码得先写进作答区（PTA 只能跑编辑器里的那份）。
+ */
+async function runOnPta(code: string, stdin: string, context: ToolContext): Promise<ToolOutcome> {
+  const { tabId, signal } = context;
+  const written = await abortable(writeEditorCode({ tabId, code, signal }), signal);
+  if (written.isError) {
+    return { output: `（已按设置改用 PTA 的运行环境）但代码没能写进作答区：${written.output}`, isError: true };
+  }
+  const outcome = await runPtaScript('simulate_pta_run', { stdin }, context);
+  return {
+    output: `（已按设置改用 PTA 自己的编译器与运行环境，不是插件内置的编译器）\n${outcome.output}`,
+    isError: outcome.isError,
+  };
+}
+
 /** 单次执行一个工具（agent loop 用它，设置页的模拟输入测试也用它，保证两条路完全一致） */
 export async function runTool(
   name: string,
@@ -327,40 +390,26 @@ export async function runTool(
     return { output: result.output, isError: !result.ok };
   }
 
-  if (name === 'compile_and_run_c') {
+  if (name === 'compile_and_run_c' || name === 'compile_and_run_js' || name === 'compile_and_run_python') {
     const code = typeof args.code === 'string' ? args.code : '';
     if (!code.trim()) return { output: '缺少 code 参数', isError: true };
     const stdin = typeof args.stdin === 'string' ? args.stdin : '';
+    // 开了「强制用 PTA 运行环境」：不跑本地编译器，改用 PTA 自己的编译器与机器
+    if (await forcePtaRunEnabled()) {
+      return runOnPta(code, stdin, context);
+    }
     try {
       // 编译最长能跑一分钟，中途被停也要立刻放手
-      const result = await abortable(compileAndRun({ code, stdin, signal }), signal);
-      return { output: formatCompileResult(result), isError: false };
-    } catch (error) {
-      if (isAbortError(error, signal)) throw error;
-      return { output: error instanceof Error ? error.message : String(error), isError: true };
-    }
-  }
-
-  if (name === 'compile_and_run_js') {
-    const code = typeof args.code === 'string' ? args.code : '';
-    if (!code.trim()) return { output: '缺少 code 参数', isError: true };
-    const stdin = typeof args.stdin === 'string' ? args.stdin : '';
-    try {
-      const result = await abortable(compileAndRunJs({ code, stdin, signal }), signal);
-      return { output: formatCompileResult(result), isError: false };
-    } catch (error) {
-      if (isAbortError(error, signal)) throw error;
-      return { output: error instanceof Error ? error.message : String(error), isError: true };
-    }
-  }
-
-  if (name === 'compile_and_run_python') {
-    const code = typeof args.code === 'string' ? args.code : '';
-    if (!code.trim()) return { output: '缺少 code 参数', isError: true };
-    const stdin = typeof args.stdin === 'string' ? args.stdin : '';
-    try {
-      const result = await abortable(compileAndRunPython({ code, stdin, signal }), signal);
-      return { output: formatCompileResult(result), isError: false };
+      const result = await abortable(
+        name === 'compile_and_run_c'
+          ? compileAndRun({ code, stdin, signal })
+          : name === 'compile_and_run_js'
+            ? compileAndRunJs({ code, stdin, signal })
+            : compileAndRunPython({ code, stdin, signal }),
+        signal,
+      );
+      // 说清用的是哪个运行时：模型才知道这个结果能不能代表 PTA 上的表现
+      return { output: `（用插件内置的编译器）\n${formatCompileResult(result)}`, isError: false };
     } catch (error) {
       if (isAbortError(error, signal)) throw error;
       return { output: error instanceof Error ? error.message : String(error), isError: true };
@@ -400,7 +449,7 @@ export async function runTool(
 
     // 自动检查：回读比对已在链路里做过，这里补样例编译比对与提交按钮状态
     if (args.verify !== false) {
-      notes.push(await verifyWrittenCode(injectScript, tabId, args.code, signal));
+      notes.push(await verifyWrittenCode(injectScript, context, args.code));
     }
 
     // 自动 diff：写入前后的原文都拿到了才算（读不到就不硬造一张残缺的 diff）
@@ -426,27 +475,7 @@ export async function runTool(
 
   // PTA 相关动作都在页面主世界跑（编辑器实例、判题弹窗都是页面自己的东西）
   if (PTA_SCRIPTS[name]) {
-    // 这两条会轮询到出结论为止，页面里的等待时间必须比页面超时留得久
-    const defaults: Record<string, number> = { submit_answer: 20, read_judge_result: 60 };
-    const fallback = defaults[name];
-    const asked = Number(args.waitSeconds);
-    const waitSeconds = fallback === undefined
-      ? undefined
-      : Math.min(Math.max(Number.isFinite(asked) && asked > 0 ? asked : fallback, name === 'submit_answer' ? 5 : 0), 120);
-    const timeout = waitSeconds === undefined ? undefined : (waitSeconds + 20) * 1000;
-    const result = await injectScript(tabId, PTA_SCRIPTS[name], args, timeout, signal);
-    if (!result.ok) return { output: result.output, isError: true };
-    // 等超时了要当成错误报给模型：它该知道自己没拿到结论，可以刷新页面再来
-    if (name === 'submit_answer' || name === 'read_judge_result') {
-      const timedOut = /还没出结论|还没读到能归一化成状态码/.test(result.output);
-      if (timedOut) {
-        return {
-          output: result.output + '\n（等待超时。你有权调用 refresh_page 刷新页面，然后再调 read_judge_result 读一次；提交前记得先 close_dialogs 关掉提交结果 dialog。）',
-          isError: true,
-        };
-      }
-    }
-    return { output: result.output, isError: false };
+    return runPtaScript(name, args, context);
   }
 
   if (name === 'refresh_page') {
@@ -611,10 +640,10 @@ async function runWithLanguage(
  */
 async function verifyWrittenCode(
   inject: typeof injectScript,
-  tabId: number,
+  context: ToolContext,
   code: unknown,
-  signal: AbortSignal,
 ): Promise<string> {
+  const { tabId, signal } = context;
   const source = typeof code === 'string' ? code : '';
   const checks: string[] = [];
 
@@ -629,6 +658,16 @@ async function verifyWrittenCode(
     const language = parsed.language ?? '';
     if (!sample) {
       checks.push('自动检查：题面里没识别出样例，跳过编译比对');
+    } else if (await forcePtaRunEnabled()) {
+      // 强制用 PTA 运行环境：样例也交给 PTA 跑（PTA 的输出是整段文字，只能做「包含」判断）
+      const outcome = await runPtaScript('simulate_pta_run', { stdin: sample.input }, context);
+      const expected = sample.output.trim();
+      const hit = expected.length > 0 && outcome.output.includes(expected);
+      checks.push(
+        hit
+          ? `自动检查：样例 1（PTA 运行环境，输入 ${JSON.stringify(sample.input.trim())}）输出一致`
+          : `自动检查：样例 1（PTA 运行环境）没看到期望输出——${outcome.output.slice(0, 300).replace(/\n/g, ' ')}`,
+      );
     } else {
       // 按题目语言挑编译器；语言认不出来时按代码长相猜一下
       const lang = language || guessLanguage(source);

@@ -4,6 +4,12 @@ export interface Settings {
   model: string;
   /** 视觉模式：auto 按题面是否有图片自动切换；on 强制开启；off 强制关闭 */
   vlmMode: 'auto' | 'on' | 'off';
+  /**
+   * 强制用 PTA 自己的运行环境跑代码（默认关）。
+   * 打开后 compile_and_run_c / _python / _js 一律改走 PTA 的测试面板，
+   * 用 PTA 的编译器编译、PTA 的机器跑，编译错误也从 PTA 的「编译器输出」里读。
+   */
+  forcePtaRun: boolean;
 }
 
 /** 内置的模型提供商：设置页点一下就把接口地址填上，省得手打 */
@@ -29,6 +35,8 @@ export interface SettingsView {
   hasApiKey: boolean;
   /** 视觉模式（自/开/关） */
   vlmMode?: 'auto' | 'on' | 'off';
+  /** 是否强制用 PTA 的运行环境跑代码（默认关） */
+  forcePtaRun?: boolean;
   /** 是否检测到有新版本可用 */
   updateAvailable?: boolean;
   /** 最新发布的标签名（如 v3.4.0），用于在提示里展示 */
@@ -41,6 +49,8 @@ export const DEFAULT_SETTINGS: Settings = {
   baseURL: 'https://api.siliconflow.cn/v1',
   model: 'deepseek-ai/DeepSeek-V4.1-Flash',
   vlmMode: 'auto',
+  // 默认不强制：还是用插件内置的编译器（PTA 自己的运行环境留给没有内置编译器的语言）
+  forcePtaRun: false,
 };
 
 /** 设置页「教程」按钮跳到的地址（作者自己的站点，讲清楚怎么配 Key 怎么用） */

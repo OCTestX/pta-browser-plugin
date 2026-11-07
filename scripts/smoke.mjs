@@ -378,9 +378,10 @@ await tick();
 check('点「硅基流动」把接口地址换回来', withKey.find('.field__input[type="text"]').value === 'https://api.siliconflow.cn/v1');
 
 // 视觉模式：几选一的分段选择器，保存时跟着走
-const vlmSegments = [...withKey.shadow().querySelectorAll('.segment__item')];
+const vlmField = [...withKey.shadow().querySelectorAll('.field')].find((f) => f.textContent.includes('视觉模式'));
+const vlmSegments = [...(vlmField?.querySelectorAll('.segment__item') ?? [])];
 check('设置页里有视觉模式的三档', vlmSegments.length === 3);
-check('三档是自动、开、关', vlmSegments.map((el) => el.textContent).join('、') === '自动、开、关');
+check('三档是自动、开、关', vlmSegments.map((el) => el.textContent.trim()).join('、') === '自动、开、关');
 check('默认选中「自动」', vlmSegments[0].className.includes('segment__item--on'));
 vlmSegments[2].click();
 await tick();
@@ -390,6 +391,22 @@ const vlmSave = withKey.shadow().querySelectorAll('.button');
 await tick();
 const lastSave = withKey.requests.filter((r) => r.type === 'settings/save').at(-1);
 check('保存时把视觉模式一起交给 background', lastSave?.patch?.vlmMode === 'off');
+
+// 运行环境：默认内置，切到 PTA 后保存要把 forcePtaRun 一起交上去
+const runModes = [...withKey.shadow().querySelectorAll('.field')]
+  .find((f) => f.textContent.includes('运行环境'))
+  ?.querySelectorAll('.segment__item');
+check('设置页里有运行环境的内置 / PTA 两档', runModes?.length === 2);
+check('两档是内置、PTA', Array.from(runModes ?? []).map((el) => el.textContent.trim()).join('、') === '内置、PTA');
+const builtinOn = Array.from(runModes ?? []).find((el) => el.textContent.trim() === '内置');
+check('默认选中「内置」', builtinOn?.className.includes('segment__item--on'));
+Array.from(runModes ?? []).find((el) => el.textContent.trim() === 'PTA')?.click();
+await tick();
+check('点「PTA」后高亮跟着换', Array.from(runModes ?? []).find((el) => el.textContent.trim() === 'PTA')?.className.includes('segment__item--on'));
+[...withKey.shadow().querySelectorAll('.button')].find((el) => el.textContent === '保存')?.click();
+await tick();
+const lastSave2 = withKey.requests.filter((r) => r.type === 'settings/save').at(-1);
+check('保存时把 forcePtaRun 一起交给 background', lastSave2?.patch?.forcePtaRun === true);
 
 // Key 与接口地址都齐了，模型旁边出现下拉框
 check('模型旁边的下拉框出现了', Boolean(withKey.find('.field__models')));

@@ -70,6 +70,8 @@ export const SYSTEM_PROMPT = [
   '- compile_and_run_c：用内置编译器（本地 Clang，不联网）把 C 代码编译并运行，可以给标准输入。',
   '- compile_and_run_python：用内置 Python 运行器（本地 Pyodide，不联网）把 Python 代码跑一遍，可以给标准输入。',
   '- compile_and_run_js：用内置 JS 运行器（本地，不联网）把 JavaScript 代码跑一遍，可以给标准输入。',
+  '  **用户开了「运行环境 = PTA」时，这三个 compile_and_run_* 会被改成用 PTA 自己的编译器与机器跑**（代码写进作答区后点「运行测试」），',
+  '  返回值开头会写明「已按设置改用 PTA 自己的编译器与运行环境」——这时不要以为是插件内置编译器跑出来的。',
   '- simulate_pta_run：在 PTA 页面上跑一次测试（自动点开测试面板 → 填数据集 → 点「运行测试」→ 读回结果）。',
   '  **题目是 Java、C++ 或任何插件没有内置编译器的语言时，就靠它借用 PTA 自己的运行环境**：',
   '  插件不内置 JRE，Java 这类语言本地跑不了，只能借 PTA 的编译器。返回值就是运行结果，不用再调 read_pta_compile_result。',

@@ -47,6 +47,20 @@ const VLM_MODE_HINTS: Record<Settings['vlmMode'], string> = {
   off: '始终按纯文本模式工作，不看图',
 };
 
+/** 运行环境：内置编译器 vs 强制用 PTA 自己的编译器 */
+const PTA_RUN_MODES: { id: 'builtin' | 'pta'; label: string; hint: string }[] = [
+  {
+    id: 'builtin',
+    label: '内置',
+    hint: '用插件内置的编译器（C / Python / JavaScript）在本机跑，不联网（默认）',
+  },
+  {
+    id: 'pta',
+    label: 'PTA',
+    hint: '强制用 PTA 自己的编译器与机器跑：代码会写进作答区再点「运行测试」，编译错误也从 PTA 的「编译器输出」里读',
+  },
+];
+
 interface SettingsPanelProps {
   view: SettingsView | null;
   onSave: (patch: Partial<Settings>) => Promise<unknown>;
@@ -58,6 +72,7 @@ export function SettingsPanel({ view, onSave, onBack }: SettingsPanelProps) {
   const [baseURL, setBaseURL] = useState(view?.baseURL ?? DEFAULT_SETTINGS.baseURL);
   const [model, setModel] = useState(view?.model ?? DEFAULT_SETTINGS.model);
   const [vlmMode, setVlmMode] = useState<Settings['vlmMode']>(view?.vlmMode ?? DEFAULT_SETTINGS.vlmMode);
+  const [forcePtaRun, setForcePtaRun] = useState(view?.forcePtaRun ?? DEFAULT_SETTINGS.forcePtaRun);
   const [status, setStatus] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
   // 模拟输入测试：默认拿系统提示词当测试文本，方便对照回读结果是不是一字不差
@@ -87,6 +102,10 @@ export function SettingsPanel({ view, onSave, onBack }: SettingsPanelProps) {
   useEffect(() => {
     if (view?.vlmMode) setVlmMode(view.vlmMode);
   }, [view?.vlmMode]);
+
+  useEffect(() => {
+    if (typeof view?.forcePtaRun === 'boolean') setForcePtaRun(view.forcePtaRun);
+  }, [view?.forcePtaRun]);
 
 
   const runTest = async (methodId: string) => {
@@ -160,7 +179,7 @@ export function SettingsPanel({ view, onSave, onBack }: SettingsPanelProps) {
 
   // 输入框留空表示不修改已保存的 Key
   const saveCurrent = () => {
-    const patch: Partial<Settings> = { baseURL, model, vlmMode };
+    const patch: Partial<Settings> = { baseURL, model, vlmMode, forcePtaRun };
     if (apiKey.trim()) patch.apiKey = apiKey.trim();
     return save(patch, '已保存');
   };
@@ -231,6 +250,24 @@ export function SettingsPanel({ view, onSave, onBack }: SettingsPanelProps) {
             </button>
           ))}
         </span>
+      </div>
+
+      <div className="field">
+        <span className="field__label">运行环境</span>
+        <div className="segment" role="group" aria-label="运行环境">
+          {PTA_RUN_MODES.map((item) => (
+            <button
+              key={item.id}
+              type="button"
+              className={`segment__item${(item.id === 'pta') === forcePtaRun ? ' segment__item--on' : ''}`}
+              title={item.hint}
+              onClick={() => setForcePtaRun(item.id === 'pta')}
+            >
+              {item.label}
+            </button>
+          ))}
+        </div>
+        <span className="field__hint">{PTA_RUN_MODES.find((m) => (m.id === 'pta') === forcePtaRun)?.hint}</span>
       </div>
 
       <div className="field">

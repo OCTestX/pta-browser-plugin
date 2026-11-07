@@ -336,11 +336,46 @@ async function panelBusy(cdp, pageSession) {
   }
 }
 
+/**
+ * 面板里若有一张还没作答的 ask 卡片，就点第一个选项把它答掉。
+ *
+ * ask 是阻塞的：模型问完就停在那儿等，这一轮不会自己结束。
+ * 真机测试要一路跑完，就得替用户点一下。
+ */
+async function answerPendingAsk(cdp, pageSession) {
+  try {
+    return await cdp.evaluate(
+      pageSession,
+      `(() => {
+        const root = document.querySelector('#pta-assistant-host')?.shadowRoot;
+        if (!root) return 'no panel';
+        // 还没作答的 ask 卡片：选项按钮是 .ask__option（已作答的会变成 .ask__chosen）
+        const option = root.querySelector('.ask__option');
+        if (option) {
+          option.click();
+          return 'answered';
+        }
+        // 卡片可能是折叠着的（选项没渲染）：先把 ask 那张工具卡展开
+        const card = Array.from(root.querySelectorAll('.tool'))
+          .find((t) => (t.innerText || '').includes('ask') && t.querySelector('.tool__toggle'));
+        if (!card) return 'no pending ask';
+        card.querySelector('.tool__toggle').click();
+        return 'expanded ask card';
+      })()`,
+    );
+  } catch {
+    return 'error';
+  }
+}
+
 async function waitForTurn(cdp, pageSession, contextId, key, timeoutMs = 420_000) {
   const deadline = Date.now() + timeoutMs;
   let last = [];
   while (Date.now() < deadline) {
     await new Promise((resolve) => setTimeout(resolve, 6000));
+    // AI 弹出 ask 卡片时会一直等用户点选，这一轮就永远不会结束。
+    // 自动点掉它（选第一个选项），不然真机测试只能干等到超时。
+    await answerPendingAsk(cdp, pageSession);
     // 面板自己最清楚忙不忙（按钮上写着「停止」就是还在跑）
     if (await panelBusy(cdp, pageSession)) continue;
     try {
@@ -395,7 +430,8 @@ async function main() {
   const [command, ...rest] = process.argv.slice(2);
   const urls = command === 'solve' ? rest : rest.slice(0, 1);
   if (!command || !urls.length) {
-    console.log('用法：node scripts/pta-drive.mjs <read|solve|tools> <url>');
+    console.log('用法：node scripts/pta-drive.mjs <read|solve|tools|custom> <url> [提示词]');
+    console.log('  custom <url> "<提示词>"  自由给 AI 下指令，打印工具结果与最终回答');
     process.exit(1);
   }
 
@@ -449,17 +485,41 @@ async function main() {
   }
 
   if (command === 'tools') {
+    // 默认跑这三个；也可以 `tools <url> simulate_pta_run read_pta_compile_result` 指定
+    const wanted = process.argv.slice(3).filter((a) => !a.startsWith('http'));
+    const toolList = wanted.length
+      ? wanted
+      : ['read_problem', 'read_editor_code', 'close_dialogs'];
     await gotoProblem(cdp, pageSession, urls[0]);
     const { contextId, key } = await freshPanel(urls[0]);
     await typeAndSend(
       cdp,
       pageSession,
-      '依次调用这三个工具并把结果原样贴出来：read_problem、read_editor_code、close_dialogs。不要做别的。',
+      `依次调用这几个工具并把结果原样贴出来：${toolList.join('、')}。不要做别的。`,
     );
     const messages = await waitForTurn(cdp, pageSession, contextId, key, 150_000);
     for (const [name, result] of summarize(messages).tools) {
       console.log(`--- ${name} ---\n${result}`);
     }
+    return;
+  }
+
+  if (command === 'custom') {
+    // custom <url> "<提示词>"：把提示词原样发给面板里的 AI，打印工具结果与最终回答
+    const prompt = rest.slice(1).join(' ').trim();
+    if (!prompt) {
+      console.log('custom 模式需要提示词：node scripts/pta-drive.mjs custom <url> "<提示词>"');
+      process.exit(1);
+    }
+    await gotoProblem(cdp, pageSession, urls[0]);
+    const { contextId, key } = await freshPanel(urls[0]);
+    await typeAndSend(cdp, pageSession, prompt);
+    const messages = await waitForTurn(cdp, pageSession, contextId, key, 300_000);
+    const { tools, final } = summarize(messages);
+    for (const [name, result] of tools) {
+      console.log(`--- ${name} ---\n${result}`);
+    }
+    console.log(`--- 最终回答 ---\n${final.slice(0, 2000)}`);
     return;
   }
 
