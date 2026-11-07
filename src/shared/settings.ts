@@ -90,3 +90,20 @@ export function modelSupportsVlm(model: string): boolean {
 export function statementHasImages(text: string): boolean {
   return /\[图片/.test(text ?? '');
 }
+
+/**
+ * 模型的上下文窗口（估算值）。
+ *
+ * 接口只回传用量、不回传窗口大小，所以这里按模型名猜一个：
+ * 猜不准只影响那个小圆环的百分比，tooltip 里会写明是按多少算的。
+ */
+export const DEFAULT_CONTEXT_WINDOW = 128_000;
+
+export function contextWindowFor(model: string): number {
+  const name = (model ?? '').toLowerCase();
+  if (name.startsWith('claude-')) return 200_000;
+  if (name.startsWith('gemini-')) return 1_000_000;
+  if (name.startsWith('gpt-4')) return 128_000;
+  if (name.startsWith('qwen')) return 128_000;
+  return DEFAULT_CONTEXT_WINDOW;
+}

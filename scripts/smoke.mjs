@@ -223,7 +223,7 @@ check(
 check('聊天区存在', Boolean(withKey.find('.messages')));
 check('输入框存在', Boolean(withKey.find('.composer__input')));
 check('标题栏版本号跟清单一致（2.0.0 → v2.0）', withKey.find('.panel__badge')?.textContent === 'v2.0');
-check('没聊过时顶栏不显示 token', withKey.find('.panel__usage').textContent === '');
+check('没聊过时圆环没有 token 明细', (withKey.find('.panel__ctx')?.getAttribute('title') ?? '').includes('还没有接口回传'));
 
 withKey.setValue(withKey.find('.composer__input'), '帮我看看这道题');
 await tick();
@@ -295,7 +295,7 @@ check(
   withKey.find('.bubble__content--md').querySelectorAll('.katex-error').length === 0,
 );
 
-check('流式过程中顶栏按字数实时估算 token', /^Token ≈ \d+$/.test(withKey.find('.panel__usage').textContent));
+check('流式过程中圆环有上下文进度', Boolean(withKey.find('.panel__ring-fg')));
 
 withKey.emit({
   type: 'chat/usage',
@@ -307,7 +307,7 @@ withKey.emit({
 await tick();
 check(
   '接口回传用量后显示精确的输入/输出',
-  withKey.find('.panel__usage').textContent === 'Token 1110（输入 1024 / 输出 86）',
+  (withKey.find('.panel__ctx')?.getAttribute('title') ?? '').includes('1.11K token'),
 );
 
 withKey.emit({ type: 'chat/done', requestId, aborted: false });
@@ -869,13 +869,13 @@ check('新一轮上下文已建立', shortcut.find('.bubble--user').textContent.
 
 shortcut.emit({ type: 'chat/usage', requestId: shortcutRequestId, promptTokens: 300, completionTokens: 12, totalTokens: 312 });
 await tick();
-check('顶栏显示这一轮的 token 用量', shortcut.find('.panel__usage').textContent === 'Token 312（输入 300 / 输出 12）');
+check('顶栏圆环的提示里有这一轮的 token 用量', (shortcut.find('.panel__ctx')?.getAttribute('title') ?? '').includes('312 token'));
 
 shortcut.find('.panel__new-chat').click();
 await tick();
 check('「新会话」把对话清回只剩欢迎语', !shortcut.find('.bubble--user') && !shortcut.find('.bubble--assistant'));
 check('「新会话」顺带清掉提示条', shortcut.find('.notice') === null);
-check('「新会话」顺带清掉 token 计数', shortcut.find('.panel__usage').textContent === '');
+check('「新会话」顺带清掉 token 计数', (shortcut.find('.panel__ctx')?.getAttribute('title') ?? '').includes('还没有接口回传'));
 check('「新会话」不刷新页面也能重开一轮', shortcut.find('.composer__send').textContent === '发送');
 
 // 上一轮还在生成时点「新会话」：先把后台那一轮掐掉，旧增量不能再冒出来
@@ -1036,7 +1036,7 @@ await tick();
 const retryRoundId = tools2.requests.filter((r) => r.type === 'chat/start').at(-1).requestId;
 tools2.emit({ type: 'chat/usage', requestId: retryRoundId, promptTokens: 80, completionTokens: 4, totalTokens: 84 });
 await tick();
-check('新一轮的 token 单独计数', tools2.find('.panel__usage').textContent === 'Token 84（输入 80 / 输出 4）');
+check('新一轮的 token 单独计数', (tools2.find('.panel__ctx')?.getAttribute('title') ?? '').includes('84 token'));
 
 
 // 生成中点「新会话」：没答的 ask 不该把界面留在等待状态
@@ -1125,5 +1125,133 @@ check('面板没开着时 Esc 不会出错', !keys.find('.panel'));
 pressKey({ key: 'g', altKey: true });
 await tick();
 check('关掉之后 Alt+G 还能再打开', Boolean(keys.find('.panel')));
+
+/* ---------- 场景十二：讲解页的邀请卡片 ---------- */
+
+const inviter = boot({ hasApiKey: true });
+await tick();
+inviter.toggle();
+await tick();
+
+// 先发一条消息，面板才知道该收哪个 requestId 的事件
+inviter.setValue(inviter.find('.composer__input'), '讲讲这道题');
+await tick();
+inviter.find('.composer__send').click();
+await tick();
+const inviteRequestId = inviter.requests.filter((r) => r.type === 'chat/start').at(-1).requestId;
+
+inviter.emit({
+  type: 'chat/tool-start',
+  requestId: inviteRequestId,
+  callId: 'call-explain',
+  name: 'write_explanation_page',
+  args: JSON.stringify({ title: '7-1 讲解' }),
+});
+await tick();
+inviter.emit({
+  type: 'chat/tool-end',
+  requestId: inviteRequestId,
+  callId: 'call-explain',
+  result: JSON.stringify({ pageId: 'page-1', title: '7-1 讲解', ok: true }),
+  isError: false,
+});
+await tick();
+check('讲解页会给出一张邀请卡片', Boolean(inviter.shadow().querySelector('.invite')));
+check(
+  '邀请卡片上有「打开讲解页」按钮',
+  (inviter.shadow().querySelector('.invite__btn')?.textContent ?? '').includes('打开讲解页'),
+);
+check(
+  '邀请卡片默认就是展开的（不用点开工具卡片才看得见）',
+  Boolean(inviter.shadow().querySelector('.invite')),
+);
+inviter.shadow().querySelector('.invite__btn').click();
+await tick();
+check(
+  '点「打开讲解页」让后台开新标签页',
+  inviter.requests.some((r) => r.type === 'ui/open-explain' && r.pageId === 'page-1'),
+);
+
+/* ---------- 场景十一：斜杠指令菜单、连按回车开新会话、上下文圆环 ---------- */
+
+const slash = boot({ hasApiKey: true });
+await tick();
+slash.toggle();
+await tick();
+
+const composerEl = () => slash.shadow().querySelector('.composer__input');
+const typeInto = (value) => {
+  const el = composerEl();
+  const setter = Object.getOwnPropertyDescriptor(slash.window.HTMLTextAreaElement.prototype, 'value').set;
+  setter.call(el, value);
+  el.dispatchEvent(new slash.window.Event('input', { bubbles: true }));
+};
+const slashPress = (key) => {
+  composerEl().dispatchEvent(
+    new slash.window.KeyboardEvent('keydown', { key, bubbles: true, cancelable: true }),
+  );
+};
+
+typeInto('/');
+await tick();
+const menuItems = [...slash.shadow().querySelectorAll('.cmds__item')];
+check('输入 / 会弹出指令菜单', menuItems.length === 4, menuItems.length);
+check(
+  '菜单左边是命令名、右边是简短解释',
+  menuItems[0].querySelector('.cmds__name')?.textContent === '/new'
+  && (menuItems[0].querySelector('.cmds__summary')?.textContent ?? '').length > 0,
+);
+slashPress('ArrowDown');
+await tick();
+check(
+  '下键能往下选',
+  [...slash.shadow().querySelectorAll('.cmds__item')][1].className.includes('cmds__item--on'),
+);
+slashPress('ArrowUp');
+await tick();
+check(
+  '上键能往上选',
+  [...slash.shadow().querySelectorAll('.cmds__item')][0].className.includes('cmds__item--on'),
+);
+typeInto('/resolve');
+await tick();
+check(
+  '按前缀筛出候选',
+  [...slash.shadow().querySelectorAll('.cmds__item')].length === 1,
+);
+slashPress('Enter');
+await tick();
+const slashSent = slash.requests.filter((r) => r.type === 'chat/start').at(-1);
+check(
+  '回车把选中的指令发出去',
+  slashSent?.messages?.some((m) => m.content === '/resolve'),
+  slashSent?.messages,
+);
+
+// 空输入框连按三次回车 = 开新会话
+typeInto('随便问一句');
+await tick();
+slashPress('Enter');
+await tick();
+const before = slash.shadow().querySelectorAll('.bubble').length;
+typeInto('');
+await tick();
+slashPress('Enter');
+await tick();
+check('空输入框按一次回车不发送', slash.requests.filter((r) => r.type === 'chat/start').length === 1);
+check(
+  '空输入框会提示还要按几次',
+  (slash.shadow().querySelector('.composer__hint')?.textContent ?? '').includes('再按 2 次回车'),
+);
+slashPress('Enter');
+await tick();
+slashPress('Enter');
+await tick();
+check('连按三次回车开了新会话', slash.shadow().querySelectorAll('.bubble').length < before || before === 0);
+
+// 顶部上下文圆环：token 明细藏在 tooltip 里
+const ring = slash.shadow().querySelector('.panel__ring');
+check('顶栏有上下文进度圆环', Boolean(ring));
+check('token 明细不在顶栏直接显示', !slash.shadow().querySelector('.panel__usage'));
 
 console.log(`\n${target} 冒烟测试通过`);

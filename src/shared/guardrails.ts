@@ -50,10 +50,13 @@ export function writeGuardReason(state: {
   askUsed: boolean;
   denied: boolean;
   lastUserText: string;
+  /** 用户用 /resolve 明说「直接答题」：这一轮免问 */
+  forced?: boolean;
 }): string | null {
   if (state.denied) {
     return '用户刚才选择了「先别改」，这一轮不要再改作答区；用文字讲思路，等用户下一次明确要求。';
   }
+  if (state.forced) return null;
   if (state.askUsed || userAskedToWrite(state.lastUserText)) return null;
   return '⛔ 未先询问：改作答区代码前必须调用 ask 工具（question + 2–4 个互斥选项，例如「要不要我直接改作答区？」）。'
     + '先问，拿到用户回答后再重试 write_editor_code。';
@@ -64,10 +67,13 @@ export function submitGuardReason(state: {
   askUsed: boolean;
   denied: boolean;
   lastUserText: string;
+  /** 用户用 /resolve 明说「直接答题」：这一轮免问 */
+  forced?: boolean;
 }): string | null {
   if (state.denied) {
     return '用户刚才选择了「先不提交」，这一轮不要再提交。';
   }
+  if (state.forced) return null;
   if (state.askUsed || userAskedToSubmit(state.lastUserText)) return null;
   return '⛔ 未先询问：提交前必须调用 ask 工具确认（例如「要我提交吗？」选项「提交 / 先不提交」）。'
     + '先问，拿到用户回答后再重试 submit_answer。';

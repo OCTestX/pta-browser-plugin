@@ -110,6 +110,8 @@ export type ContentRequest =
   | { type: 'ui/open-url'; url: string }
   /** diff 卡片右上角的「全屏」：content script 没有 chrome.tabs，让后台存下这份 diff 并开新标签页 */
   | { type: 'ui/open-diff'; diff: DiffPayload }
+  /** 讲解页的邀请卡片：点「打开讲解页」让后台开新标签页 */
+  | { type: 'ui/open-explain'; pageId: string }
   /** Ctrl+V / Ctrl+M 走不通时，读系统剪贴板的兜底 */
   | { type: 'clipboard/read' }
   /** 页面里拦下 Ctrl+V / Ctrl+M 之后，用插件自己的写入链路把剪贴板内容塞进作答区 */
@@ -127,6 +129,7 @@ export function isContentRequest(message: unknown): message is ContentRequest {
       message.type === 'models/list' ||
       message.type === 'ui/open-url' ||
       message.type === 'ui/open-diff' ||
+      message.type === 'ui/open-explain' ||
       message.type === 'clipboard/read' ||
       message.type === 'code/paste')
   );

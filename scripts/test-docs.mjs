@@ -124,6 +124,24 @@ check('README 说清了默认走内置', readme.includes('内置（默认）'));
 check('README 说明了会覆盖作答区代码', readme.includes('覆盖作答区里的代码'));
 check('设置页有「运行环境」两档', settingsPanel.includes('PTA_RUN_MODES'));
 
+/* ---------- 新加的交互与指令 ---------- */
+
+check('斜杠指令清单在代码里（代码）', read('src/shared/commands.ts').includes("id: 'resolve'"));
+check('斜杠指令有 /new /resolve /what /why 四条（代码）', ['new', 'resolve', 'what', 'why']
+  .every((id) => read('src/shared/commands.ts').includes(`id: '${id}'`)));
+check('README 记录了斜杠指令', readme.includes('### 斜杠指令') && readme.includes('/resolve'));
+check('README 记录了连按三次回车', readme.includes('连按三次回车'));
+check('README 记录了选择题题型表', readme.includes('### 题型与选择题'));
+check('README 记录了讲解页', readme.includes('/what') && readme.includes('打开讲解页'));
+check('README 记录了上下文圆环', readme.includes('上下文进度'));
+check('agent 里认得斜杠指令（代码）', read('src/background/agent.ts').includes('parseSlashCommand'));
+check('/resolve 会免问放行（代码）', read('src/shared/guardrails.ts').includes('forced?: boolean'));
+check('讲解页用 data URL 打开（代码）', read('src/background/explain-pages.ts').includes('data:text/html'));
+check('讲解页存进 storage 再开（代码）', read('src/background/explain-pages.ts').includes('EXPLAIN_STORAGE_PREFIX'));
+check('粘贴会替换选区而不是追加（代码）', read('src/background/pta-scripts.ts').includes('selection.main'));
+check('README 写清了 service worker 缓存这个坑', readme.includes('Service Worker') && readme.includes('Code Cache'));
+check('README 写明了讲解页是 data URL 打开的', readme.includes('data:'));
+
 /* ---------- 清单与版本 ---------- */
 
 check('清单版本与 README 更新记录一致', readme.includes(`| v${manifest.version} |`), { manifest: manifest.version });

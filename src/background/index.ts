@@ -16,6 +16,7 @@ import { runAgent, type ToolOutcome } from './agent';
 import { DEFAULT_INPUT_METHOD, findInputMethod } from '../shared/input-methods';
 import { pasteIntoEditor, runInputMethod } from './input-methods';
 import { readClipboardText } from './clipboard';
+import { openExplanation } from './explain-pages';
 import { checkForUpdates, loadSettings, saveSettings, toSettingsView } from './settings';
 
 const TOGGLE_PANEL: BackgroundEvent = { type: 'toggle-panel' };
@@ -174,6 +175,16 @@ ext.runtime.onMessage.addListener((message: unknown, sender, sendResponse) => {
         try {
           const id = await storeDiff(message.diff);
           await ext.tabs.create({ url: ext.runtime.getURL(`diff.html?id=${encodeURIComponent(id)}`) });
+          sendResponse({ ok: true } satisfies StartChatResponse);
+        } catch (error) {
+          sendResponse({ ok: false, message: toErrorMessage(error) } satisfies StartChatResponse);
+        }
+        return;
+      }
+      case 'ui/open-explain': {
+        // 讲解页的邀请卡片：后台开新标签页打开
+        try {
+          await openExplanation(message.pageId);
           sendResponse({ ok: true } satisfies StartChatResponse);
         } catch (error) {
           sendResponse({ ok: false, message: toErrorMessage(error) } satisfies StartChatResponse);

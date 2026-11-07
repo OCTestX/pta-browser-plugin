@@ -1,4 +1,5 @@
 import { memo, useState } from 'react';
+import { ext } from '../../shared/browser';
 import type { ChatMessage } from '../../shared/types';
 import { DiffView } from './DiffView';
 
@@ -7,6 +8,31 @@ const STATUS_LABEL: Record<NonNullable<ChatMessage['toolStatus']>, string> = {
   ok: '完成',
   error: '失败',
 };
+
+/**
+ * 讲解页的邀请卡片：write_explanation_page 的结果里带 pageId 就在卡片上给个入口。
+ * 卡片默认是收起的，所以这张邀请卡也要默认展开，不然用户看不到。
+ */
+function parseExplanationInvite(message: ChatMessage): { pageId: string; title: string } | null {
+  if (message.toolName !== 'write_explanation_page') return null;
+  if (!message.content.trim()) return null;
+  try {
+    const parsed = JSON.parse(message.content) as { pageId?: string; title?: string };
+    if (!parsed.pageId) return null;
+    return { pageId: parsed.pageId, title: parsed.title || '讲解页' };
+  } catch {
+    return null;
+  }
+}
+
+/** 点「打开讲解页」：让后台开新标签页（content script 没有 chrome.tabs） */
+async function openExplanationPage(pageId: string): Promise<void> {
+  try {
+    await ext.runtime.sendMessage({ type: 'ui/open-explain', pageId });
+  } catch (error) {
+    console.error('[PTA 助手] 打开讲解页失败:', error);
+  }
+}
 
 interface ToolCardProps {
   message: ChatMessage;
@@ -21,7 +47,7 @@ export const ToolCard = memo(function ToolCard({ message, onAnswer, onFullscreen
 
   // ask 要能选、diff 要看得见，这两种卡片默认展开；其它工具默认收起，少占高度
   const [expanded, setExpanded] = useState(false);
-  const mustOpen = Boolean(message.toolQuestion) || Boolean(message.toolDiff);
+  const mustOpen = Boolean(message.toolQuestion) || Boolean(message.toolDiff) || message.toolName === 'write_explanation_page';
   const open = mustOpen || expanded;
 
   const copy = (text: string, label: string) => {
@@ -31,6 +57,9 @@ export const ToolCard = memo(function ToolCard({ message, onAnswer, onFullscreen
   };
 
   const callId = message.toolCallId;
+
+  // 讲解页的邀请卡片：工具结果里带 pageId，就显示「打开讲解页」
+  const invite = parseExplanationInvite(message);
 
   return (
     <div className={`tool tool--${status}`}>
@@ -50,6 +79,21 @@ export const ToolCard = memo(function ToolCard({ message, onAnswer, onFullscreen
 
       {open && (
         <>
+          {invite && (
+            <div className="invite">
+              <div className="invite__text">
+                讲解页已经生成好了：<b>{invite.title}</b>
+                <span className="invite__hint">点右边在新标签页打开，可以边看边想</span>
+              </div>
+              <button
+                type="button"
+                className="invite__btn"
+                onClick={() => void openExplanationPage(invite.pageId)}
+              >
+                打开讲解页
+              </button>
+            </div>
+          )}
           {message.toolQuestion && callId && (
             <div className="ask">
               <div className="ask__question">{message.toolQuestion}</div>

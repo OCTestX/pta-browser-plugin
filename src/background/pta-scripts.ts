@@ -39,6 +39,92 @@ const HELPERS = `
     && value.state && value.state.doc
     && typeof value.state.doc.toString === 'function';
 
+  // PTA 的题型是固定的几个，题目集合地址里带着：/problems/type/N
+  // 1=判断题 2=选择题 6=代码填空 7=编程题 9=多文件
+  const PROBLEM_TYPE_NAMES = {
+    1: '判断题（True or False）',
+    2: '选择题（Multiple Choice）',
+    6: '代码填空（Code Completion）',
+    7: '编程题（Programming）',
+    9: '多文件（Multiple Files）',
+  };
+
+  const detectProblemType = () => {
+    const fromUrl = location.pathname.match(/\\/problems\\/type\\/(\\d+)/);
+    const radios = document.querySelectorAll('input[type=radio]').length;
+    const editors = Array.from(document.querySelectorAll('.cm-content')).filter(isEditableElement).length;
+    let id = fromUrl ? Number(fromUrl[1]) : 0;
+    if (!id) {
+      // 地址里没带题型就按页面结构猜：有单选框的是选择/判断题，有可写编辑器的是编程/填空题
+      if (radios > 0) id = 2;
+      else if (editors > 0) id = 7;
+    }
+    return {
+      id,
+      name: PROBLEM_TYPE_NAMES[id] || ('未知题型（type=' + id + '）'),
+      radios,
+      editors,
+      isChoice: id === 1 || id === 2,
+    };
+  };
+
+  // 选择题/判断题的题干里混着两类噪音：页面的 UI 文案，以及代码块行号槽里的数字
+  const cleanChoiceStem = (text) => {
+    const NOISE = ['复制内容', '格式', '全屏', '收起', 'Toggle Sidebar', '复制', 'Copy'];
+    const raw = String(text || '').split('\\n').map((line) => line.trim());
+    const kept = [];
+    for (let index = 0; index < raw.length; index += 1) {
+      const line = raw[index];
+      if (!line) { kept.push(''); continue; }
+      if (NOISE.indexOf(line) >= 0) continue;
+      // 连续的数字行是代码块的行号槽；单独一个数字可能是题面内容，留下
+      if (/^\\d{1,3}$/.test(line)) {
+        const prev = raw[index - 1] ?? '';
+        const next = raw[index + 1] ?? '';
+        if (/^\\d{1,3}$/.test(prev) || /^\\d{1,3}$/.test(next)) continue;
+      }
+      kept.push(line);
+    }
+    return kept.join('\\n').replace(/\\n{3,}/g, '\\n\\n').trim();
+  };
+
+  // 选择题/判断题：作答区是一堆单选框，题干与选项要按「题」分组抠出来
+  const readChoiceQuestions = () => {
+    const groups = new Map();
+    for (const radio of document.querySelectorAll('input[type=radio]')) {
+      const key = radio.name || radio.id;
+      if (!groups.has(key)) groups.set(key, []);
+      groups.get(key).push(radio);
+    }
+    const questions = [];
+    for (const [key, radios] of groups) {
+      const options = radios.map((radio) => {
+        const label = radio.closest('label');
+        return {
+          value: radio.value || '',
+          id: radio.id || '',
+          text: (label ? textOf(label) : '').replace(/\\s+/g, ' ').trim(),
+        };
+      });
+      // 结构：input → label → span → span(选项区) → div(本题正文) → …
+      const optionsWrap = radios[0].closest('label')?.parentElement?.parentElement;
+      const body = optionsWrap ? optionsWrap.parentElement : null;
+      let stem = body ? textOf(body) : '';
+      if (optionsWrap) stem = stem.split(textOf(optionsWrap)).join(' ');
+      stem = cleanChoiceStem(stem);
+      // 再上一层是题号、分数、作者这些信息
+      let title = '';
+      const meta = body && body.parentElement ? body.parentElement.parentElement : null;
+      if (meta && body) {
+        const head = textOf(meta).split(textOf(body)).join(' ').replace(/\\s+/g, ' ').trim();
+        const match = head.match(/^(\\S+)/);
+        title = match ? match[1] : '';
+      }
+      questions.push({ key, title, stem, options });
+    }
+    return questions;
+  };
+
   const describePath = (node, key) => {
     const id = node.id ? '#' + node.id : '';
     const cls = typeof node.className === 'string' && node.className.trim()
@@ -594,6 +680,31 @@ const HELPERS = `
 
 /** 定位并抠出题面 */
 export const READ_PROBLEM_SCRIPT = `${HELPERS}
+const problemType = detectProblemType();
+
+// 只要题型信息（写入前判断该往代码框还是单选框里填）
+if (__args.typeOnly === true) {
+  return { type: problemType, title: document.title, url: location.href };
+}
+
+// 选择题/判断题：一页上排着好几小题，没有「一个题面容器」这回事，按题分组抠
+if (problemType.isChoice && problemType.radios > 0) {
+  const questions = readChoiceQuestions();
+  const out = ['题目类型：' + problemType.name + '（本页共 ' + questions.length + ' 小题）', '地址：' + location.href, ''];
+  questions.forEach((question, index) => {
+    out.push('第 ' + (index + 1) + ' 题' + (question.title ? '（' + question.title + '）' : ''));
+    if (question.stem) out.push('题干：' + question.stem);
+    if (question.options.length) {
+      out.push('选项：');
+      question.options.forEach((option) => out.push('  ' + option.text));
+    }
+    out.push('');
+  });
+  out.push('作答方式：用 write_editor_code 把答案写进去，多个答案之间用空格分隔（第一个对第一题，第二个对第二题，以此类推）；');
+  out.push('可以写选项字母（如 A B C D），也可以直接写选项原文。');
+  return out.join('\\n');
+}
+
 const maxChars = typeof __args.maxChars === 'number' ? __args.maxChars : 6000;
 const MARKERS = ['题目描述', '题目背景', '题目要求', '问题描述', '输入格式', '输出格式', '样例输入', '样例输出', '输入样例', '输出样例'];
 
@@ -737,6 +848,61 @@ if (pairs.length > 0) {
 if (text.length > maxChars) text = text.slice(0, maxChars) + '\\n…（题面过长，已截断）';
 out.push('', '题面（来源：' + source + '，' + text.length + ' 字）：', text);
 return out.join('\\n');
+`;
+
+/**
+ * 选择题/判断题的作答：作答区是一堆单选框，不是代码编辑器。
+ * 答案按空格分隔，第一个对第一题，第二个对第二题……
+ * 可以写选项字母（A/B/C/D），也可以直接写选项原文。
+ */
+export const WRITE_ANSWERS_SCRIPT = `${HELPERS}
+const tokens = String(__args.text === undefined ? '' : __args.text)
+  .split(/\\s+/)
+  .map((token) => token.trim())
+  .filter(Boolean);
+const groups = new Map();
+for (const radio of document.querySelectorAll('input[type=radio]')) {
+  const key = radio.name || radio.id;
+  if (!groups.has(key)) groups.set(key, []);
+  groups.get(key).push(radio);
+}
+if (!groups.size) return { ok: false, filled: [], problems: ['页面上没有单选框，这不是选择题/判断题'], total: 0 };
+
+const keys = Array.from(groups.keys());
+const filled = [];
+const problems = [];
+for (let index = 0; index < keys.length; index += 1) {
+  const token = tokens[index];
+  if (!token) {
+    problems.push('第 ' + (index + 1) + ' 题没有答案（只给了 ' + tokens.length + ' 个）');
+    continue;
+  }
+  const radios = groups.get(keys[index]);
+  // 先按字母找（单选框的 id 形如 input-radio-option-<题号>-A）
+  const letter = token.replace(/^[A-Za-z]\\s*[.．、)）]\\s*/, '').trim();
+  let hit = radios.find((radio) => String(radio.id || '').toUpperCase().endsWith('-' + letter.toUpperCase()));
+  if (!hit) {
+    // 再按选项原文找
+    hit = radios.find((radio) => {
+      const label = radio.closest('label');
+      const text = String(label ? textOf(label) : '').replace(/^\\s*[A-Za-z]\\s*[.．、)）]?\\s*/, '').trim();
+      return text === token || text.includes(token);
+    });
+  }
+  if (!hit) {
+    problems.push('第 ' + (index + 1) + ' 题的答案「' + token + '」没对上任何选项');
+    continue;
+  }
+  hit.click();
+  hit.dispatchEvent(new Event('change', { bubbles: true }));
+  const label = hit.closest('label');
+  filled.push({
+    index: index + 1,
+    token,
+    text: String(label ? textOf(label) : '').replace(/\\s+/g, ' ').trim(),
+  });
+}
+return { ok: problems.length === 0, filled, problems, total: keys.length };
 `;
 
 /** 读作答区里的代码 */
@@ -996,21 +1162,29 @@ if (method === 'replaceSelection') {
   return finish('view.state.replaceSelection 后 dispatch');
 }
 if (method === 'insert') {
-  // 「内置粘贴」：在光标处插入，不覆盖用户已有的代码
+  // 「内置粘贴」：在光标处插入，不覆盖用户已有的代码。
+  // 但用户如果选中了东西（全选也算），就该替换掉选区——
+  // 只按光标插会把内容接在后面，而不是像正常粘贴那样替换。
   view.focus();
   const before = view.state.doc.length;
-  const head = view.state.selection.main.head;
+  const selection = view.state.selection.main;
+  const from = selection.from;
+  const to = selection.to;
+  const replaced = to - from;
   view.dispatch({
-    changes: { from: head, to: head, insert: text },
-    selection: { anchor: head + text.length },
+    changes: { from, to, insert: text },
+    selection: { anchor: from + text.length },
     scrollIntoView: true,
   });
   await new Promise((resolve) => setTimeout(resolve, 80));
   const after = view.state.doc.length;
-  const ok = after === before + text.length;
+  const ok = after === before - replaced + text.length;
+  const how = replaced > 0
+    ? '已替换选中的 ' + replaced + ' 个字符为 ' + text.length + ' 个字符'
+    : '已在光标处插入 ' + text.length + ' 个字符';
   return json
-    ? { ok, method, detail: ok ? '已在光标处插入 ' + text.length + ' 个字符' : '插入后长度对不上（' + before + ' → ' + after + '）', length: after }
-    : (ok ? '已在光标处插入 ' + text.length + ' 个字符' : '插入失败');
+    ? { ok, method, detail: ok ? how : '插入后长度对不上（' + before + ' → ' + after + '）', length: after }
+    : (ok ? how : '插入失败');
 }
 if (method === 'cdpClickTyping') {
   // 输入由 background 的 CDP 逐字按键完成，这里只负责聚焦

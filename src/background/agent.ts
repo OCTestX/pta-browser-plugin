@@ -25,14 +25,17 @@ import {
   SUBMIT_ANSWER_SCRIPT,
   READ_PTA_COMPILE_RESULT_SCRIPT,
   SIMULATE_PTA_RUN_SCRIPT,
+  WRITE_ANSWERS_SCRIPT,
 } from './pta-scripts';
 import { describeTypist, runTypist } from './typist';
+import { storeExplanation } from './explain-pages';
 
 const DEFAULT_PER_CHAR_DELAY_MS = 8;
 import { streamChat } from './deepseek';
 import { injectScript } from './js-inject';
 import { loadSettings } from './settings';
 import { modelSupportsVlm, statementHasImages } from '../shared/settings';
+import { parseSlashCommand } from '../shared/commands';
 import { diffLines, diffStats } from '../shared/diff';
 import {
   choiceDeniesSubmit,
@@ -73,6 +76,48 @@ interface RunAgentOptions {
 }
 
 /**
+ * 斜杠指令对应的补充说明，塞进这一轮的上下文里改写模型的行为。
+ *
+ * /new 由前端直接开新会话（不发消息），这里不处理。
+ */
+function commandInstruction(id: string, rest: string): string {
+  const extra = rest ? `\n用户补充：${rest}` : '';
+  if (id === 'resolve') {
+    return [
+      '【本轮指令 /resolve】用户要你直接把这道题做出来。',
+      '这一轮不用再问「要不要我改 / 要不要我提交」：先读题面（read_problem），写出代码，',
+      '用 compile_and_run_* 或 simulate_pta_run 跑一遍样例确认，然后写进作答区（write_editor_code）并提交（submit_answer）。',
+      '题目是选择题或判断题时，read_problem 会把所有小题和选项列出来，',
+      '你把答案用空格分隔后交给 write_editor_code 填进去。',
+      '做完把结论说清楚就行。' + extra,
+    ].join('\n');
+  }
+  if (id === 'why') {
+    return [
+      '【本轮指令 /why】用户要你讲清楚他现在的代码错在哪里。',
+      '先 read_editor_code 读出作答区里现在的代码，再 read_problem 看题目要求，',
+      '然后指出：错在哪一行、为什么会错、正确写法是什么、怎么验证。',
+      '这一轮只讲解，不要改代码、不要提交。' + extra,
+    ].join('\n');
+  }
+  if (id === 'what') {
+    return [
+      '【本轮指令 /what】用户要一份苏格拉底式的讲解网页（不是干巴巴的题解）。',
+      '做这几步：',
+      '1. read_problem 拿到题面、样例与边界条件；',
+      '2. 设计一份自包含的单文件 HTML：围绕这道题出 10–12 道选择题，分 4 个阶段（看懂过程 / 找出规律 / 边界与实现 / 用样例验算），',
+      '   每题 4 个选项、只有 1 个正确，干扰项要来自真实误区，正确项不要永远放 A；',
+      '   答错要锁住那个选项并给分级提示（一级指向观察、二级指向机制、三级给具体小例子，提示里不能出现正确答案），答对才给解释；',
+      '   再配一个可交互的动态演示（可改参数、能看出累计量怎么变），演示的默认值不要用样例数据，免得提前剧透；',
+      '   页面不引 CDN、不引外部字体，样式写在 <style> 里、逻辑写在 <script> 里；',
+      '3. 用 write_explanation_page 把整份 HTML 交上来（标题也给一个），插件会给用户一张「打开讲解页」的邀请卡片。',
+      '不要把整份 HTML 贴进回答里。' + extra,
+    ].join('\n');
+  }
+  return '';
+}
+
+/**
  * agent loop：请求模型 → 如果它要调工具就执行 → 把结果回灌 → 再来一轮，直到它给出最终回答。
  * 最多 MAX_TOOL_ROUNDS 轮，防止模型来回刷工具。
  */
@@ -83,6 +128,16 @@ export async function runAgent(options: RunAgentOptions): Promise<void> {
     { role: 'system', content: SYSTEM_PROMPT },
     ...messages,
   ];
+
+  // 斜杠指令（/resolve、/why、/what…）：改写这一轮的行为
+  const lastUserMessage = [...messages].reverse().find((message) => message.role === 'user');
+  const command = parseSlashCommand(lastUserMessage?.content ?? '');
+  // /resolve：用户明说「直接答题」，这一轮不再要求先 ask
+  const forced = command?.id === 'resolve';
+  if (command) {
+    const instruction = commandInstruction(command.id, command.rest);
+    if (instruction) conversation.push({ role: 'system', content: instruction });
+  }
   // 一轮对话往往要多次请求模型，用量累加起来才是这一轮真实花掉的 token
   const usage: TokenUsage = { promptTokens: 0, completionTokens: 0, totalTokens: 0 };
 
@@ -164,9 +219,9 @@ export async function runAgent(options: RunAgentOptions): Promise<void> {
       // 硬门：没 ask 过（且用户本条没明确授权）时，直接拦下改代码/提交，逼模型先问
       const blockedReason =
         toolName === 'write_editor_code'
-          ? writeGuardReason({ askUsed: askUsedThisTurn, denied: writeDenied, lastUserText })
+          ? writeGuardReason({ askUsed: askUsedThisTurn, denied: writeDenied, lastUserText, forced })
           : toolName === 'submit_answer'
-            ? submitGuardReason({ askUsed: askUsedThisTurn, denied: submitDenied, lastUserText })
+            ? submitGuardReason({ askUsed: askUsedThisTurn, denied: submitDenied, lastUserText, forced })
             : null;
 
       let outcome: ToolOutcome;
@@ -336,6 +391,46 @@ async function runOnPta(code: string, stdin: string, context: ToolContext): Prom
   };
 }
 
+/** 读这一页的题型（编程题 / 选择题 / 判断题…）；读不到就返回 null */
+async function readProblemType(
+  tabId: number,
+  signal: AbortSignal,
+): Promise<{ id: number; name: string; isChoice: boolean } | null> {
+  try {
+    const raw = await injectScript(tabId, READ_PROBLEM_SCRIPT, { typeOnly: true }, undefined, signal);
+    if (!raw.ok) return null;
+    const parsed = JSON.parse(raw.output) as {
+      type?: { id: number; name: string; isChoice: boolean };
+    };
+    return parsed.type ?? null;
+  } catch {
+    return null;
+  }
+}
+
+/** 把空格分隔的答案填进选择/判断题的单选框 */
+async function writeChoiceAnswers(
+  tabId: number,
+  text: string,
+  signal: AbortSignal,
+): Promise<{
+  filled: { index: number; token: string; text: string }[];
+  problems: string[];
+  total: number;
+} | null> {
+  try {
+    const raw = await injectScript(tabId, WRITE_ANSWERS_SCRIPT, { text }, undefined, signal);
+    if (!raw.ok) return null;
+    return JSON.parse(raw.output) as {
+      filled: { index: number; token: string; text: string }[];
+      problems: string[];
+      total: number;
+    };
+  } catch {
+    return null;
+  }
+}
+
 /** 单次执行一个工具（agent loop 用它，设置页的模拟输入测试也用它，保证两条路完全一致） */
 export async function runTool(
   name: string,
@@ -383,6 +478,25 @@ export async function runTool(
     };
   }
 
+  if (name === 'write_explanation_page') {
+    const html = typeof args.html === 'string' ? args.html : '';
+    if (!html.trim()) return { output: '缺少 html 参数', isError: true };
+    const title = typeof args.title === 'string' && args.title.trim() ? args.title.trim() : '讲解页';
+    try {
+      const pageId = await storeExplanation(html, title);
+      // 结果里带上 id 与标题，面板据此显示「打开讲解页」的邀请卡片
+      return {
+        output: JSON.stringify({ pageId, title, ok: true }),
+        isError: false,
+      };
+    } catch (error) {
+      return {
+        output: `讲解页没能存下来：${error instanceof Error ? error.message : String(error)}`,
+        isError: true,
+      };
+    }
+  }
+
   if (name === 'js_inject') {
     const code = typeof args.code === 'string' ? args.code : '';
     if (!code.trim()) return { output: '缺少 code 参数', isError: true };
@@ -418,6 +532,28 @@ export async function runTool(
 
   if (name === 'write_editor_code') {
     const notes: string[] = [];
+    const code = typeof args.code === 'string' ? args.code : '';
+    if (!code.trim()) return { output: '缺少 code 参数', isError: true };
+
+    // 选择题/判断题的作答区是单选框，不是代码编辑器：走填答案那条路
+    const pageType = await readProblemType(tabId, signal);
+    if (pageType?.isChoice) {
+      const filled = await writeChoiceAnswers(tabId, code, signal);
+      if (!filled) {
+        return {
+          output: `这页是${pageType.name}，但答案没能填进去。答案要用空格分隔（第一个对第一题），可以写选项字母或选项原文。`,
+          isError: true,
+        };
+      }
+      const detail = filled.filled
+        .map((item) => `第 ${item.index} 题 → ${item.text}`)
+        .join('；');
+      const problems = filled.problems.length ? '\n问题：' + filled.problems.join('；') : '';
+      return {
+        output: `已按「${pageType.name}」填入 ${filled.filled.length}/${filled.total} 题：${detail}${problems}`,
+        isError: filled.problems.length > 0,
+      };
+    }
 
     // 先留一份写入前的原文：写入成功后用它自动合成 diff 卡片（用户一定看得到改动）
     const beforeCode = await readEditorCode(tabId, signal);
@@ -431,7 +567,7 @@ export async function runTool(
     const outcome = await abortable(
       writeEditorCode({
         tabId,
-        code: typeof args.code === 'string' ? args.code : '',
+        code,
         signal,
       }),
       signal,
@@ -449,12 +585,12 @@ export async function runTool(
 
     // 自动检查：回读比对已在链路里做过，这里补样例编译比对与提交按钮状态
     if (args.verify !== false) {
-      notes.push(await verifyWrittenCode(injectScript, context, args.code));
+      notes.push(await verifyWrittenCode(injectScript, context, code));
     }
 
     // 自动 diff：写入前后的原文都拿到了才算（读不到就不硬造一张残缺的 diff）
     let autoDiff: DiffPayload | undefined;
-    const written = typeof args.code === 'string' ? args.code : '';
+    const written = code;
     if (!outcome.isError && beforeCode !== null && written && beforeCode !== written) {
       const stats = diffStats(diffLines(beforeCode, written));
       autoDiff = {

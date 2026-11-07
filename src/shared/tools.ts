@@ -18,7 +18,8 @@ export type ToolName =
   | 'write_document'
   | 'simulate_keyboard_input'
   | 'ask'
-  | 'diff';
+  | 'diff'
+  | 'write_explanation_page';
 
 export const TOOL_NAMES: ToolName[] = [
   'read_problem',
@@ -40,6 +41,7 @@ export const TOOL_NAMES: ToolName[] = [
   'simulate_keyboard_input',
   'ask',
   'diff',
+  'write_explanation_page',
 ];
 
 /** 一次对话最多跑几轮工具，防止模型来回刷 */
@@ -95,6 +97,7 @@ export const SYSTEM_PROMPT = [
   '- url：拿到用户当前所在页面的地址。',
   '- date：拿到当前日期。',
   '- write_document：把整理好的内容写成文件下载到用户电脑。需要交付文档/题解时用它，不要在回答里贴整篇长文档。',
+  '- write_explanation_page：交出一份自包含的单文件 HTML 讲解页（用户用 /what 时用）。交完插件会给用户一张「打开讲解页」的邀请卡片。',
   '',
   '工具使用规则（重要）：',
   '1. 读题面用 read_problem，读代码用 read_editor_code，改代码用 write_editor_code。',
@@ -142,7 +145,8 @@ export const TOOL_SCHEMAS: ToolSchema[] = [
     function: {
       name: 'read_problem',
       description:
-        '拿到用户当前这道题的题面（标题、地址、题目 ID、题目描述原文、样例输入输出）。公式会转成 LaTeX 写进题面里；题面用图片画的公式会给出图片的 alt/链接，需要你自己看图理解。想解题先调它，不要靠猜页面内容。',
+        '拿到用户当前这道题的题面（标题、地址、题目 ID、题目描述原文、样例输入输出）。公式会转成 LaTeX 写进题面里；题面用图片画的公式会给出图片的 alt/链接，需要你自己看图理解。想解题先调它，不要靠猜页面内容。'
+        + '返回值第一行会写明**题目类型**（编程题 / 选择题 / 判断题 / 代码填空 / 多文件）；是选择题或判断题时，会把这一页上**所有小题**连同各自的选项一起列出来，答案要用空格分隔后交给 write_editor_code。',
       parameters: {
         type: 'object',
         properties: {
@@ -166,7 +170,8 @@ export const TOOL_SCHEMAS: ToolSchema[] = [
     function: {
       name: 'write_editor_code',
       description:
-        '把代码写进作答区（默认整段覆写）。优先用编辑器实例的 dispatch 原子写入，绕开自动闭合与自动缩进；写完会自动检查：回读逐行比对、拿题面第一组样例按**页面上选定的语言**编译并比对输出、看提交按钮是否可用，结果里都会写明。要改用户的代码就用它，不要用 js_inject 去改 DOM 或模拟粘贴。',
+        '把代码写进作答区（默认整段覆写）。优先用编辑器实例的 dispatch 原子写入，绕开自动闭合与自动缩进；写完会自动检查：回读逐行比对、拿题面第一组样例按**页面上选定的语言**编译并比对输出、看提交按钮是否可用，结果里都会写明。要改用户的代码就用它，不要用 js_inject 去改 DOM 或模拟粘贴。'
+        + '题目是**选择题或判断题**时，作答区不是代码框而是一堆单选框：这个工具会把内容按空格拆开，第一个答案对第一题、第二个对第二题，以此类推（可以写选项字母 A/B/C/D，也可以写选项原文）。',
       parameters: {
         type: 'object',
         properties: {
@@ -303,6 +308,25 @@ export const TOOL_SCHEMAS: ToolSchema[] = [
           content: { type: 'string', description: '文件内容（markdown 或纯文本）' },
         },
         required: ['filename', 'content'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'write_explanation_page',
+      description:
+        '交出一份苏格拉底式的讲解网页（用户点「/what」时用）。html 必须是一个**自包含的单文件**：'
+        + '不引 CDN、不引外部字体、不要构建步骤，样式写在 <style> 里、逻辑写在 <script> 里。'
+        + '内容是围绕这道题的选择题式引导：分阶段出题、答错给分级提示、答对才给解释，可以再配一个可交互的动态演示。'
+        + '交完之后插件会给用户一张「打开讲解页」的邀请卡片，所以调用这一次就够了，不用再把 HTML 贴进回答里。',
+      parameters: {
+        type: 'object',
+        properties: {
+          title: { type: 'string', description: '讲解页的标题，例如「7-1 阶乘计算 · 苏格拉底式讲解」' },
+          html: { type: 'string', description: '完整的单文件 HTML（要含 <html><head><style>…</style></head><body>…<script>…</script></body></html>）' },
+        },
+        required: ['title', 'html'],
       },
     },
   },

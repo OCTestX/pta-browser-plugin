@@ -165,6 +165,19 @@ export function useChat(hasApiKey: boolean) {
             : message,
         );
       }
+      // 工具调用之后模型又开口说话：本来该另起一个气泡，
+      // 但那样一句连贯的回答会被拆成两个框（模型先说半句、调工具、再说半句）。
+      // 所以接着上一次那条带 tool_calls 的气泡往下写，文字就连起来了。
+      const lastAssistant = [...prev]
+        .reverse()
+        .find((message) => message.role === 'assistant' && (message.toolCalls ?? []).length > 0);
+      if (lastAssistant && lastAssistant.content.trim()) {
+        return prev.map((message) =>
+          message.id === lastAssistant.id
+            ? { ...message, content: message.content + text, streaming: true }
+            : message,
+        );
+      }
       // 上一轮工具调用之后模型又开始说话，新起一个气泡，
       // 这样「assistant(tool_calls) + tool 结果 + assistant(最终回答)」的结构才是对的
       const created: ChatMessage = {
@@ -307,7 +320,12 @@ export function useChat(hasApiKey: boolean) {
       // 用面板里的会话重建上下文，工具卡片会变成 tool 消息，工具调用记录挂在 assistant 上
       const apiMessages = toApiMessages(messages, content);
 
-      setMessages((prev) => [...prev, userMessage, assistantMessage]);
+      // 第一次对话开始后，欢迎语就没用了：把它撤掉，面板上不再占地方
+      setMessages((prev) => [
+        ...prev.filter((message) => message.id !== 'welcome'),
+        userMessage,
+        assistantMessage,
+      ]);
       setNotice(null);
       setStreaming(true);
       const requestId = createId();

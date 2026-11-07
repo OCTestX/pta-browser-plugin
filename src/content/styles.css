@@ -96,6 +96,38 @@
   margin-left: auto;
 }
 
+/* 上下文填充进度的小圆环：token 明细藏在 title 里，鼠标停上去才看得到 */
+.panel__ctx {
+  display: inline-flex;
+  flex: 1;
+  align-items: center;
+  justify-content: flex-end;
+  min-width: 0;
+  cursor: help;
+}
+
+.panel__ring {
+  display: block;
+}
+
+.panel__ring-bg {
+  fill: none;
+  stroke: var(--pta-border);
+  stroke-width: 2.5;
+}
+
+.panel__ring-fg {
+  fill: none;
+  stroke: var(--pta-accent);
+  stroke-width: 2.5;
+  stroke-linecap: round;
+  transition: stroke-dasharray 0.25s ease;
+}
+
+.panel__ctx-text {
+  display: none;
+}
+
 .panel__new-chat {
   padding: 3px 10px;
   border: 1px solid var(--pta-border);
@@ -830,6 +862,94 @@
 
 .composer__input:disabled {
   color: var(--pta-text-muted);
+}
+
+/* ---------- 讲解页邀请卡片 ---------- */
+
+.invite {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin: 6px 0 2px;
+  padding: 10px 12px;
+  border: 1px solid var(--pta-accent-soft);
+  border-radius: 10px;
+  background: var(--pta-surface);
+}
+
+.invite__text {
+  flex: 1;
+  min-width: 0;
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.invite__hint {
+  display: block;
+  color: var(--pta-text-muted);
+}
+
+.invite__btn {
+  flex: none;
+  padding: 5px 12px;
+  border: none;
+  border-radius: 8px;
+  background: var(--pta-accent);
+  color: #ffffff;
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+/* ---------- 斜杠指令菜单 ---------- */
+
+.cmds {
+  display: flex;
+  flex-direction: column;
+  margin-bottom: 6px;
+  padding: 4px;
+  border: 1px solid var(--pta-border);
+  border-radius: 10px;
+  background: var(--pta-surface);
+  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.14);
+  max-height: 220px;
+  overflow-y: auto;
+}
+
+.cmds__item {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  padding: 6px 9px;
+  border: none;
+  border-radius: 7px;
+  background: transparent;
+  color: var(--pta-text);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.cmds__item--on,
+.cmds__item:hover {
+  background: var(--pta-accent-soft);
+}
+
+.cmds__name {
+  flex: none;
+  color: var(--pta-accent);
+  font-size: 12px;
+  font-weight: 600;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+
+.cmds__summary {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--pta-text-muted);
+  font-size: 12px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 /* ---------- v0.8：拖动、回到底部、工具卡片按钮 ---------- */

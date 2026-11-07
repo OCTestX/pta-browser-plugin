@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from 'react';
 import { ext } from '../shared/browser';
+import { contextWindowFor } from '../shared/settings';
 import { Composer } from './components/Composer';
 import { MessageList } from './components/MessageList';
 import { SettingsPanel } from './components/SettingsPanel';
@@ -60,10 +61,6 @@ export function App() {
     setDraft('');
   };
 
-
-  // 顶栏 token：接口回传的精确值 + 正在流式输出的实时估算
-  const tokenText = formatTokenUsage(chat.usage, chat.liveOutputTokens);
-
   return (
     <div
       className="panel"
@@ -98,9 +95,7 @@ export function App() {
           <>
             <span className="panel__title">PTA 助手</span>
             <span className="panel__badge">{VERSION_LABEL}</span>
-            <span className="panel__usage" title="本轮对话累计消耗的 token（接口回传精确值，流式过程中按字数实时估算）">
-              {tokenText}
-            </span>
+            <ContextRing usage={chat.usage} liveTokens={chat.liveOutputTokens} model={settings.view?.model ?? ''} />
           </>
         )}
         <div className="panel__actions">
@@ -172,6 +167,11 @@ export function App() {
             onStop={chat.stop}
             streaming={chat.streaming}
             focusSignal={focusSignal}
+            onReset={chat.reset}
+            onSendText={(text) => {
+              setDraft('');
+              void chat.send(text);
+            }}
           />
         </>
       )}
@@ -185,15 +185,59 @@ export function App() {
   );
 }
 
+/** token 数化简成 K（保留两位小数）：12710 → 12.71K */
+export function formatTokens(value: number): string {
+  const n = Math.max(0, Math.round(value));
+  if (n < 1000) return String(n);
+  return `${(n / 1000).toFixed(2)}K`;
+}
+
 /**
- * 顶栏的 token 文案。
- * 接口回传 usage 时显示精确值（每轮请求结束更新一次）；
- * 有些兼容接口不回传，就退化成按字数实时估算当前这一轮的输出。
+ * 顶栏的小圆环：上下文填充进度。
+ *
+ * 输入的 token 数就是这一轮请求带进去的上下文大小，除以模型的上下文窗口就是填充比例。
+ * token 明细不直接摊在顶栏，鼠标停在圆环上才看得到（title）。
  */
-function formatTokenUsage(
-  usage: { promptTokens: number; completionTokens: number } | null,
-  liveOutput: number,
-): string {
-  if (usage) return `Token ${usage.promptTokens + usage.completionTokens}（输入 ${usage.promptTokens} / 输出 ${usage.completionTokens}）`;
-  return liveOutput > 0 ? `Token ≈ ${liveOutput}` : '';
+function ContextRing({
+  usage,
+  liveTokens,
+  model,
+}: {
+  usage: { promptTokens: number; completionTokens: number; totalTokens: number } | null;
+  liveTokens: number;
+  model: string;
+}) {
+  const contextWindow = contextWindowFor(model);
+  const used = usage ? usage.promptTokens : 0;
+  const ratio = Math.min(1, used / contextWindow);
+  const percent = Math.round(ratio * 100);
+  const total = usage ? usage.promptTokens + usage.completionTokens : liveTokens;
+  const title = usage
+    ? `上下文已用 ${percent}%（按 ${formatTokens(contextWindow)} 窗口估算）\n本轮累计 ${formatTokens(total)} token（输入 ${formatTokens(usage.promptTokens)} / 输出 ${formatTokens(usage.completionTokens)}）`
+    : '还没有接口回传的用量数据';
+
+  const radius = 8;
+  const circumference = 2 * Math.PI * radius;
+  return (
+    <span className="panel__ctx" title={title}>
+      <svg
+        className="panel__ring"
+        viewBox="0 0 20 20"
+        width="18"
+        height="18"
+        role="img"
+        aria-label={`上下文已用 ${percent}%`}
+      >
+        <circle className="panel__ring-bg" cx="10" cy="10" r={radius} />
+        <circle
+          className="panel__ring-fg"
+          cx="10"
+          cy="10"
+          r={radius}
+          strokeDasharray={`${(circumference * ratio).toFixed(2)} ${circumference.toFixed(2)}`}
+          transform="rotate(-90 10 10)"
+        />
+      </svg>
+    </span>
+  );
 }
