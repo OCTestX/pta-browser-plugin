@@ -30,6 +30,7 @@ __pycache__/
 
 # 用户敏感数据（PTA 账号、模型密钥等），不提交到版本库
 /test_data.txt
+/test_login_state.json
 
 # 本地调试用的浏览器用户目录（会带 Cookie / 登录态）
 /testDir/

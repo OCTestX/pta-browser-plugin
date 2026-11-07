@@ -11,10 +11,25 @@
  *   打开悬浮窗又需要 background 的 chrome.tabs —— playwright 的 CDPSession
  *   不支持带 sessionId 的扁平协议，这里直接连浏览器的 websocket 最省事。
  */
-import { readFileSync } from 'node:fs';
+import { createHash } from 'node:crypto';
+import { readFileSync, realpathSync } from 'node:fs';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 const CDP_HTTP = 'http://127.0.0.1:9222';
-const EXT_ID = 'jgkjmjojigjmljmennhfncpjmlmedjjb';
+const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
+
+/**
+ * Chrome 给「加载已解压」的扩展分配的 ID = 真实路径的 sha256 前 16 字节，
+ * 每个十六进制位映射到 a-p。所以 ID 跟着路径走：换台机器、换个目录就变。
+ * 这里按实际路径算出来，别写死；必要时用 PTA_EXT_ID 覆盖。
+ */
+function chromeExtensionId(dir) {
+  const hash = createHash('sha256').update(realpathSync(dir)).digest('hex').slice(0, 32);
+  return [...hash].map((c) => String.fromCharCode('a'.charCodeAt(0) + parseInt(c, 16))).join('');
+}
+
+const EXT_ID = process.env.PTA_EXT_ID || chromeExtensionId(path.join(ROOT, 'dist/chrome'));
 
 const PROMPT = [
   '请解决当前 PTA 页面上的这道编程题，并提交直到通过。步骤：',
