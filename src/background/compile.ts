@@ -281,6 +281,9 @@ export async function checkCode(code: string, language: string, signal?: AbortSi
 
   const diagnostics: DiagnosticBox[] = [];
   for (const item of parseClangDiagnostics(raw.compileOutput)) {
+    // note 是 clang 跟在报错后面、指在同一位置的补充说明（「include 这个头文件」之类），
+    // 它和那条报错算同一件事，单独算一条只会让「N 个错误」翻倍
+    if (item.severity === 'note') continue;
     // clang 的列号是 UTF-8 字节偏移，offsetOfPosition 负责换算成字符下标
     const offset = offsetOfPosition(source, item.line, item.column);
     if (offset < 0) continue;

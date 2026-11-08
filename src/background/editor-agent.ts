@@ -167,6 +167,8 @@ export const EDITOR_AGENT_SOURCE = String.raw`return (() => {
     if (state.bar && state.bar.isConnected) return state.bar;
 
     const bar = make('div', 'position:absolute;display:flex;align-items:center;gap:6px;pointer-events:none;' + FONT);
+    // 固定 id：真机排查和自动验证都靠它定位浮层里的节点
+    bar.id = 'pta-assist-bar';
 
     if (FEATURES.format) {
       const button = make('button', 'pointer-events:auto;cursor:pointer;border:1px solid #d0d3d9;border-radius:6px;'
@@ -177,15 +179,22 @@ export const EDITOR_AGENT_SOURCE = String.raw`return (() => {
       button.addEventListener('click', (event) => {
         event.preventDefault();
         event.stopPropagation();
-        if (!state.view) return;
-        post({ kind: 'format-request', text: state.text, language: readLanguage() });
+        const view = state.view;
+        if (!view) return;
+        // 点的时候现读一次正文：巡检是 500ms 一轮，刚敲完就点会读到旧文本，
+        // 回来时 source 对不上就被当成「代码刚变过」白白取消一次整理
+        const text = view.state.doc.toString();
+        state.text = text;
+        post({ kind: 'format-request', text: text, language: readLanguage() });
       });
+      button.id = 'pta-assist-format';
       bar.appendChild(button);
     }
 
     if (FEATURES.check) {
       const badge = make('div', 'pointer-events:auto;border:1px solid #d0d3d9;border-radius:6px;background:#fff;'
         + 'color:#5b616e;padding:3px 9px;box-shadow:0 1px 3px rgba(15,23,42,.12);white-space:nowrap;');
+      badge.id = 'pta-assist-badge';
       badge.textContent = '检查中…';
       bar.appendChild(badge);
       state.badge = badge;
@@ -206,8 +215,11 @@ export const EDITOR_AGENT_SOURCE = String.raw`return (() => {
       return;
     }
     let errors = 0;
-    for (const box of state.boxes) if (box.severity === 'error') errors += 1;
-    const warnings = state.boxes.length - errors;
+    let warnings = 0;
+    for (const box of state.boxes) {
+      if (box.severity === 'error') errors += 1;
+      else if (box.severity === 'warning') warnings += 1;
+    }
     if (!errors && !warnings) {
       state.badge.textContent = '✓ 没有语法错误';
       state.badge.style.color = '#2f7d32';
@@ -288,6 +300,7 @@ export const EDITOR_AGENT_SOURCE = String.raw`return (() => {
     const root = ensureRoot();
     if (state.squiggleLayer && state.squiggleLayer.isConnected) return state.squiggleLayer;
     const layer = make('div', 'position:absolute;left:0;top:0;right:0;bottom:0;pointer-events:none;');
+    layer.id = 'pta-assist-squiggles';
     root.appendChild(layer);
     state.squiggleLayer = layer;
     return layer;
@@ -450,6 +463,30 @@ export const EDITOR_AGENT_SOURCE = String.raw`return (() => {
     if (node.style.top !== t) node.style.top = t;
   };
 
+  // 代码框底部那条状态栏（左端是「Test Case」按钮）：实测它的右侧是一大片空白，
+  // 把工具栏放这儿既不挡代码，也不用去挤头部行（头部行全是语言选择器和 PTA 自己的图标）。
+  // 不按类名找（类名带哈希、会变），按几何找：紧贴在代码框下沿、宽度和代码框差不多的那条。
+  const findBottomBar = () => {
+    const editor = state.el.closest('.cm-editor') || state.el;
+    const box = editor.getBoundingClientRect();
+    // 「Test Case」那条状态栏是作答表单的**兄弟**节点（表单外面那一层才有它），
+    // 所以从表单的父节点往下找；找不到表单就只能退回整页
+    const form = state.el.closest('[class*="CodingProblemAnswerForm"]');
+    const scope = (form && form.parentElement) || form || document.body;
+    let best = null;
+    let bestWidth = 0;
+    for (const node of scope.querySelectorAll('div')) {
+      const rect = node.getBoundingClientRect();
+      if (rect.height < 24 || rect.height > 64) continue;
+      if (Math.abs(rect.top - box.bottom) > 6) continue;
+      if (rect.width < box.width * 0.6) continue;
+      if (rect.width <= bestWidth) continue;
+      best = node;
+      bestWidth = rect.width;
+    }
+    return best;
+  };
+
   const layout = () => {
     if (!state.el || !state.bar) return;
     const editor = state.el.closest('.cm-editor') || state.el;
@@ -457,10 +494,23 @@ export const EDITOR_AGENT_SOURCE = String.raw`return (() => {
     const visible = box.bottom > 8 && box.top < window.innerHeight - 8 && box.width > 0;
     state.bar.style.visibility = visible ? 'visible' : 'hidden';
     if (!visible) return;
-    // 头部行（语言选择器 + PTA 自己的图标）实测没有可用空隙，
-    // 所以工具栏浮在代码框右上角：那里只有代码，不会挡住页面的按钮
+
     const width = state.bar.offsetWidth || 160;
-    place(state.bar, Math.max(box.left + 8, box.right - width - 22), box.top + 6);
+    const height = state.bar.offsetHeight || 27;
+
+    const bar = findBottomBar();
+    if (bar) {
+      const barRect = bar.getBoundingClientRect();
+      // 「Test Case」按钮右边开始摆；右边还有 PTA 自己的 ? 和折叠箭头，别压上去
+      const button = bar.querySelector('button');
+      const buttonBox = button ? button.getBoundingClientRect() : null;
+      const start = buttonBox && buttonBox.width > 0 ? buttonBox.right + 12 : barRect.left + 12;
+      const left = Math.min(start, barRect.right - width - 60);
+      place(state.bar, Math.max(barRect.left + 8, left), barRect.top + (barRect.height - height) / 2);
+      return;
+    }
+    // 没有那条状态栏（面板收起之类）就退回代码框右下角内部
+    place(state.bar, box.right - width - 22, box.bottom - height - 10);
   };
 
   /* ---------- 正文同步 ---------- */

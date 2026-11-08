@@ -245,6 +245,9 @@ check('README 记录了标准库函数注释', readme.includes('标准库函数�
 check('README 说明了实时检查只支持 C', readme.includes('内置编译器只支持 C'));
 check('README 写明了只做语法检查、不运行代码', readme.includes('只做语法检查'));
 check('README 写明了整理不会覆盖新改动', readme.includes('这次整理直接取消'));
+check('README 写明工具栏在底部状态栏（不挡代码）', readme.includes('底部状态栏'));
+check('适配笔记写明工具栏按几何定位', notes.includes('紧贴在代码框下沿'));
+check('工具栏按几何找底部状态栏（代码）', agentSource.includes('findBottomBar'));
 check('引擎提供只检查的编译路径（代码）', engineShared.includes("'-fsyntax-only'"));
 check('只检查不链接不运行（代码）', checkOnEngineBody.includes("input: 'check.c'") && !checkOnEngineBody.includes('api.link('));
 check('语法检查不计入引擎重建计数（代码）', !checkOnEngineBody.includes('runs += 1'));

@@ -137,6 +137,18 @@ check(
   offsetOfPosition('int a;\nint b;', 2, 5),
 );
 
+// clang 22 对缺头文件的真实措辞是「undeclared library function ... implicit function
+// declarations [-Wimplicit-function-declaration]」，和 GCC 的 "implicit declaration of
+// function" 不是一个词序，所以建议表里两种都得有，否则只会落到兜底那句空话
+const undeclared = parseClangDiagnostics(
+  "check.c:3:9: error: call to undeclared library function 'printf' with type 'int (const char *, ...)'; ISO C99 and later do not support implicit function declarations [-Wimplicit-function-declaration]",
+);
+check(
+  '缺头文件的报错给出「检查 #include」的建议',
+  undeclared.length === 1 && undeclared[0].advice.includes('#include'),
+  undeclared,
+);
+
 // 逐字符算过字节偏移：
 //   'int a; /*' 是 9 字节（字符下标 0..8），'中' 占 3 字节 → 9..11，
 //   后面 '*' 12、'/' 13、' ' 14、'i' 15、'n' 16、't' 17、' ' 18、'b' 19。

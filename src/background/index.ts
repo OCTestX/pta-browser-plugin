@@ -165,8 +165,8 @@ ext.runtime.onMessage.addListener((message: unknown, sender, sendResponse) => {
           token,
           version: EDITOR_ASSIST_VERSION,
           docs: C_LIBRARY_DOCS,
-          // v4.2 只开这两个；v5.0 再把 check / hover 打开
-          features: { format: true, rainbow: true, check: false, hover: false },
+          // 四个增强全开：整理代码、彩虹括号、实时语法检查、标准库函数注释
+          features: { format: true, rainbow: true, check: true, hover: true },
         };
         const injected = await injectScript(tabId, EDITOR_AGENT_SOURCE, args);
         // 页面里已经装过时它会把**自己那份** token 交回来，两边必须用同一个

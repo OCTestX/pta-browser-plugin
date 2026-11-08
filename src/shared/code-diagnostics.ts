@@ -45,6 +45,8 @@ const ADVICE_RULES: ReadonlyArray<{ readonly match: string; readonly advice: str
   { match: 'use of undeclared identifier', advice: '用了没有声明的变量：检查拼写，或者在使用前先定义它' },
   { match: 'unknown type name', advice: '类型不认识：检查头文件（#include）是否包含、类型名是否拼错' },
   { match: 'implicit declaration of function', advice: '函数没有声明：多半是漏了对应的 #include' },
+  { match: 'undeclared library function', advice: '这个库函数没有声明：检查是不是漏了对应的 #include（比如 printf 要 <stdio.h>，sqrt 要 <math.h>）' },
+  { match: 'implicit function declaration', advice: '函数没有声明：多半是漏了对应的 #include' },
   { match: 'control reaches end of non-void function', advice: '函数声明了返回值类型，却没有 return' },
   { match: 'too few arguments to function call', advice: '调用这个函数时给的参数少了' },
   { match: 'too many arguments to function call', advice: '调用这个函数时给的参数多了' },
