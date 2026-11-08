@@ -1,13 +1,14 @@
 // PTA 三件套与多种输入方法的页面脚本测试：在 jsdom 里搭一个假 CodeMirror 6，
 // 实例挂在 #pta-answer-editor 的 cmTile.view 上（和 PTA 一致），脚本用页面 realm 的 AsyncFunction 跑。
 // 用法：node scripts/test-pta-tools.mjs
-import { JSDOM } from 'jsdom';
+import { JSDOM, VirtualConsole } from 'jsdom';
 import { assertDistFresh } from './dist-fresh.mjs';
 import {
   CHECK_READY_SCRIPT,
   CLOSE_DIALOGS_SCRIPT,
   INPUT_METHOD_SCRIPT,
   LANGUAGE_SCRIPT,
+  NEXT_PROBLEM_SCRIPT,
   READ_EDITOR_SCRIPT,
   READ_JUDGE_SCRIPT,
   READ_PROBLEM_SCRIPT,
@@ -272,6 +273,214 @@ noAltPage.document.querySelector('.rendered-markdown').insertAdjacentHTML(
 );
 const noAltProblem = await runScript(noAltPage, READ_PROBLEM_SCRIPT, {});
 check('图片没有 alt 时也说明这里有张图', noAltProblem.includes('[图片') && noAltProblem.includes('data:image/png'));
+
+/* ---------- 题面里的样例框：行号槽 / 工具条不能混进正文 ---------- */
+
+// 复刻真实页面（2026-11 实测）：样例框是 <div data-code data-lang="in">，
+// 里面才是只读的 CodeMirror；行号槽（9 / 1 / 2 / ▸）和工具条是它的兄弟节点。
+// 只跳过 .cm-content 一个节点的话，这些噪音会被当成题面正文抠出来。
+function createSampleBoxPage() {
+  const dom = new JSDOM(
+    `<!doctype html><html><head><title>7-12 杨辉三角形</title></head><body>
+       <div class="rendered-markdown">
+         <h4>输入样例1</h4>
+         <div data-code="" data-lang="in">
+           <div class="codeEditor_xxx readOnly_yyy">
+             <div class="cm-editor cm-focused">
+               <div class="cm-scroller">
+                 <div class="cm-gutters">
+                   <div class="cm-gutterElement">9</div>
+                   <div class="cm-gutterElement">1</div>
+                   <div class="cm-gutterElement">2</div>
+                   <div class="cm-gutterElement">▸</div>
+                 </div>
+                 <div class="cm-content" contenteditable="false" aria-readonly="true">
+                   <div class="cm-line">5</div>
+                 </div>
+               </div>
+             </div>
+             <div class="cm-toolbar">复制内容 格式 全屏 收起</div>
+           </div>
+         </div>
+         <p>请输出杨辉三角形的前若干行，每行的数字之间用一个空格隔开，第一行只有一个 1。</p>
+       </div>
+     </body></html>`,
+    {
+      url: 'https://pintia.cn/problem-sets/2092326321452294144/exam/problems/type/7?problemSetProblemId=2092326321552957459',
+      runScripts: 'outside-only',
+      pretendToBeVisual: true,
+    },
+  );
+  return installInnerText(dom.window);
+}
+
+// 题面正文在输出里的位置：'题面（来源：…）' 之后那一段
+const statementOf = (output) => output.slice(output.indexOf('题面（来源：'));
+const linesOf = (text) => text.split('\n').map((line) => line.trim());
+
+const sampleBoxPage = createSampleBoxPage();
+const sampleBoxProblem = await runScript(sampleBoxPage, READ_PROBLEM_SCRIPT, {});
+const sampleBoxStatement = statementOf(sampleBoxProblem);
+const sampleBoxLines = linesOf(sampleBoxStatement);
+check('样例框的行号槽不会混进题面', !sampleBoxStatement.includes('▸') && !sampleBoxLines.includes('9') && !sampleBoxLines.includes('2'));
+check('样例框的工具条不会混进题面', !sampleBoxStatement.includes('复制内容') && !sampleBoxStatement.includes('全屏') && !sampleBoxStatement.includes('收起'));
+check('样例的真实内容进了题面', sampleBoxStatement.includes('[输入样例]') && sampleBoxLines.includes('5'));
+check('样例框的噪音整份输出里都没有', !sampleBoxProblem.includes('▸') && !sampleBoxProblem.includes('复制内容'));
+
+// 输入输出两个框都在时，样例小节按 data-lang 配对（不能靠谁先出现去猜）
+const pairedPage = createSampleBoxPage();
+pairedPage.document.querySelector('.rendered-markdown').insertAdjacentHTML(
+  'beforeend',
+  `<h4>输出样例1</h4>
+   <div data-code="" data-lang="out">
+     <div class="codeEditor_xxx readOnly_yyy">
+       <div class="cm-editor">
+         <div class="cm-scroller">
+           <div class="cm-gutters"><div class="cm-gutterElement">1</div></div>
+           <div class="cm-content" contenteditable="false" aria-readonly="true">
+             <div class="cm-line">1</div>
+             <div class="cm-line">1 1</div>
+           </div>
+         </div>
+       </div>
+     </div>
+   </div>`,
+);
+const pairedProblem = await runScript(pairedPage, READ_PROBLEM_SCRIPT, {});
+const fence3 = String.fromCharCode(96).repeat(3);
+check('样例小节按 data-lang 配出输入与输出', pairedProblem.includes('样例 1 输入：' + fence3 + '\n5\n' + fence3) && pairedProblem.includes('样例 1 输出：' + fence3 + '\n1\n1 1\n' + fence3), pairedProblem);
+check('输出样例框也按 [输出样例] 进了题面', statementOf(pairedProblem).includes('[输出样例]'));
+
+/* ---------- 切到下一题（/fuck 赶题模式） ---------- */
+
+// 复刻 PTA 考试页的侧栏：顶部是题型分组（带「已答/总数」），下面是当前题型的题目网格。
+// 已提交过的题在网格里带 PROBLEM_SUBMITTED 类名（再提交一次 PTA 会拒绝）。
+function createProblemListPage(ids, options = {}) {
+  // jsdom 不会真的路由跳转，点链接会报「Not implemented」，这里把它吞掉
+  const quiet = new VirtualConsole();
+  quiet.on('jsdomError', () => {});
+  const submitted = new Set(options.submitted ?? []);
+  const links = ids
+    .map((id, index) => {
+      const mark = submitted.has(id) ? '<div class="problemStatusRect_xx PROBLEM_SUBMITTED_xx"></div>' : '';
+      return `<a class="inline-flex justify-center items-center relative h" href="/problem-sets/2092326321452294144/exam/problems/type/7?problemSetProblemId=${id}"><span>${index + 1}</span>${mark}</a>`;
+    })
+    .join('');
+  const groups = (options.groups ?? [])
+    .map((group) => `<a class="py-3 px-4 flex justify-between" href="/problem-sets/2092326321452294144/exam/problems/type/${group.type}">${group.name} ${group.answered}/${group.total}</a>`)
+    .join('');
+  const dom = new JSDOM(
+    `<!doctype html><html><head><title>7-12 杨辉三角形</title></head><body>
+       <nav class="side-nav">${groups}</nav>
+       <nav class="side-nav">${links}</nav>
+     </body></html>`,
+    {
+      url: options.url ?? `https://pintia.cn/problem-sets/2092326321452294144/exam/problems/type/7?problemSetProblemId=${ids[0]}`,
+      runScripts: 'outside-only',
+      pretendToBeVisual: true,
+      virtualConsole: quiet,
+    },
+  );
+  return dom.window;
+}
+
+const lastPage = createProblemListPage(['2092326321552957459']);
+const lastResult = await runScript(lastPage, NEXT_PROBLEM_SCRIPT, {});
+check('已经是最后一题时如实说明', lastResult.ok === false && String(lastResult.reason).includes('已经是最后一题了'), lastResult);
+check('最后一题时也报出总数与已做数', lastResult.total === 1 && lastResult.done === 1, lastResult);
+
+// jsdom 不会真的跳转：不能抛异常，要返回一句中文说明
+const stuckPage = createProblemListPage(['2092326321552957459', '2092326321552957460']);
+const stuckResult = await runScript(stuckPage, NEXT_PROBLEM_SCRIPT, { timeoutMs: 400, pollMs: 20 });
+check('点完没换题时不会抛异常，而是返回失败说明', Boolean(stuckResult) && stuckResult.ok === false, stuckResult);
+check('失败说明是中文', /[一-龥]/.test(String(stuckResult.reason || '')), stuckResult);
+
+// 真跳转：用 pushState 模拟前端路由（地址和标题都换掉）
+const jumpPage = createProblemListPage(['2092326321552957459', '2092326321552957460', '2092326321552957461']);
+jumpPage.document.querySelectorAll('a')[1].addEventListener('click', (event) => {
+  event.preventDefault();
+  jumpPage.history.pushState({}, '', '/problem-sets/2092326321452294144/exam/problems/type/7?problemSetProblemId=2092326321552957460');
+  jumpPage.document.title = '7-13 另一道题';
+});
+const jumpResult = await runScript(jumpPage, NEXT_PROBLEM_SCRIPT, { timeoutMs: 3000, pollMs: 20 });
+check('切到下一题后报出新题的位置与剩余题数', jumpResult.ok === true && jumpResult.index === 1 && jumpResult.total === 3 && jumpResult.remaining === 2, jumpResult);
+check('切到下一题后报出新题的标题与地址', jumpResult.title === '7-13 另一道题' && String(jumpResult.url).includes('problemSetProblemId=2092326321552957460'), jumpResult);
+
+// 做过的题要跳过：PTA 不允许重复提交
+const submittedPage = createProblemListPage(
+  ['2092326321552957459', '2092326321552957460', '2092326321552957461'],
+  { submitted: ['2092326321552957460'] },
+);
+// 脚本应该跳过第 2 题（已提交），直接点第 3 题
+submittedPage.document.querySelectorAll('a')[2].addEventListener('click', (event) => {
+  event.preventDefault();
+  submittedPage.history.pushState({}, '', '/problem-sets/2092326321452294144/exam/problems/type/7?problemSetProblemId=2092326321552957461');
+});
+const submittedResult = await runScript(submittedPage, NEXT_PROBLEM_SCRIPT, { timeoutMs: 3000, pollMs: 20 });
+check(
+  '已经提交过的题会被跳过',
+  submittedResult.ok === true && String(submittedResult.url).includes('problemSetProblemId=2092326321552957461'),
+  submittedResult,
+);
+
+// skipCurrent=true：这道题不再回来
+const skipPage = createProblemListPage(['2092326321552957459', '2092326321552957460']);
+skipPage.document.querySelectorAll('a')[1].addEventListener('click', (event) => {
+  event.preventDefault();
+  skipPage.history.pushState({}, '', '/problem-sets/2092326321452294144/exam/problems/type/7?problemSetProblemId=2092326321552957460');
+});
+const skipResult = await runScript(skipPage, NEXT_PROBLEM_SCRIPT, { timeoutMs: 3000, pollMs: 20, skipCurrent: true });
+check('skipCurrent 传 true 时这道题被记下', skipResult.ok === true, skipResult);
+check('被跳过的题记在页面上', skipPage.__ptaSkippedProblems?.['2092326321552957459'] === true, skipPage.__ptaSkippedProblems);
+
+// 当前题型做完了 → 切到下一个题型分组（点分组链接会先跳到该题型的列表页，再点第一道题）
+const typeSwitchPage = createProblemListPage(
+  ['2092326321552957459'],
+  {
+    submitted: ['2092326321552957459'],
+    groups: [
+      { type: '2', name: 'Multiple Choice', answered: 11, total: 11 },
+      { type: '6', name: 'Code Completion', answered: 3, total: 12 },
+    ],
+  },
+);
+const groupLink = typeSwitchPage.document.querySelector('a[href*="/problems/type/6"]');
+groupLink.addEventListener('click', (event) => {
+  event.preventDefault();
+  typeSwitchPage.history.pushState({}, '', '/problem-sets/2092326321452294144/exam/problems/type/6');
+  // 切完题型，侧栏的网格会换成新题型的；这里模拟一下
+  typeSwitchPage.document.body.insertAdjacentHTML(
+    'beforeend',
+    '<a id="newTypeQuestion" href="/problem-sets/2092326321452294144/exam/problems/type/6?problemSetProblemId=2115063246452375554">6-1</a>',
+  );
+  // 新题型里的第一道题：点了之后地址才真的换掉
+  typeSwitchPage.document.getElementById('newTypeQuestion').addEventListener('click', (event) => {
+    event.preventDefault();
+    typeSwitchPage.history.pushState({}, '', '/problem-sets/2092326321452294144/exam/problems/type/6?problemSetProblemId=2115063246452375554');
+    typeSwitchPage.document.title = '6-1 代码填空';
+  });
+});
+const typeSwitchResult = await runScript(typeSwitchPage, NEXT_PROBLEM_SCRIPT, { timeoutMs: 3000, pollMs: 20 });
+check(
+  '当前题型做完了会切到下一个题型',
+  typeSwitchResult.ok === true && String(typeSwitchResult.url).includes('type/6'),
+  typeSwitchResult,
+);
+check('切题型时会说明是切过了', typeSwitchResult.switchedType === true, typeSwitchResult);
+
+// 列表里找不到当前题时要如实说明，不能瞎切
+const orphanPage = createProblemListPage(['2092326321552957460']);
+const orphanResult = await runScript(orphanPage, NEXT_PROBLEM_SCRIPT, {});
+check('列表里没有当前题时不乱切', orphanResult.ok === false && /[一-龥]/.test(String(orphanResult.reason || '')), orphanResult);
+
+// 页面上根本没有题目列表
+const noListPage = new JSDOM(
+  '<!doctype html><html><head><title>空页面</title></head><body><div>没有题目列表</div></body></html>',
+  { url: 'https://pintia.cn/problem-sets/1/exam/problems/type/7?problemSetProblemId=111', runScripts: 'outside-only' },
+).window;
+installInnerText(noListPage);
+const noListResult = await runScript(noListPage, NEXT_PROBLEM_SCRIPT, {});
+check('没有题目列表时如实说明', noListResult.ok === false && /[一-龥]/.test(String(noListResult.reason || '')), noListResult);
 
 /* ---------- 读代码 ---------- */
 

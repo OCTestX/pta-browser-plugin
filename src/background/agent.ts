@@ -19,6 +19,7 @@ import {
   CHECK_READY_SCRIPT,
   CLOSE_DIALOGS_SCRIPT,
   LANGUAGE_SCRIPT,
+  NEXT_PROBLEM_SCRIPT,
   READ_EDITOR_SCRIPT,
   READ_JUDGE_SCRIPT,
   READ_PROBLEM_SCRIPT,
@@ -31,11 +32,18 @@ import { describeTypist, runTypist } from './typist';
 import { storeExplanation } from './explain-pages';
 
 const DEFAULT_PER_CHAR_DELAY_MS = 8;
+/**
+ * 赶题模式（/fuck）允许的工具轮数。
+ *
+ * 平时 80 轮只够做一道题；赶题模式要连着做完整个题目列表，
+ * 每道题大概要 5 轮（读题、编译、写代码、提交、看结论、换题），300 轮够做几十题。
+ */
+const FUCK_MAX_TOOL_ROUNDS = 300;
 import { streamChat } from './deepseek';
 import { injectScript } from './js-inject';
 import { loadSettings } from './settings';
 import { modelSupportsVlm, statementHasImages } from '../shared/settings';
-import { parseSlashCommand } from '../shared/commands';
+import { commandForcesWrite, parseSlashCommand } from '../shared/commands';
 import { diffLines, diffStats } from '../shared/diff';
 import {
   choiceDeniesSubmit,
@@ -100,6 +108,22 @@ function commandInstruction(id: string, rest: string): string {
       '这一轮只讲解，不要改代码、不要提交。' + extra,
     ].join('\n');
   }
+  if (id === 'fuck') {
+    return [
+      '【本轮指令 /fuck】用户开了「极限赶时间无人监管模式」。规矩只有几条：',
+      '不要解释、不要寒暄、不要问问题——直接做题。',
+      '每道题按这个顺序做完：read_problem 读题 → write_editor_code 写代码 →',
+      'compile_and_run_c/python/js（或 simulate_pta_run）拿样例验一遍 → submit_answer 提交 → read_judge_result 看结论；',
+      '拿到判题结论后调 next_problem 切到下一题，接着做下一道；',
+      'next_problem 会自动跳过已经提交过的题，当前题型做完了也会自动切到下一个题型（判断/选择/代码填空/编程），',
+      '所以你只要一直调 next_problem 就行，不用自己管侧栏；它说「已经是最后一题了」就停，',
+      '用一句话汇总：做了几题、过了几题、哪几题没过。',
+      '**代码填空题**：作答区里就是那段代码（要填的地方是空的或带 TODO），',
+      '先 read_editor_code 把作答区现在的代码读出来，在它基础上把空缺补完整，再用 write_editor_code 写回去——不要凭空重写整段。',
+      '一道题最多自己改两次；还是不过就调 next_problem（带 skipCurrent=true）跳过它，继续下一题。',
+      '用户随时能按「停止」打断，你不用管，也别解释你在干什么。' + extra,
+    ].join('\n');
+  }
   if (id === 'what') {
     return [
       '【本轮指令 /what】用户要一份苏格拉底式的讲解网页（不是干巴巴的题解）。',
@@ -118,6 +142,19 @@ function commandInstruction(id: string, rest: string): string {
 }
 
 /**
+ * 赶题模式里替用户回答模型抛出来的问题。
+ *
+ * 选项里凡是「不要改 / 先别提交」这类都跳过，挑剩下的第一个（通常是「要」或「直接做」）。
+ * 一个都没有就退回第一个选项——反正没人在线等，答错也比卡住强。
+ */
+function pickAutoAnswer(options: string[]): string {
+  const allow = options.find(
+    (option) => !choiceDeniesWrite(option) && !choiceDeniesSubmit(option),
+  );
+  return allow ?? options[0] ?? '做';
+}
+
+/**
  * agent loop：请求模型 → 如果它要调工具就执行 → 把结果回灌 → 再来一轮，直到它给出最终回答。
  * 最多 MAX_TOOL_ROUNDS 轮，防止模型来回刷工具。
  */
@@ -129,14 +166,22 @@ export async function runAgent(options: RunAgentOptions): Promise<void> {
     ...messages,
   ];
 
-  // 斜杠指令（/resolve、/why、/what…）：改写这一轮的行为
+  // 斜杠指令（/resolve、/fuck、/why、/what…）：改写这一轮的行为
   const lastUserMessage = [...messages].reverse().find((message) => message.role === 'user');
   const command = parseSlashCommand(lastUserMessage?.content ?? '');
-  // /resolve：用户明说「直接答题」，这一轮不再要求先 ask
-  const forced = command?.id === 'resolve';
+  // /fuck：极限赶时间无人监管模式——不问、不解释、直接提交、做完自动切下一题
+  const fuckMode = command?.id === 'fuck';
+  // /resolve 与 /fuck：用户明说「直接答题」，这一轮不再要求先 ask
+  const forced = commandForcesWrite(command?.id);
+  // 赶题模式要连着做完整个题目列表，工具轮数得放开（平时 80 轮只够做一道题）
+  const maxRounds = fuckMode ? FUCK_MAX_TOOL_ROUNDS : MAX_TOOL_ROUNDS;
   if (command) {
     const instruction = commandInstruction(command.id, command.rest);
     if (instruction) conversation.push({ role: 'system', content: instruction });
+  }
+  if (fuckMode) {
+    // 面板上给个明确的横幅：这个模式会自己往下做，用户想插手就按「停止」
+    events.onNotice('赶题模式开始：直接做题、直接提交，做完自动切到下一题。按「停止」可以随时打断。');
   }
   // 一轮对话往往要多次请求模型，用量累加起来才是这一轮真实花掉的 token
   const usage: TokenUsage = { promptTokens: 0, completionTokens: 0, totalTokens: 0 };
@@ -153,7 +198,7 @@ export async function runAgent(options: RunAgentOptions): Promise<void> {
   let vlmHintPushed = false;
   let lastAutoDiffRight: string | null = null;
 
-  for (let round = 0; round < MAX_TOOL_ROUNDS; round += 1) {
+  for (let round = 0; round < maxRounds; round += 1) {
     // 用户随时可以按「停止」：上一轮工具刚收工还没发下一次请求时也要立刻退出
     throwIfAborted(signal);
     const { content, toolCalls, usage: roundUsage } = await streamChat({
@@ -180,7 +225,10 @@ export async function runAgent(options: RunAgentOptions): Promise<void> {
         askUsedThisTurn = true;
         const autoAskId = `auto-ask-${round}`;
         events.onToolStart({ callId: autoAskId, name: 'ask', args: JSON.stringify(optionQuestion) });
-        const choice = await events.askUser(autoAskId, optionQuestion.question, optionQuestion.options);
+        // 赶题模式不等人：模型在正文里问「要不要我改」，替用户答一个「做」
+        const choice = fuckMode
+          ? pickAutoAnswer(optionQuestion.options)
+          : await events.askUser(autoAskId, optionQuestion.question, optionQuestion.options);
         if (choiceDeniesWrite(choice)) writeDenied = true;
         if (choiceDeniesSubmit(choice)) submitDenied = true;
         events.onToolEnd(autoAskId, `用户选择了「${choice}」`, false);
@@ -225,7 +273,10 @@ export async function runAgent(options: RunAgentOptions): Promise<void> {
             : null;
 
       let outcome: ToolOutcome;
-      if (blockedReason) {
+      if (fuckMode && toolName === 'ask') {
+        // 赶题模式不等人：模型要问就自己答一个「做」，不等面板上的卡片
+        outcome = { output: '用户选择了「做」', isError: false };
+      } else if (blockedReason) {
         outcome = { output: blockedReason, isError: true };
       } else {
         try {
@@ -305,7 +356,7 @@ export async function runAgent(options: RunAgentOptions): Promise<void> {
     }
   }
 
-  events.onNotice(`已经连续调用 ${MAX_TOOL_ROUNDS} 轮工具了，先停在这里。可以让我继续。`);
+  events.onNotice(`已经连续调用 ${maxRounds} 轮工具了，先停在这里。可以让我继续。`);
 }
 
 const PTA_SCRIPTS: Record<string, string> = {
@@ -317,6 +368,7 @@ const PTA_SCRIPTS: Record<string, string> = {
   close_dialogs: CLOSE_DIALOGS_SCRIPT,
   read_pta_compile_result: READ_PTA_COMPILE_RESULT_SCRIPT,
   simulate_pta_run: SIMULATE_PTA_RUN_SCRIPT,
+  next_problem: NEXT_PROBLEM_SCRIPT,
 };
 
 export interface ToolContext {
@@ -339,7 +391,8 @@ async function runPtaScript(
 ): Promise<ToolOutcome> {
   const { tabId, signal } = context;
   // 这两条会轮询到出结论为止，页面里的等待时间必须比页面超时留得久
-  const defaults: Record<string, number> = { submit_answer: 20, read_judge_result: 60 };
+  // next_problem 也要等页面换题（切题最多等 15 秒），所以同样得留够时间
+  const defaults: Record<string, number> = { submit_answer: 20, read_judge_result: 60, next_problem: 20 };
   const fallback = defaults[name];
   const asked = Number(args.waitSeconds);
   const waitSeconds = fallback === undefined
@@ -429,6 +482,40 @@ async function writeChoiceAnswers(
   } catch {
     return null;
   }
+}
+
+/**
+ * 把 next_problem 脚本的 JSON 结果说成人话。
+ *
+ * 模型靠这句话决定还要不要继续做下一题，所以要把「还剩几题」讲清楚。
+ */
+function describeNextProblem(raw: string): string {
+  let parsed: {
+    ok?: boolean;
+    title?: string;
+    url?: string;
+    index?: number;
+    total?: number;
+    remaining?: number;
+    reason?: string;
+    type?: string;
+    switchedType?: boolean;
+  };
+  try {
+    parsed = JSON.parse(raw) as typeof parsed;
+  } catch {
+    return raw;
+  }
+  if (parsed.ok) {
+    const position =
+      typeof parsed.index === 'number' && typeof parsed.total === 'number'
+        ? `（第 ${parsed.index + 1}/${parsed.total} 题）`
+        : '';
+    const left = typeof parsed.remaining === 'number' ? `，还剩 ${parsed.remaining} 题` : '';
+    const switched = parsed.switchedType ? '（已切换题型）' : '';
+    return `已切到下一题${switched}：${parsed.title ?? ''}${position}${left}。地址：${parsed.url ?? ''}`;
+  }
+  return `没有下一题了：${parsed.reason ?? '题目列表已经走完'}`;
 }
 
 /** 单次执行一个工具（agent loop 用它，设置页的模拟输入测试也用它，保证两条路完全一致） */
@@ -607,6 +694,12 @@ export async function runTool(
       isError: outcome.isError,
       ...(autoDiff ? { autoDiff } : {}),
     };
+  }
+
+  // 赶题模式：切到题目列表里的下一题（脚本返回 JSON，这里说成人话）
+  if (name === 'next_problem') {
+    const outcome = await runPtaScript('next_problem', args, context);
+    return { output: describeNextProblem(outcome.output), isError: outcome.isError };
   }
 
   // PTA 相关动作都在页面主世界跑（编辑器实例、判题弹窗都是页面自己的东西）

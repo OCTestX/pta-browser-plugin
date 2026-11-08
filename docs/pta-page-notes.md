@@ -40,6 +40,33 @@
 
 **语言识别**在 `LANGUAGE_SCRIPT`：读作答区下拉框当前选中的语言。认不出的处理原则是**如实说认不出**，不要猜——`guessLanguage`（`src/background/agent.ts`）只在页面完全没给信息时按代码长相兜底，而且宁可当 C 也不要把 Python 当 C。
 
+### 题面里的样例框：整块都要跳过，不能只跳 `.cm-content`
+
+「输入样例 / 输出样例」是**只读的 CodeMirror**。摊平题面时如果只跳过 `.cm-content` 这一个节点，**它的兄弟节点会被当成正文**：行号槽（gutter）、工具条（「复制内容 / 格式 / 全屏 / 收起」）、折叠标记 `▸` 全都漏进题面里。
+
+实测（题目「7-12 杨辉三角形」`problemSetProblemId=2092326321552957459`）：
+
+- 样例框外层是 `<div data-code="" data-lang="in">`（`data-lang` 为 `in` / `out`），里面是 `.codeEditor_* > .cm-editor`，再里面才是 `.cm-content`。
+- 行号槽的内容是 `["9", "1", "2", "▸", ""]`：`9` 是跳转行号的输入框，`1`/`2` 是行号，`▸` 是折叠标记。
+- 样例的**真实内容**在 `.cm-line` 里（这个题输入样例是 `5`）。
+
+漏出来的噪音会和另一段「样例」小节打架：题面里写「输入样例1：9 1 2 ▸」，样例小节里写「样例 1 输入：5」。模型看到前后矛盾就会怀疑 `read_problem` 坏了，改用 `js_inject` 自己读——这就是那道题上「read_problem 有问题」的真正原因。
+
+处理办法：**认整个样例框组件**（`div[data-code]`，兼容老页面的 `.cm-editor` 里包着只读 `.cm-content`），把它换成 `[输入样例]` / `[输出样例]` 加**真实内容**（`.cm-line` 的 textContent），不要把行号槽当正文。
+
+## 1.1 题目列表与「切下一题」
+
+考试页侧栏的题目列表是普通 `<a>`：
+
+```
+<a href="/problem-sets/<setId>/exam/problems/type/<type>?problemSetProblemId=<pid>">题号</a>
+```
+
+- 同一份列表里可能混着**多个题型**（type/1 判断、type/2 选择、type/6 代码填空、type/7 编程…），按 DOM 顺序排列 → 找「下一题」要按 **DOM 顺序**，不能按 id 排序。
+- 当前题的 id 从 `location.href` 的 `problemSetProblemId=` 取。
+- **点它是前端路由跳转，不会整页刷新**：实测跳转前设的 `window.__marker` 还在，标题变了，插件悬浮窗的宿主元素也还在。所以同一段页面脚本里点完链接可以继续等页面换好，插件的对话上下文也不会断。
+- 题型在地址里：`/problems/type/N`，1=判断、2=选择、6=代码填空、7=编程、9=多文件。
+
 ## 2. 定位作答区（编辑器）
 
 核心选择器就两个：`.cm-content` 与 `[contenteditable="true"]`，配合**可写性过滤**，取**文本最长**的那个（`findEditorElement`，`pta-scripts.ts`）：
@@ -136,3 +163,35 @@ PTA 的 `onpaste` 是平台防抄袭控制。插件的做法（`src/content/past
 12. **不要分段续敲**：调用之间页面 freeze/unfreeze 会把 CodeMirror 的选区弹回文档开头，后一段全插到最前面。
 13. 长文档（>50 行）无法整篇回读：CM6 只渲染视口附近的行，翻页或改 `scrollTop` 都不会让窗口前移——此时回读结果不可信，要严格证明得切小段分别敲。
 14. 题面的样例输入框也是 CodeMirror（只读），选编辑器时必须排除，否则会往样例框里敲代码。
+15. 题面摊平时**整块跳过样例框**（连行号槽一起），只跳 `.cm-content` 会漏出行号与 `▸` 折叠标记。
+16. **等判题结论时别乱点「刷新 / Reload」**：选择题页的页头也有个 `Reload`，那是整页重新加载——点一下页面就刷了，插件的悬浮窗随之消失、正在跑的那一轮也接不上。所以插件只认**判题弹窗里**的刷新按钮。
+17. 插件自己派发的**合成 Esc**（`close_dialogs` 用来关 PTA 弹窗）会被页面上任何监听 Esc 的代码看到。插件的悬浮窗也监听 Esc，所以它只认 `event.isTrusted` 的按键，否则关弹窗时会把悬浮窗一起关掉。
+18. 选择题/判断题的作答区**没有「提交」按钮**，是英文的 `Save`（保存即提交）。
+
+## 8. 扩展页的 CSP：讲解页为什么这么绕
+
+`/what` 生成的讲解页是**模型产出的 HTML**，要能在新标签页里跑起它的脚本。扩展页的 CSP 是 `script-src 'self' 'wasm-unsafe-eval'`，实测（Chrome 150）：
+
+| 做法 | 结果 |
+|---|---|
+| 扩展页里的内联 `<script>` | 不执行 |
+| `URL.createObjectURL` 出来的 blob: 脚本 | **也不执行**（`script-src-elem` 明确把 `blob` 拦掉） |
+| `eval` / `new Function` | 被拦（没有 `'unsafe-eval'`） |
+| 在扩展页 CSP 里加 `'unsafe-inline'` | **清单校验直接拒绝**（各种 `sandbox` 写法都试过，一律拒绝） |
+| 扩展页里的 `srcdoc` / `data:` iframe | 继承父页面 CSP，内联脚本同样被拦 |
+| 内联 `<style>` | 允许 |
+| 顶层 `data:` URL 标签页 | 内联脚本能跑（自带一套 CSP），但地址栏里是几万字符的 HTML |
+| **普通网页里的沙箱 `srcdoc` iframe** | **能跑**（网页没有 CSP 时，srcdoc 继承不到限制），且不透明来源拿不到 cookie |
+
+所以最终方案是**PTA 站点上的固定路径 + 沙箱 iframe**：
+
+- 讲解页开成 `https://pintia.cn/pta-assistant/explain?id=…`（地址栏是正常网址，没有长度上限）；
+- `src/content/explain-mode.ts` 认出这个路径，把整份 HTML 装进 `<iframe sandbox="allow-scripts allow-popups allow-forms" srcdoc="…">`；
+- `sandbox` 不给 `allow-same-origin` → iframe 拿到**不透明来源**（`origin` 是 `null`）：读不到父页面 DOM、拿不到 `document.cookie`、拿不到 `chrome.*`，也就碰不到 API Key；
+- PTA 没发 CSP 头，模型产的脚本能正常跑（这也是为什么不能改成扩展页）。
+
+**注意**：内容脚本跑在 `<all_urls>` 上，所以认讲解页时**光看路径不够**，还要看站点是不是 pintia.cn（否则别的网站同路径的页面会被劫持）。
+
+还有一个模型侧的坑：`<script>` 是 raw-text 元素，里面的 HTML 实体**不会**被解码。模型把 `>` 写成 `&gt;` 是对的（HTML 里就该转义），但放进 `<script>` 里就会变成字面的 `&gt;`——页面正文里会看到 `A &gt; B`，JS 字符串的内容也错了。存讲解页时要**只对 `<script>` / `<style>` 的内容做一层实体解码**（`src/shared/explain-html.ts` 的 `decodeRawTextEntities`）。
+
+

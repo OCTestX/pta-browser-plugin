@@ -19,7 +19,8 @@ export type ToolName =
   | 'simulate_keyboard_input'
   | 'ask'
   | 'diff'
-  | 'write_explanation_page';
+  | 'write_explanation_page'
+  | 'next_problem';
 
 export const TOOL_NAMES: ToolName[] = [
   'read_problem',
@@ -42,6 +43,7 @@ export const TOOL_NAMES: ToolName[] = [
   'ask',
   'diff',
   'write_explanation_page',
+  'next_problem',
 ];
 
 /** 一次对话最多跑几轮工具，防止模型来回刷 */
@@ -98,6 +100,8 @@ export const SYSTEM_PROMPT = [
   '- date：拿到当前日期。',
   '- write_document：把整理好的内容写成文件下载到用户电脑。需要交付文档/题解时用它，不要在回答里贴整篇长文档。',
   '- write_explanation_page：交出一份自包含的单文件 HTML 讲解页（用户用 /what 时用）。交完插件会给用户一张「打开讲解页」的邀请卡片。',
+  '- next_problem：切到题目列表里的下一道题（只有用户点「/fuck」赶题模式时才用）。做完一题提交后调它接着做下一道，',
+  '  它会告诉你这是第几题、还剩几题；说「没有下一题了」就停下来汇总。',
   '',
   '工具使用规则（重要）：',
   '1. 读题面用 read_problem，读代码用 read_editor_code，改代码用 write_editor_code。',
@@ -327,6 +331,27 @@ export const TOOL_SCHEMAS: ToolSchema[] = [
           html: { type: 'string', description: '完整的单文件 HTML（要含 <html><head><style>…</style></head><body>…<script>…</script></body></html>）' },
         },
         required: ['title', 'html'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'next_problem',
+      description:
+        '切到题目列表里的下一道**还没做过**的题（用户点「/fuck」赶题模式时用）。'
+        + '会自动跳过已经提交过的题；当前题型做完了会自动切到下一个题型分组（判断/选择/代码填空/编程…）。'
+        + '返回新题的标题、地址、题型、这是第几题以及还剩几题。全部做完时会直接告诉你「没有下一题了」。'
+        + '只在赶题模式里用；普通对话不要乱切题。',
+      parameters: {
+        type: 'object',
+        properties: {
+          skipCurrent: {
+            type: 'boolean',
+            description: '当前这道题做不出来（提交不了/两次都不对）时传 true，这道题就不再回来了',
+          },
+        },
+        required: [],
       },
     },
   },

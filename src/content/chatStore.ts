@@ -61,33 +61,45 @@ async function readStore(): Promise<Store> {
   return stored && typeof stored === 'object' ? stored : {};
 }
 
+/**
+ * 一轮对话（requestId）对应的存盘键。
+ *
+ * 赶题模式（/fuck）会在题目之间来回跳，每换一题地址就变了，
+ * 按地址分桶就会把一段对话拆成好几段（用户回头一看，前面的记录都不见了）。
+ * 所以一轮进行中的对话另外按 requestId 存一份，刷新/换题后能接回去。
+ */
+export function runConversationKey(requestId: string): string {
+  return `run:${requestId}`;
+}
+
 /** 取出这个页面上的对话（没有就是空数组） */
-export async function loadMessages(): Promise<ChatMessage[]> {
+export async function loadMessages(bucket?: string): Promise<ChatMessage[]> {
   const store = await readStore();
   // 存盘里记着当时是不是还在流式输出，恢复时一律当成结束了（刷新后没有流了）
-  return (store[conversationKey()] ?? []).map((message) => ({ ...message, streaming: false }));
+  return (store[bucket ?? conversationKey()] ?? []).map((message) => ({ ...message, streaming: false }));
 }
 
 /** 把这个页面上的对话写回去 */
-export async function saveMessages(messages: ChatMessage[]): Promise<void> {
+export async function saveMessages(messages: ChatMessage[], bucket?: string): Promise<void> {
   const store = await readStore();
+  const key = bucket ?? conversationKey();
   const next: Store = { ...store };
-  if (messages.length === 0) delete next[conversationKey()];
-  else next[conversationKey()] = trim(messages);
+  if (messages.length === 0) delete next[key];
+  else next[key] = trim(messages);
   try {
     await ext.storage.local.set({ [STORE_KEY]: next });
   } catch {
     // 配额满了就把这个页面的历史丢掉重存一次，总比每次都失败强
     const trimmed: Store = { ...next };
-    trimmed[conversationKey()] = trim(messages).slice(-10);
+    trimmed[key] = trim(messages).slice(-10);
     await ext.storage.local.set({ [STORE_KEY]: trimmed });
   }
 }
 
 /** 清掉这个页面上的对话（「新会话」按钮用） */
-export async function clearMessages(): Promise<void> {
+export async function clearMessages(bucket?: string): Promise<void> {
   const store = await readStore();
   const next: Store = { ...store };
-  delete next[conversationKey()];
+  delete next[bucket ?? conversationKey()];
   await ext.storage.local.set({ [STORE_KEY]: next });
 }

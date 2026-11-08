@@ -8,7 +8,8 @@ import {
 } from '../../shared/messages';
 import { createId, toApiMessages, type ChatMessage, type ToolCall } from '../../shared/types';
 import { diffLines, diffStats } from '../../shared/diff';
-import { clearMessages, loadMessages, saveMessages } from '../chatStore';
+import { clearMessages, loadMessages, runConversationKey, saveMessages } from '../chatStore';
+import { setPanelOpen } from '../panelStore';
 
 
 const WELCOME = '你好，我是 PTA 助手。点击浏览器工具栏的插件图标可以开关这个悬浮窗。';
@@ -77,12 +78,39 @@ export function useChat(hasApiKey: boolean) {
   }, []);
 
   // 刷新页面后把上次的对话恢复回来（按页面地址分桶）
+  //
+  // 另外还要问后台一句「这个标签页上有正在跑的对话吗」：
+  // PTA 自己刷新页面时（判题流程、整页跳转），面板会重新挂载，
+  // 之前那轮的 requestId 就丢了 —— 不接回去的话，面板收不到那一轮的事件，
+  // 「停止」按钮也按不到后台（赶题模式尤其要命）。
   useEffect(() => {
     let cancelled = false;
-    void loadMessages().then((restored) => {
+    void (async () => {
+      let attachId = '';
+      try {
+        const response = (await ext.runtime.sendMessage({ type: 'chat/attach' })) as
+          | { ok?: boolean; requestId?: string }
+          | undefined;
+        if (response?.requestId) attachId = response.requestId;
+      } catch {
+        // 后台没响应就当没有在跑的对话
+      }
+      if (cancelled) return;
+      if (attachId) {
+        // 接回正在跑的那一轮：对话按 requestId 存盘，事件也要按它的 requestId 收。
+        // 面板这时是关着的（刷新后默认关闭），自动打开它，
+        // 用户才能看见这一轮在干什么、也才按得到「停止」。
+        requestRef.current = attachId;
+        setStreaming(true);
+        setPanelOpen(true);
+        const restored = await loadMessages(runConversationKey(attachId));
+        if (!cancelled && restored.length > 0) setMessages(restored);
+        return;
+      }
+      const restored = await loadMessages();
       if (cancelled || restored.length === 0) return;
       setMessages(restored);
-    });
+    })();
     return () => {
       cancelled = true;
     };
@@ -91,11 +119,16 @@ export function useChat(hasApiKey: boolean) {
   // 对话一变就存回去：刷新、关页面再打开都还在。
   // 必须防抖：流式输出时每个字都会触发一次 setMessages，
   // 一次回答能写几百次，chrome.storage.local 的写入配额扛不住（每分钟 120 次）。
+  //
+  // 正在跑的那一轮另外按 requestId 存一份：赶题模式会在题目之间跳，
+  // 每换一题地址就变了，只按地址存会把一段对话拆成好几段。
   useEffect(() => {
     // 刚挂载时的那一帧还没恢复，别把欢迎语写回去把旧对话覆盖掉
     if (messages.length === 1 && messages[0].id === 'welcome') return;
+    const requestId = requestRef.current;
     const timer = setTimeout(() => {
       void saveMessages(messages);
+      if (requestId) void saveMessages(messages, runConversationKey(requestId));
     }, 800);
     return () => clearTimeout(timer);
   }, [messages]);
@@ -429,6 +462,8 @@ export function useChat(hasApiKey: boolean) {
     setMessages([{ id: 'welcome', role: 'system', content: WELCOME, createdAt: 0 }]);
     // 存盘的那份也要清掉，否则刷新一下旧对话又回来了
     void clearMessages();
+    // 这一轮自己那份（按 requestId 存的）也要清
+    if (requestId) void clearMessages(runConversationKey(requestId));
   }, []);
 
   return {

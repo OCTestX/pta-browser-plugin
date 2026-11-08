@@ -98,6 +98,14 @@ export interface RunToolRequest {
 export type ContentRequest =
   | { type: 'chat/start'; requestId: string; messages: ApiMessage[] }
   | { type: 'chat/stop'; requestId: string }
+  /**
+   * 页面刚加载时问一句「这个标签页上有正在跑的对话吗」。
+   *
+   * PTA 自己刷新页面（PTA 的判题流程、或换题时的整页刷新）会让插件的悬浮窗
+   * 重新挂载，之前那一轮的 requestId 就丢了：面板不再接收那一轮的事件，
+   * 「停止」按钮也按不到后台。问一句就能重新挂上去。
+   */
+  | { type: 'chat/attach' }
   /** 用户在 ask 工具的卡片上点了一个选项 */
   | { type: 'chat/ask-answer'; requestId: string; callId: string; choice: string }
   | { type: 'settings/get' }
@@ -122,6 +130,7 @@ export function isContentRequest(message: unknown): message is ContentRequest {
     isRecord(message) &&
     (message.type === 'chat/start' ||
       message.type === 'chat/stop' ||
+      message.type === 'chat/attach' ||
       message.type === 'chat/ask-answer' ||
       message.type === 'settings/get' ||
       message.type === 'settings/save' ||
@@ -144,6 +153,13 @@ export function isRunToolRequest(message: unknown): message is RunToolRequest {
 export interface StartChatResponse {
   ok: boolean;
   message?: string;
+}
+
+/** chat/attach 的回答：这个标签页上正在跑的那一轮 */
+export interface AttachChatResponse {
+  ok: boolean;
+  /** 正在跑的 requestId；没有在跑的就是空串 */
+  requestId?: string;
 }
 
 export interface TestInputResponse {

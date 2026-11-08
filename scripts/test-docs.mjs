@@ -127,20 +127,63 @@ check('设置页有「运行环境」两档', settingsPanel.includes('PTA_RUN_MO
 /* ---------- 新加的交互与指令 ---------- */
 
 check('斜杠指令清单在代码里（代码）', read('src/shared/commands.ts').includes("id: 'resolve'"));
-check('斜杠指令有 /new /resolve /what /why 四条（代码）', ['new', 'resolve', 'what', 'why']
+check('斜杠指令有 /new /resolve /fuck /what /why 五条（代码）', ['new', 'resolve', 'fuck', 'what', 'why']
   .every((id) => read('src/shared/commands.ts').includes(`id: '${id}'`)));
 check('README 记录了斜杠指令', readme.includes('### 斜杠指令') && readme.includes('/resolve'));
+check('README 记录了赶题模式 /fuck', readme.includes('/fuck'));
 check('README 记录了连按三次回车', readme.includes('连按三次回车'));
 check('README 记录了选择题题型表', readme.includes('### 题型与选择题'));
 check('README 记录了讲解页', readme.includes('/what') && readme.includes('打开讲解页'));
 check('README 记录了上下文圆环', readme.includes('上下文进度'));
 check('agent 里认得斜杠指令（代码）', read('src/background/agent.ts').includes('parseSlashCommand'));
 check('/resolve 会免问放行（代码）', read('src/shared/guardrails.ts').includes('forced?: boolean'));
-check('讲解页用 data URL 打开（代码）', read('src/background/explain-pages.ts').includes('data:text/html'));
 check('讲解页存进 storage 再开（代码）', read('src/background/explain-pages.ts').includes('EXPLAIN_STORAGE_PREFIX'));
+check('讲解页开在 PTA 的固定路径上（代码）', read('src/shared/explain-html.ts').includes("EXPLAIN_PAGE_PATH = '/pta-assistant/explain'"));
+check('讲解页放在沙箱 iframe 里（代码）', read('src/content/explain-mode.ts').includes("setAttribute('sandbox'"));
+check(
+  '沙箱里没有 allow-same-origin（代码）',
+  !/setAttribute\('sandbox',\s*'[^']*allow-same-origin/.test(read('src/content/explain-mode.ts')),
+);
+check('README 写明了讲解页开在 PTA 的固定地址', readme.includes('pta-assistant/explain'));
+check('README 写明了扩展页跑不了模型脚本的原因', readme.includes('unsafe-inline'));
 check('粘贴会替换选区而不是追加（代码）', read('src/background/pta-scripts.ts').includes('selection.main'));
 check('README 写清了 service worker 缓存这个坑', readme.includes('Service Worker') && readme.includes('Code Cache'));
-check('README 写明了讲解页是 data URL 打开的', readme.includes('data:'));
+
+/* ---------- 赶题模式（/fuck） ---------- */
+
+check('赶题模式会免问放行（代码）', read('src/shared/commands.ts').includes('commandForcesWrite'));
+check('赶题模式在 agent 里被认出来（代码）', read('src/background/agent.ts').includes("command?.id === 'fuck'"));
+check('赶题模式会替用户回答提问（代码）', read('src/background/agent.ts').includes('pickAutoAnswer'));
+check('赶题模式会跳过已提交的题（代码）', ptaScripts.includes('PROBLEM_SUBMITTED'));
+check('赶题模式会切换题型（代码）', ptaScripts.includes('typeGroups'));
+check('赶题模式的欠账记在 todo.txt 里', read('todo.txt').includes('/fuck 赶题模式：进度与欠账'));
+check('README 写明赶题模式还在调', readme.includes('这个模式还在调'));
+check('README 写明赶题模式的欠账在哪', readme.includes('todo.txt'));
+check('赶题模式放开了工具轮数（代码）', read('src/background/agent.ts').includes('FUCK_MAX_TOOL_ROUNDS'));
+check('有 next_problem 这个工具（代码）', tools.includes('next_problem'));
+check('README 写了赶题模式会切下一题', readme.includes('next_problem'));
+
+/* ---------- 指令菜单：Tab 补全与底部提示 ---------- */
+
+const composer = read('src/content/components/Composer.tsx');
+check('指令菜单支持 Tab 补全（代码）', composer.includes("event.key === 'Tab'") && composer.includes('completeCommand'));
+check('README 写了 Tab 补全', readme.includes('Tab 补全'));
+check('底部不再重复发送/换行提示（代码）', !composer.includes('Enter 发送 · Shift + Enter 换行'));
+check('快捷键挪进了输入框的 title（代码）', composer.includes('title="Enter 发送'));
+check('输入框的 title 里写了三次回车开新会话', composer.includes('连按三次回车'));
+
+/* ---------- 上下文长度：不靠猜 ---------- */
+
+check('有查上下文长度的模块（代码）', read('src/shared/model-context.ts').includes('extractContextWindowFromModels'));
+check('后台会联网查上下文长度（代码）', read('src/background/model-context.ts').includes('models.dev'));
+check('清单放行了 models.dev', JSON.stringify(manifest.host_permissions).includes('models.dev'));
+check('设置里存了查到的上下文长度（代码）', read('src/background/settings.ts').includes('contextWindow'));
+check('圆环用的是查到的值（代码）', read('src/content/App.tsx').includes('pickContextWindow'));
+
+/* ---------- read_problem 的样例框 ---------- */
+
+check('题面摊平时整块跳过样例框（代码）', ptaScripts.includes('data-code'));
+check('适配笔记写了样例框的坑', read('docs/pta-page-notes.md').includes('样例框'));
 
 /* ---------- 清单与版本 ---------- */
 

@@ -2,7 +2,7 @@
 // 用法：node scripts/test-commands.mjs
 import { readFileSync } from 'node:fs';
 import { JSDOM } from 'jsdom';
-import { parseSlashCommand, filterSlashCommands, SLASH_COMMANDS } from '../src/shared/commands.ts';
+import { parseSlashCommand, filterSlashCommands, SLASH_COMMANDS, commandForcesWrite } from '../src/shared/commands.ts';
 import { writeGuardReason, submitGuardReason } from '../src/shared/guardrails.ts';
 import { READ_PROBLEM_SCRIPT, WRITE_ANSWERS_SCRIPT } from '../src/background/pta-scripts.ts';
 
@@ -21,9 +21,10 @@ check('认出 /resolve 后面带的话', parseSlashCommand('/resolve 帮我做�
 check('认出 /why', parseSlashCommand('/why')?.id === 'why');
 check('认出 /what', parseSlashCommand('/what')?.id === 'what');
 check('认出 /new', parseSlashCommand('/new')?.id === 'new');
+check('认出 /fuck', parseSlashCommand('/fuck')?.id === 'fuck');
 check('大小写不敏感', parseSlashCommand('/RESOLVE')?.id === 'resolve');
 check('不是指令就是 null', parseSlashCommand('帮我看看这道题') === null);
-check('没收录的指令不当指令', parseSlashCommand('/fuck') === null);
+check('没收录的指令不当指令', parseSlashCommand('/nope') === null);
 check('前缀筛选能筛出候选', filterSlashCommands('/re').length === 1);
 check('空前缀给全部', filterSlashCommands('/').length === SLASH_COMMANDS.length);
 check('每条指令都有名字和解释', SLASH_COMMANDS.every((c) => c.name.startsWith('/') && c.summary.length > 0));
@@ -45,6 +46,22 @@ check(
 check(
   '用户说过「先别改」时，/resolve 也不放行',
   writeGuardReason({ askUsed: false, denied: true, lastUserText: '/resolve', forced: true }) !== null,
+);
+
+/* ---------- /fuck：赶题模式也是明确授权 ---------- */
+
+check('/resolve 属于免问指令', commandForcesWrite('resolve') === true);
+check('/fuck 属于免问指令', commandForcesWrite('fuck') === true);
+check('/what 不属于免问指令', commandForcesWrite('what') === false);
+check('/why 不属于免问指令', commandForcesWrite('why') === false);
+check('没有指令就不免问', commandForcesWrite(undefined) === false);
+check(
+  '/fuck 时免问，直接放行写入',
+  writeGuardReason({ askUsed: false, denied: false, lastUserText: '/fuck', forced: true }) === null,
+);
+check(
+  '/fuck 时免问，直接放行提交',
+  submitGuardReason({ askUsed: false, denied: false, lastUserText: '/fuck', forced: true }) === null,
 );
 
 /* ---------- 选择题 / 判断题 ---------- */

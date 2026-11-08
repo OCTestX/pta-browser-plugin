@@ -27,7 +27,12 @@ export function installPanelShortcuts(): void {
       }
 
       // Esc：关闭面板（只在我们自己的面板开着时才管）
-      if (event.key === 'Escape' && isPanelOpen()) {
+      //
+      // 只认**用户真的按下的** Esc（isTrusted）：插件自己的 close_dialogs 工具
+      // 会往页面上派发一个合成的 Esc 来关 PTA 的弹窗（页面脚本里 dispatchEvent 出来的），
+      // 那个 Esc 会被这里的捕获监听器接住，把悬浮窗一起关了——
+      // 赶题模式正跑到一半，窗口就没了，用户连「停止」都按不到。
+      if (event.key === 'Escape' && event.isTrusted && isPanelOpen()) {
         setPanelOpen(false);
       }
     },

@@ -1,5 +1,6 @@
 import { createRoot } from 'react-dom/client';
 import { App } from './App';
+import { renderExplainPage } from './explain-mode';
 import { katexStyles } from './katexStyles';
 import { runPageTool } from './pageTools';
 import { installPasteBridge } from './paste';
@@ -45,14 +46,8 @@ function mount(): void {
 function start(): void {
   if (isInjected()) return;
 
-  // 初始化共享状态（从 storage.local 恢复面板开关 + 草稿等）
-  void initState();
-  // 接管 Ctrl+V / Ctrl+M：PTA 禁粘贴时用插件自己的写入链路把剪贴板内容塞进作答区
-  installPasteBridge();
-  // Alt+G 打开悬浮窗并聚焦输入框，Esc 关闭悬浮窗
-  installPanelShortcuts();
-
-  // 在模块顶层注册，保证后台发来的 toggle 一定有人接
+  // 消息监听必须**同步**注册：React 还没挂上的时候后台就发来 toggle，
+  // 也得有人接（否则那一下开关就丢了，悬浮窗再也开不出来）。
   ext.runtime.onMessage.addListener((message: unknown, _sender, sendResponse) => {
     if (isTogglePanelMessage(message)) {
       togglePanel();
@@ -68,6 +63,21 @@ function start(): void {
     }
     return undefined;
   });
+
+  // 讲解页（/what 生成的那份 HTML）由这个页面自己渲染，别再挂悬浮窗上去
+  void renderExplainPage().then((handled) => {
+    if (handled) return;
+    bootPanel();
+  });
+}
+
+function bootPanel(): void {
+  // 初始化共享状态（从 storage.local 恢复面板开关 + 草稿等）
+  void initState();
+  // 接管 Ctrl+V / Ctrl+M：PTA 禁粘贴时用插件自己的写入链路把剪贴板内容塞进作答区
+  installPasteBridge();
+  // Alt+G 打开悬浮窗并聚焦输入框，Esc 关闭悬浮窗
+  installPanelShortcuts();
 
   if (document.readyState === 'loading') {
     document.addEventListener('DOMContentLoaded', mount, { once: true });

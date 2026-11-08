@@ -15,12 +15,13 @@ export interface SlashCommand {
 /**
  * 目前支持的指令。
  *
- * /fuck（无人监管赶题模式）先不做：它要绕过提问门、自动提交、自动跳下一题，
- * 风险比收益大，等这批稳定了再单独加。
+ * /fuck 是「极限赶时间无人监管模式」：不问、不解释、直接提交，
+ * 提交完自动切到下一题接着做，直到题目列表做完或者用户按停止。
  */
 export const SLASH_COMMANDS: SlashCommand[] = [
   { id: 'new', name: '/new', summary: '开新会话，清空当前上下文' },
   { id: 'resolve', name: '/resolve', summary: '直接答题，自动放行写入与提交' },
+  { id: 'fuck', name: '/fuck', summary: '赶时间模式：直接做题直接提交，一路做完所有题' },
   { id: 'what', name: '/what', summary: '苏格拉底式讲解题面，生成可交互网页' },
   { id: 'why', name: '/why', summary: '讲解当前代码错在哪里' },
 ];
@@ -34,6 +35,16 @@ export function parseSlashCommand(text: string): { id: string; rest: string } | 
   const id = match[1].toLowerCase();
   if (!SLASH_COMMANDS.some((command) => command.id === id)) return null;
   return { id, rest: match[2].trim() };
+}
+
+/**
+ * 这个指令是不是「用户已经明确授权你改代码、并且提交」。
+ *
+ * /resolve 与 /fuck 都是用户自己点出来的明确授权，所以这一轮不用再 ask。
+ * 放这里是为了能脱离浏览器单测（后台的 agent.ts 依赖 chrome.*，测不了）。
+ */
+export function commandForcesWrite(commandId: string | undefined): boolean {
+  return commandId === 'resolve' || commandId === 'fuck';
 }
 
 /** 输入框里的「/xxx」按前缀筛出候选指令（空串时给全部） */

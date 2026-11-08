@@ -1,7 +1,10 @@
 import { ext } from '../shared/browser';
+import { fetchModelContextWindow } from './model-context';
 import { DEFAULT_SETTINGS, normalizeBaseURL, type Settings, type SettingsView } from '../shared/settings';
 
 const STORAGE_KEY = 'pta-assistant-settings';
+/** 查上下文长度的总预算：用户点「保存」后最多多等这么久，超时就用兜底估算 */
+const CONTEXT_LOOKUP_TIMEOUT_MS = 8000;
 
 export async function loadSettings(): Promise<Settings> {
   const stored = await ext.storage.local.get(STORAGE_KEY);
@@ -17,7 +20,25 @@ export async function saveSettings(patch: Partial<Settings>): Promise<Settings> 
   next.apiKey = next.apiKey.trim();
   next.baseURL = normalizeBaseURL(next.baseURL) || DEFAULT_SETTINGS.baseURL;
   next.model = next.model.trim() || DEFAULT_SETTINGS.model;
+  // 换了模型或接口，之前查到的上下文长度就不作数了，先清掉，免得圆环按旧模型的窗口算
+  if (next.model !== current.model || next.baseURL !== current.baseURL) {
+    delete next.contextWindow;
+  }
   await ext.storage.local.set({ [STORAGE_KEY]: next });
+
+  // 顺手查一下模型真实的上下文长度（接口的 /models 优先，其次 models.dev 数据集）。
+  // 查得到就存下来；查不到就不写这一项，前端会退回按模型名估算。
+  // 整个查询有时间预算，用户点「保存」后不会干等。
+  const result = await fetchModelContextWindow({
+    baseURL: next.baseURL,
+    apiKey: next.apiKey,
+    model: next.model,
+    timeoutMs: CONTEXT_LOOKUP_TIMEOUT_MS,
+  }).catch(() => null);
+  if (result?.window) {
+    next.contextWindow = result.window;
+    await ext.storage.local.set({ [STORAGE_KEY]: next });
+  }
   return next;
 }
 
@@ -28,6 +49,7 @@ export function toSettingsView(settings: Settings): SettingsView {
     hasApiKey: settings.apiKey.length > 0,
     vlmMode: settings.vlmMode,
     forcePtaRun: settings.forcePtaRun,
+    contextWindow: settings.contextWindow,
   };
 }
 

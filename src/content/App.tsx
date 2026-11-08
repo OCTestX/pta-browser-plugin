@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from 'react';
 import { ext } from '../shared/browser';
-import { contextWindowFor } from '../shared/settings';
+import { pickContextWindow } from '../shared/settings';
 import { Composer } from './components/Composer';
 import { MessageList } from './components/MessageList';
 import { SettingsPanel } from './components/SettingsPanel';
@@ -95,7 +95,12 @@ export function App() {
           <>
             <span className="panel__title">PTA 助手</span>
             <span className="panel__badge">{VERSION_LABEL}</span>
-            <ContextRing usage={chat.usage} liveTokens={chat.liveOutputTokens} model={settings.view?.model ?? ''} />
+            <ContextRing
+              usage={chat.usage}
+              liveTokens={chat.liveOutputTokens}
+              model={settings.view?.model ?? ''}
+              contextWindow={settings.view?.contextWindow}
+            />
           </>
         )}
         <div className="panel__actions">
@@ -196,24 +201,38 @@ export function formatTokens(value: number): string {
  * 顶栏的小圆环：上下文填充进度。
  *
  * 输入的 token 数就是这一轮请求带进去的上下文大小，除以模型的上下文窗口就是填充比例。
+ * 窗口大小优先用后台查到的真实值（接口或 models.dev 说的），查不到才按模型名估算，
+ * tooltip 里会写明这次是精确值还是估算值。
  * token 明细不直接摊在顶栏，鼠标停在圆环上才看得到（title）。
  */
 function ContextRing({
   usage,
   liveTokens,
   model,
+  contextWindow: exactWindow,
 }: {
   usage: { promptTokens: number; completionTokens: number; totalTokens: number } | null;
   liveTokens: number;
   model: string;
+  contextWindow?: number;
 }) {
-  const contextWindow = contextWindowFor(model);
+  const { window: contextWindow, exact } = pickContextWindow(model, exactWindow);
   const used = usage ? usage.promptTokens : 0;
   const ratio = Math.min(1, used / contextWindow);
   const percent = Math.round(ratio * 100);
   const total = usage ? usage.promptTokens + usage.completionTokens : liveTokens;
+  // 窗口大小写成 128K / 1M 这种整数形式，比 128.00K 好读
+  const windowLabel =
+    contextWindow >= 1_000_000
+      ? `${Math.round(contextWindow / 1_000_000)}M`
+      : contextWindow >= 1000
+        ? `${Math.round(contextWindow / 1000)}K`
+        : String(contextWindow);
+  const windowText = exact
+    ? `模型上下文窗口 ${windowLabel}（接口/数据集查得）`
+    : `按 ${windowLabel} 窗口估算`;
   const title = usage
-    ? `上下文已用 ${percent}%（按 ${formatTokens(contextWindow)} 窗口估算）\n本轮累计 ${formatTokens(total)} token（输入 ${formatTokens(usage.promptTokens)} / 输出 ${formatTokens(usage.completionTokens)}）`
+    ? `上下文已用 ${percent}%（${windowText}）\n本轮累计 ${formatTokens(total)} token（输入 ${formatTokens(usage.promptTokens)} / 输出 ${formatTokens(usage.completionTokens)}）`
     : '还没有接口回传的用量数据';
 
   const radius = 8;

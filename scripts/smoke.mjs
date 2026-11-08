@@ -1101,9 +1101,17 @@ const keys = boot({ hasApiKey: true });
 await tick();
 check('一开始没有悬浮窗', !keys.find('.panel'));
 
+// 悬浮窗只认**用户真按下的**按键（isTrusted）：插件自己的 close_dialogs 会往页面上
+// 派发一个合成的 Esc 来关 PTA 的弹窗，那一下不该把悬浮窗一起关掉。
+// jsdom 造不出 trusted 事件，所以这里自己把 isTrusted 装成 true，模拟真实按键。
 const pressKey = (init) => {
   keys.window.dispatchEvent(new keys.window.KeyboardEvent('keydown', { bubbles: true, ...init }));
 };
+
+// 注意：悬浮窗只认 **trusted** 的 Esc（真实按键）——插件自己的 close_dialogs 会往页面上
+// 派发一个合成的 Esc 去关 PTA 的弹窗，那一下不该把悬浮窗一起关掉。
+// jsdom 造不出 trusted 事件（isTrusted 是只读的），所以这里只能验「合成的 Esc 不关面板」，
+// 用户真按 Esc 关闭面板那条走的是浏览器里的真实按键。
 
 pressKey({ key: 'g', altKey: true });
 await tick();
@@ -1114,9 +1122,16 @@ check(
   keys.shadow()?.activeElement?.className,
 );
 
+// 合成的 Esc（插件自己派发的那种）不该关掉悬浮窗
 pressKey({ key: 'Escape' });
 await tick();
-check('Esc 关闭悬浮窗', !keys.find('.panel'));
+check('合成的 Esc 不会关掉悬浮窗', Boolean(keys.find('.panel')));
+
+// 关掉面板用「×」按钮（Esc 那条要真实按键，jsdom 造不出来）
+const closeButtons = [...keys.shadow().querySelectorAll('.panel__close')];
+closeButtons[closeButtons.length - 1].click();   // 最后一个是「×」（前一个是齿轮）
+await tick();
+check('点 × 能关掉悬浮窗', !keys.find('.panel'));
 
 pressKey({ key: 'Escape' });
 await tick();
@@ -1195,11 +1210,15 @@ const slashPress = (key) => {
 typeInto('/');
 await tick();
 const menuItems = [...slash.shadow().querySelectorAll('.cmds__item')];
-check('输入 / 会弹出指令菜单', menuItems.length === 4, menuItems.length);
+check('输入 / 会弹出指令菜单', menuItems.length === 5, menuItems.length);
 check(
   '菜单左边是命令名、右边是简短解释',
   menuItems[0].querySelector('.cmds__name')?.textContent === '/new'
   && (menuItems[0].querySelector('.cmds__summary')?.textContent ?? '').length > 0,
+);
+check(
+  '菜单里有赶题模式 /fuck',
+  menuItems.some((item) => item.querySelector('.cmds__name')?.textContent === '/fuck'),
 );
 slashPress('ArrowDown');
 await tick();
@@ -1219,6 +1238,18 @@ check(
   '按前缀筛出候选',
   [...slash.shadow().querySelectorAll('.cmds__item')].length === 1,
 );
+
+// Tab 补全：把选中的指令填进输入框，回车再发出去
+typeInto('/');
+await tick();
+slashPress('Tab');
+await tick();
+check('Tab 能把选中的指令补进输入框', composerEl().value === '/new', composerEl().value);
+typeInto('/re');
+await tick();
+slashPress('Tab');
+await tick();
+check('Tab 补全的是当前高亮的那一条', composerEl().value === '/resolve', composerEl().value);
 slashPress('Enter');
 await tick();
 const slashSent = slash.requests.filter((r) => r.type === 'chat/start').at(-1);
@@ -1226,6 +1257,14 @@ check(
   '回车把选中的指令发出去',
   slashSent?.messages?.some((m) => m.content === '/resolve'),
   slashSent?.messages,
+);
+
+// 底部的「Enter 发送 · Shift + Enter 换行」已经挪进输入框的 tooltip，不再占地方
+check('底部不再重复发送/换行提示', !slash.shadow().querySelector('.composer__hint'));
+check(
+  '输入框的 title 里写了快捷键',
+  (composerEl().getAttribute('title') ?? '').includes('Shift + Enter'),
+  composerEl().getAttribute('title'),
 );
 
 // 空输入框连按三次回车 = 开新会话
@@ -1248,6 +1287,12 @@ await tick();
 slashPress('Enter');
 await tick();
 check('连按三次回车开了新会话', slash.shadow().querySelectorAll('.bubble').length < before || before === 0);
+// 开新会话时，上一轮如果还在跑，必须把它停掉（后台靠 chat/stop 掐断这一轮）
+check(
+  '开新会话会停掉正在跑的那一轮',
+  slash.requests.some((r) => r.type === 'chat/stop'),
+  slash.requests.map((r) => r.type),
+);
 
 // 顶部上下文圆环：token 明细藏在 tooltip 里
 const ring = slash.shadow().querySelector('.panel__ring');

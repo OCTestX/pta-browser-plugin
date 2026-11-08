@@ -70,8 +70,15 @@ export function Composer({
     onSendText?.(text);
   };
 
+  /** Tab 补全：把选中的指令填进输入框（不直接发出去，让老用户习惯的「Tab 然后回车」成立） */
+  const completeCommand = (index: number) => {
+    const command = commands[index];
+    if (!command) return;
+    onChange(command.name);
+  };
+
   const handleKeyDown = (event: KeyboardEvent<HTMLTextAreaElement>) => {
-    // 指令菜单开着时，上下键选、车确认
+    // 指令菜单开着时，上下键选、Tab 补全、回车发送
     if (menuOpen) {
       if (event.key === 'ArrowDown') {
         event.preventDefault();
@@ -81,6 +88,12 @@ export function Composer({
       if (event.key === 'ArrowUp') {
         event.preventDefault();
         setCommandIndex((index) => (index - 1 + commands.length) % commands.length);
+        return;
+      }
+      if (event.key === 'Tab') {
+        // Tab 在输入框里默认是跳焦点，抢过来当「补全当前选中的指令」用
+        event.preventDefault();
+        completeCommand(commandIndex);
         return;
       }
       if (event.key === 'Enter' && !event.shiftKey && !event.nativeEvent.isComposing) {
@@ -144,6 +157,7 @@ export function Composer({
         rows={2}
         autoFocus
         disabled={streaming}
+        title="Enter 发送，Shift + Enter 换行；输入框为空时连按三次回车开新会话；输入 / 可以看指令菜单"
         placeholder={
           streaming
             ? '正在生成，可以点「停止」打断'
@@ -159,11 +173,9 @@ export function Composer({
         onKeyDown={handleKeyDown}
       />
       <div className="composer__footer">
-        <span className="composer__hint">
-          {emptyEnterLeft > 0
-            ? `再按 ${emptyEnterLeft} 次回车开新会话`
-            : 'Enter 发送 · Shift + Enter 换行'}
-        </span>
+        {/* 底部只留「连按几次回车开新会话」这种一次性提示；
+            发送/换行的快捷键已经写进输入框的 title（鼠标停上去就能看到），不再重复占地方 */}
+        {emptyEnterLeft > 0 && <span className="composer__hint">再按 {emptyEnterLeft} 次回车开新会话</span>}
         <div className="composer__actions">
           {streaming ? (
             <button type="button" className="composer__send composer__send--stop" onClick={onStop}>

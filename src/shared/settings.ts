@@ -10,6 +10,11 @@ export interface Settings {
    * 用 PTA 的编译器编译、PTA 的机器跑，编译错误也从 PTA 的「编译器输出」里读。
    */
   forcePtaRun: boolean;
+  /**
+   * 当前模型的上下文窗口（真实值，由后台查接口 / models.dev 拿到）。
+   * 查不到就不写这一项，content script 会退回按模型名估算。
+   */
+  contextWindow?: number;
 }
 
 /** 内置的模型提供商：设置页点一下就把接口地址填上，省得手打 */
@@ -37,6 +42,11 @@ export interface SettingsView {
   vlmMode?: 'auto' | 'on' | 'off';
   /** 是否强制用 PTA 的运行环境跑代码（默认关） */
   forcePtaRun?: boolean;
+  /**
+   * 模型真实的上下文窗口（后台查到的精确值）。
+   * 没有这一项说明没查到，content script 会按模型名估算并在 tooltip 里说明。
+   */
+  contextWindow?: number;
   /** 是否检测到有新版本可用 */
   updateAvailable?: boolean;
   /** 最新发布的标签名（如 v3.4.0），用于在提示里展示 */
@@ -106,4 +116,18 @@ export function contextWindowFor(model: string): number {
   if (name.startsWith('gpt-4')) return 128_000;
   if (name.startsWith('qwen')) return 128_000;
   return DEFAULT_CONTEXT_WINDOW;
+}
+
+/**
+ * 顶栏圆环用的窗口大小。
+ *
+ * exact 是后台查接口 / models.dev 拿到的真实值，有就用它；
+ * 查不到（没存 / 不是正数）才退回按模型名猜的那张表，并标记 exact=false，
+ * 好让 tooltip 告诉用户「这是估的」。
+ */
+export function pickContextWindow(model: string, exact?: number | null): { window: number; exact: boolean } {
+  if (typeof exact === 'number' && Number.isFinite(exact) && exact > 0) {
+    return { window: exact, exact: true };
+  }
+  return { window: contextWindowFor(model), exact: false };
 }

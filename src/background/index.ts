@@ -2,6 +2,7 @@ import { isAbortError } from '../shared/abort';
 import { ext } from '../shared/browser';
 import { isContentRequest } from '../shared/messages';
 import type {
+  AttachChatResponse,
   BackgroundEvent,
   DiffPayload,
   ModelsListResponse,
@@ -231,6 +232,19 @@ ext.runtime.onMessage.addListener((message: unknown, sender, sendResponse) => {
       case 'chat/start':
         sendResponse(await startChat(message.requestId, message.messages, tabId));
         return;
+      case 'chat/attach': {
+        // 页面重新挂载后（刷新、整页跳转），把这一页正在跑的那一轮重新接上：
+        // 没有它，面板就收不到那一轮的事件，「停止」也按不到后台
+        let requestId = '';
+        for (const [id, idTab] of runningRequestTabs) {
+          if (idTab === tabId && runningRequests.has(id)) {
+            requestId = id;
+            break;
+          }
+        }
+        sendResponse({ ok: Boolean(requestId), requestId } satisfies AttachChatResponse);
+        return;
+      }
       case 'chat/stop': {
         // 面板只有一个「停止」：这一轮对话在跑、或者正在写作答区，都归它管
         runningRequests.get(message.requestId)?.abort();
