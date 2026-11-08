@@ -116,7 +116,21 @@ const isEditableElement = (node) => {
 
 整个工具栏是挂在 `body` 上的 `position: fixed` 浮层（`pointer-events: none`，只有按钮本身可点），`document.body` 而不是 React 树里的节点，换题重渲染也删不掉它。
 
+**展开「Test Case」之后页面会多出第二个可写编辑器**：测试输入框也是 CodeMirror（`contenteditable="true"`，`cmTile.view` 一样能拿到）。如果还按「文本最长的那个」挑编辑器，测试输入一长就会绑错对象，工具栏跑去跟着测试输入框。`findEditor`（`editor-agent.ts`）现在按「在不在 `.CodingProblemAnswerForm` 里 → 有没有实际尺寸 → 文本长度」打分。
+
+**染色性能：逐行定位，不要逐括号查坐标**。老实现给每个括号调一次 `view.domAtPos(at)`（布局查询），一屏几十个括号就是几十次，滚动、光标移动引起重渲染时还各来一轮——表现就是「染色慢、一动就掉色」。现在改成：对每个 `.cm-line` 调一次 `view.posAtDOM(line, 0)` 拿到行首下标，再**按子节点逐字符**累加（不是只数 span——`=` `;` `,` 这类标点是裸文本节点，只数 span 会让一行之后的所有下标整体偏移，颜色直接对不上），`Map` 查层数，整屏只有 ≤50 次查询。span 上盖「本轮代号」，只有没被盖到的才恢复默认样式，所以不需要「先全清再全刷」，也就不会闪。
+
+**CM6 会清掉我们写的内联样式**：光标一动、行被重画时，CM6 会重写这一行的 span（有时是原地把 `style` 清空），上一轮上的颜色就没了。所以除了定时巡检，还要在 `view.contentDOM` 上挂 `MutationObserver`（`childList` + `subtree` + `style`/`class` 属性），一有变动就在**同一帧**（`requestAnimationFrame`）重刷；写样式前先比一下旧值，值没变就不写，否则自己的写入又会触发观察器，来回自激。只靠 500ms 巡检的表现就是「光标一动颜色消失，过一会才慢慢回来」。
+
+**状态栏是作答表单的兄弟节点，不是子节点**：`.CodingProblemAnswerForm` 的父节点里是 `[表单, 状态栏]`。按几何在整片 `div` 里扫「高度 24~64、贴着代码框下沿」的节点会撞上展开后的测试用例面板（连代码行 `.cm-line` 都符合这两个条件），所以找法改成**先看 `form.nextElementSibling`**，几何只做退路，并且每轮都校验「找到的那条确实贴着代码框下沿」，不合格就不放。
+
+**跟随重排用 `ResizeObserver` 而不是定时巡检**：展开/收起测试用例面板时页面不滚、窗口不变，只有代码框变矮，`scroll`/`resize` 事件一个都不来；靠 500ms 巡检会有肉眼可见的滞后。现在观察 `.cm-editor` 和状态栏，尺寸一变就 `requestAnimationFrame` 里重排一次。
+
 **SPA 换题**：换题是前端路由，注入的 agent 跨题存活，但编辑器 DOM 会被换掉。agent 每 500ms 比对一次当前可写 `.cm-content`，变了就重新绑定（不靠 MutationObserver 监听整个页面，代价太大）。
+
+**clang 把行尾的错指在换行符上**：`printf("")` 缺分号时，诊断给的行列落在**行尾**（换行符那个位置）。直接当字符下标用，区间会跨到下一行，页面「跨行只画第一行」的判断就把整条诊断吃掉——现象是「底部报了错，代码里一条波浪线都没有」。`diagnosticRange`（`compile.ts`）现在会先把落点往回退到本行最后一个非空白字符。
+
+**只有 error 画波浪线**：clang 的 warning（`-Wimplicit-function-declaration` 之类）在初学者的代码里密度很高，满屏波浪线会把真正的 error 盖住；warning 只进状态栏计数。
 
 **clang 的列号按 UTF-8 字节算**：同一行前面插一个 `/*中*/`（5 字符 / 7 字节），列号从 20 变成 27。所以 `offsetOfPosition` 必须先把行内字节序列切到第 `column-1` 个字节，再数回字符数。含中文注释的行上差这一步，波浪线就会往右飘。
 

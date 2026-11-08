@@ -243,17 +243,24 @@ export function isCheckableLanguage(language: string): boolean {
 
 /**
  * 诊断指向的那一段字符：用来画波浪线。
+ *
+ * clang 说「这一行少了分号」时把位置指在**行尾**，落点其实是换行符——直接当字符下标用，
+ * 区间会跨到下一行，页面那边「跨行不画」的判断会把整条诊断吃掉（实测就是这样：
+ * 底部报了错，代码里一条波浪线都没有）。所以落点先往回退到本行最后一个非空白字符。
+ *
  * 落在标识符/数字上就一直取到标识符结束，否则取到行尾的空白或分隔符之前（最多 40 字符）。
  */
 export function diagnosticRange(code: string, from: number): { from: number; to: number } {
   const source = String(code ?? '');
-  if (from < 0 || from >= source.length) return { from: Math.max(0, from), to: Math.max(0, from) };
-  const lineEnd = source.indexOf('\n', from) < 0 ? source.length : source.indexOf('\n', from);
-  const word = /^[A-Za-z_][A-Za-z_0-9]*/.exec(source.slice(from, lineEnd));
-  if (word) return { from, to: from + word[0].length };
-  let to = from;
-  while (to < lineEnd && to - from < 40 && !/[\s;,)}]/.test(source[to])) to += 1;
-  return { from, to: to > from ? to : Math.min(from + 1, source.length) };
+  if (source.length === 0) return { from: 0, to: 0 };
+  let start = Math.max(0, Math.min(from, source.length - 1));
+  while (start > 0 && /[\s]/.test(source[start])) start -= 1;
+  const lineEnd = source.indexOf('\n', start) < 0 ? source.length : source.indexOf('\n', start);
+  const word = /^[A-Za-z_][A-Za-z_0-9]*/.exec(source.slice(start, lineEnd));
+  if (word) return { from: start, to: start + word[0].length };
+  let to = start;
+  while (to < lineEnd && to - start < 40 && !/[\s;,)}]/.test(source[to])) to += 1;
+  return { from: start, to: to > start ? to : Math.min(start + 1, source.length) };
 }
 
 /**

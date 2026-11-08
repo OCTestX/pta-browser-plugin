@@ -16,14 +16,54 @@ const check = (label, ok, detail) => {
 
 // ── 格式化 ──────────────────────────────────────────────────────────────
 
-// formatCode 刻意不拆行、也不加运算符空格（只动行首缩进/行尾空白/空行），
-// 所以这里给的是已经断好行的输入：能钉住「按花括号重排缩进」这件事就够了，
-// 顺带证明它没有偷偷改 token 内容（`int x=1;` 原样保留）。
+// C：按花括号重排缩进 + 运算符两侧补空格
 const cFormatted = formatCode('void f() {\nint x=1;\n}\n', 'c');
 check(
-  'C 代码按花括号重排缩进，} 顶格',
-  cFormatted === 'void f() {\n    int x=1;\n}',
+  'C 代码按花括号重排缩进、运算符两侧补空格',
+  cFormatted === 'void f() {\n    int x = 1;\n}',
   cFormatted,
+);
+
+// 用户报过的两个例子：无花括号的控制体要缩进一层；乘号两侧要空格
+const ifBody = formatCode('if(n==1)\nreturn 1;', 'c');
+check(
+  '无花括号的 if 体缩进一层，== 两侧补空格',
+  ifBody === 'if(n == 1)\n    return 1;',
+  ifBody,
+);
+check(
+  '乘号两侧补空格（7*2 → 7 * 2）',
+  formatCode('7*2', 'c') === '7 * 2',
+  formatCode('7*2', 'c'),
+);
+
+// 声明符 / 解引用 / 自增不能被当成乘法，否则 `int *p` 会变成 `int * p`
+const pointers = formatCode('int *p=&a;\nint b=*p;\nx++;\ny=a*-b;', 'c');
+check(
+  '声明符与一元运算符不被当成二元运算符',
+  pointers === 'int *p = &a;\nint b = *p;\nx++;\ny = a * -b;',
+  pointers,
+);
+
+// 字符串和注释里的内容一个字都不能动
+const literalSafe = formatCode('char *s="a+b=c";  // it\'s 1+2\nint n=1+2;', 'c');
+check(
+  '字符串与注释内容原样保留',
+  literalSafe.split('\n')[0] === 'char *s = "a+b=c"; // it\'s 1+2'
+    && literalSafe.split('\n')[1] === 'int n = 1 + 2;',
+  literalSafe,
+);
+
+// 幂等：按两下按钮不能让它一直变
+const once = formatCode('int main(){int a=1;\nif(a>0){\nreturn a;}\nreturn 0;}', 'c');
+check('整理是幂等的', once === formatCode(once, 'c'), { once, again: formatCode(once, 'c') });
+
+// 预处理指令顶格，且行里的 `<` `>` 不能被当成比较运算符
+const preprocessor = formatCode('#include<stdio.h>\nint main() {\nreturn 0;\n}', 'c');
+check(
+  '预处理指令顶格且原样保留',
+  preprocessor.split('\n')[0] === '#include<stdio.h>',
+  preprocessor,
 );
 
 // 字符串里的 `{` 不该被当成开括号，否则后面整段都会多缩一层
@@ -35,11 +75,11 @@ check(
   stringBraces,
 );
 
-// Python 的缩进是语义，只许把 Tab 换成 4 空格，层级不能动
-const pythonFormatted = formatCode('def f():\n\tx = 1\n', 'python3');
+// Python：缩进是语义，只规范运算符空格（Tab 统一成 4 空格）
+const pythonFormatted = formatCode('def f(a,b):\n\tx=a+b\n\treturn x\n', 'python3');
 check(
-  'Python 只把 Tab 换成 4 空格，不改变缩进层级',
-  pythonFormatted === 'def f():\n    x = 1',
+  'Python 只规范运算符空格，缩进层级不动',
+  pythonFormatted === 'def f(a, b):\n    x = a + b\n    return x',
   pythonFormatted,
 );
 

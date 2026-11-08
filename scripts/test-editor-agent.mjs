@@ -256,7 +256,8 @@ async function runScenario(page) {
   // 只判「非空」会把徽标也算进来；按 url(...) 判才是真的「有图片背景」，也就是波浪线
   const isWave = (node) => node.tagName === 'DIV' && node.style.backgroundImage.startsWith('url(');
   const squiggles = layer ? [...layer.querySelectorAll('div')].filter(isWave) : [];
-  check('诊断位置上画出波浪线', squiggles.length === 2, squiggles.length);
+  // 只有 error 画波浪线：warning 只进徽标计数，不画线
+  check('只有 error 画波浪线', squiggles.length === 1, squiggles.length);
 
   send(window, { kind: 'diagnostics', text: 'Y', boxes: [], note: NOTE });
   check('没做检查时徽标换成 note 文案', badge.textContent === NOTE, badge.textContent);

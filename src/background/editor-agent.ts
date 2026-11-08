@@ -63,6 +63,13 @@ export const EDITOR_AGENT_SOURCE = String.raw`return (() => {
     paintDirty: false,
     rectDirty: false,
     tooltipKey: '',
+    paintGeneration: 0,
+    bottomBar: null,       // 代码框底部状态栏（缓存，别每轮全量找）
+    barLookupAt: 0,
+    resizeObserver: null,
+    paintObserver: null,
+    layoutFrame: 0,
+    squiggleFrame: 0,
   };
 
   const post = (payload) => {
@@ -117,15 +124,21 @@ export const EDITOR_AGENT_SOURCE = String.raw`return (() => {
   const findEditor = () => {
     const nodes = document.querySelectorAll('.cm-content');
     let best = null;
-    let bestLength = -1;
+    let bestScore = -1;
     for (const node of nodes) {
       if (!isEditable(node)) continue;
       const view = viewOf(node);
       if (!view) continue;
-      const length = view.state.doc.length;
-      if (length > bestLength) {
+      // 展开「Test Case」之后页面上会多出第二个可写编辑器（测试输入框），
+      // 只按文本长度挑，它长起来就会绑错对象。所以先看「在不在作答表单里」，
+      // 再看有没有实际尺寸，最后才比文本长度。
+      const rect = node.getBoundingClientRect();
+      const inAnswerForm = node.closest('[class*="CodingProblemAnswerForm"]') ? 1 : 0;
+      const visible = rect.width > 0 && rect.height > 0 ? 1 : 0;
+      const score = inAnswerForm * 1e9 + visible * 1e6 + view.state.doc.length;
+      if (score > bestScore) {
         best = { el: node, view: view };
-        bestLength = length;
+        bestScore = score;
       }
     }
     return best;
@@ -235,52 +248,103 @@ export const EDITOR_AGENT_SOURCE = String.raw`return (() => {
   /* ---------- 彩虹括号 ---------- */
 
   // 只改 CodeMirror 自己的单字符 span 的颜色，不盖字形遮罩：
-  // 不遮挡文本、不影响选区，也不用复制字体度量
+  // 不遮挡文本、不影响选区，也不用复制字体度量。
+  //
+  // 每轮在 span 上盖一个「本轮代号」：没被盖到的（行被重渲染、括号被删、滚出视口）
+  // 恢复默认样式。这样不需要「先全清再全刷」，也就不会闪一下再回来。
+  const BRACKETS = '()[]{}';
+
+  const clearSpan = (span) => {
+    if (!span || !span.style) return;
+    span.style.color = '';
+    span.style.fontWeight = '';
+  };
+
   const resetPaint = () => {
-    for (const span of state.painted) {
-      if (span && span.style) span.style.color = '';
-    }
+    for (const span of state.painted) clearSpan(span);
     state.painted = [];
+  };
+
+  // 逐行定位：每行只问一次「这一行起点在文档里的下标」，再按 span 的字符数往后累加。
+  // 早先是给每个括号单独调 domAtPos（布局查询）：一屏几十个括号就是几十次查询，
+  // 每 500ms 一次，滚动 / 光标移动引起重渲染还各来一次——这就是「染色慢、一动就掉色」的来源。
+  const paintByLines = (view, marks, generation, painted) => {
+    const content = view.contentDOM;
+    if (!content || typeof view.posAtDOM !== 'function') return false;
+    for (const line of content.querySelectorAll('.cm-line')) {
+      let at = -1;
+      try { at = view.posAtDOM(line, 0); } catch (error) { at = -1; }
+      if (at < 0) continue;
+      // 按**子节点逐字符**累加：CM6 会把每个 token 包成一个 span，但等号、分号、逗号
+      // 这类标点是裸文本节点。早先只累加 span 的文字长度，一行里出现裸标点之后，
+      // 后面所有括号的下标就整体偏了——表现就是「光标一动、行一重渲染，颜色整片消失」。
+      for (const child of line.childNodes) {
+        const nodeType = child.nodeType;
+        if (nodeType !== 3 && nodeType !== 1) continue;
+        const text = (nodeType === 3 ? child.nodeValue : child.textContent) || '';
+        // 只有「单字符、且没有子元素」的节点才能直接上色：多字符节点上色会染到邻居
+        const single = nodeType === 1 && text.length === 1 && child.childElementCount === 0;
+        for (let index = 0; index < text.length; index += 1) {
+          if (BRACKETS.indexOf(text[index]) < 0) continue;
+          const depth = marks.get(at + index);
+          if (typeof depth === 'number' && single) {
+            const color = COLORS[depth % COLORS.length];
+            // 值没变就不写：写 style 会触发下面的 MutationObserver，来回自激
+            if (child.style.color !== color) child.style.color = color;
+            // 加粗：代码里括号和别的东西一个粗细时，颜色分层不够一眼看出来
+            if (child.style.fontWeight !== '600') child.style.fontWeight = '600';
+            child.__ptaPaint = generation;
+            painted.push(child);
+          }
+        }
+        at += text.length;
+      }
+      at += 1; // 行尾那个换行符
+    }
+    return true;
+  };
+
+  // 退路：页面的 CM6 没有 posAtDOM 时按字符下标反查（慢，但别让功能整块失效）
+  const paintByMarks = (view, marks, generation, painted) => {
+    const doc = view.state.doc;
+    const ranges = view.visibleRanges || [];
+    marks.forEach((depth, at) => {
+      if (painted.length >= 4000) return;
+      if (at < 0 || at >= doc.length) return;
+      if (ranges.length > 0) {
+        let visible = false;
+        for (const range of ranges) {
+          if (at >= range.from && at < range.to) { visible = true; break; }
+        }
+        if (!visible) return;
+      }
+      if (BRACKETS.indexOf(doc.sliceString(at, at + 1)) < 0) return;
+      let info = null;
+      try { info = view.domAtPos(at); } catch (error) { return; }
+      if (!info || !info.node || info.node.nodeType !== 3) return;
+      if ((info.node.nodeValue || '').charAt(info.offset) !== doc.sliceString(at, at + 1)) return;
+      const span = info.node.parentElement;
+      if (!span || (span.textContent || '').length !== 1) return;
+      span.style.color = COLORS[depth % COLORS.length];
+      span.style.fontWeight = '600';
+      span.__ptaPaint = generation;
+      painted.push(span);
+    });
   };
 
   const paintRainbow = () => {
     const view = state.view;
     if (!view || !state.marks) return;
-    const doc = view.state.doc;
-    const length = doc.length;
-    const ranges = view.visibleRanges || [];
-    resetPaint();
-
-    state.marks.forEach((depth, at) => {
-      if (state.painted.length >= 4000) return;
-      if (at < 0 || at >= length) return;
-      let visible = ranges.length === 0;
-      for (const range of ranges) {
-        if (at >= range.from && at < range.to) { visible = true; break; }
-      }
-      if (!visible) return;
-
-      const expected = doc.sliceString(at, at + 1);
-      if ('()[]{}'.indexOf(expected) < 0) return;
-
-      let info = null;
-      try { info = view.domAtPos(at); } catch (error) { return; }
-      if (!info || !info.node) return;
-
-      let span = null;
-      if (info.node.nodeType === 3) {
-        // 定位不准就放弃：宁可这一处不上色，也不要给别的字符染色
-        if ((info.node.nodeValue || '').charAt(info.offset) !== expected) return;
-        span = info.node.parentElement;
-      } else if (info.node.nodeType === 1) {
-        span = info.node;
-      }
-      if (!span) return;
-      // 多字符 span 上色会连邻居一起染：实测括号都是单字符 span，对不上就跳过
-      if ((span.textContent || '').length !== 1) return;
-      span.style.color = COLORS[depth % COLORS.length];
-      state.painted.push(span);
-    });
+    const generation = state.paintGeneration + 1;
+    state.paintGeneration = generation;
+    const painted = [];
+    if (!paintByLines(view, state.marks, generation, painted)) {
+      paintByMarks(view, state.marks, generation, painted);
+    }
+    for (const span of state.painted) {
+      if (span && span.__ptaPaint !== generation) clearSpan(span);
+    }
+    state.painted = painted;
   };
 
   /* ---------- 波浪线 ---------- */
@@ -315,11 +379,16 @@ export const EDITOR_AGENT_SOURCE = String.raw`return (() => {
 
     const doc = view.state.doc;
     for (const box of state.boxes) {
-      if (box.severity === 'note') continue;
-      const at = Math.max(0, Math.min(box.from, doc.length));
+      // 只有 error 画波浪线：warning 多是「变量没用过」这类提示，满屏波浪线会把真正的错盖住
+      if (box.severity !== 'error') continue;
+      if (doc.length === 0) continue;
+      const at = Math.max(0, Math.min(box.from, doc.length - 1));
       const line = doc.lineAt(at);
-      const start = Math.max(line.from, at);
+      // clang 说「这一行少了分号」时把位置指在行尾，落点就是换行符：
+      // 往回退一个字符，否则 start/end 会跨到下一行，被下面的跨行判断吃掉，结果一条都画不出来
+      const start = Math.min(Math.max(line.from, at), Math.max(line.from, line.to - 1));
       const end = Math.max(start + 1, Math.min(box.to, line.to));
+      if (end <= start) continue;
       let a = null;
       let b = null;
       try {
@@ -465,26 +534,65 @@ export const EDITOR_AGENT_SOURCE = String.raw`return (() => {
 
   // 代码框底部那条状态栏（左端是「Test Case」按钮）：实测它的右侧是一大片空白，
   // 把工具栏放这儿既不挡代码，也不用去挤头部行（头部行全是语言选择器和 PTA 自己的图标）。
-  // 不按类名找（类名带哈希、会变），按几何找：紧贴在代码框下沿、宽度和代码框差不多的那条。
+  //
+  // 找法：**按结构**——状态栏就是作答表单后面紧跟的那一个 div。早先按几何扫整片 div，
+  // 展开「Test Case」之后面板里也有 24~64px 高的行（连代码行 .cm-line 都符合），
+  // 会撞上它们；结构优先、几何只做退路。
   const findBottomBar = () => {
-    const editor = state.el.closest('.cm-editor') || state.el;
-    const box = editor.getBoundingClientRect();
-    // 「Test Case」那条状态栏是作答表单的**兄弟**节点（表单外面那一层才有它），
-    // 所以从表单的父节点往下找；找不到表单就只能退回整页
     const form = state.el.closest('[class*="CodingProblemAnswerForm"]');
-    const scope = (form && form.parentElement) || form || document.body;
+    if (form) {
+      const formWidth = form.getBoundingClientRect().width;
+      let node = form.nextElementSibling;
+      for (let step = 0; node && step < 4; step += 1) {
+        const rect = node.getBoundingClientRect();
+        if (rect.height >= 24 && rect.height <= 64 && rect.width >= formWidth * 0.6) return node;
+        node = node.nextElementSibling;
+      }
+      const last = form.lastElementChild;
+      if (last && last !== form) {
+        const rect = last.getBoundingClientRect();
+        if (rect.height >= 24 && rect.height <= 64 && rect.width >= formWidth * 0.6) return last;
+      }
+    }
+    // 退路：在表单的父节点里按几何找，但编辑器内部的节点一律不算
+    const box = (state.el.closest('.cm-editor') || state.el).getBoundingClientRect();
+    const scope = (form && form.parentElement) || document.body;
     let best = null;
     let bestWidth = 0;
     for (const node of scope.querySelectorAll('div')) {
+      if (node.closest('.cm-editor')) continue;
       const rect = node.getBoundingClientRect();
       if (rect.height < 24 || rect.height > 64) continue;
-      if (Math.abs(rect.top - box.bottom) > 6) continue;
+      if (Math.abs(rect.top - box.bottom) > 8) continue;
       if (rect.width < box.width * 0.6) continue;
       if (rect.width <= bestWidth) continue;
       best = node;
       bestWidth = rect.width;
     }
     return best;
+  };
+
+  // 找到的那条必须真的贴着代码框下沿：否则宁可不放（退回代码框内部），
+  // 也别把工具栏摆到面板里某个碰巧同高的行上
+  const barFitsEditor = (bar) => {
+    if (!bar || !bar.isConnected) return false;
+    const box = (state.el.closest('.cm-editor') || state.el).getBoundingClientRect();
+    const rect = bar.getBoundingClientRect();
+    return rect.height >= 24 && rect.height <= 64
+      && Math.abs(rect.top - box.bottom) <= 8
+      && rect.width >= box.width * 0.5;
+  };
+
+  const ensureBottomBar = () => {
+    if (state.bottomBar && barFitsEditor(state.bottomBar)) return state.bottomBar;
+    state.bottomBar = null;
+    const found = findBottomBar();
+    if (!barFitsEditor(found)) return null;
+    state.bottomBar = found;
+    if (state.resizeObserver) {
+      try { state.resizeObserver.observe(found); } catch (error) { /* 观察不了就算了 */ }
+    }
+    return found;
   };
 
   const layout = () => {
@@ -498,7 +606,7 @@ export const EDITOR_AGENT_SOURCE = String.raw`return (() => {
     const width = state.bar.offsetWidth || 160;
     const height = state.bar.offsetHeight || 27;
 
-    const bar = findBottomBar();
+    const bar = ensureBottomBar();
     if (bar) {
       const barRect = bar.getBoundingClientRect();
       // 「Test Case」按钮右边开始摆；右边还有 PTA 自己的 ? 和折叠箭头，别压上去
@@ -552,6 +660,14 @@ export const EDITOR_AGENT_SOURCE = String.raw`return (() => {
 
   const unbind = () => {
     removeListeners();
+    if (state.resizeObserver) {
+      try { state.resizeObserver.disconnect(); } catch (error) { /* 已经断了 */ }
+    }
+    if (state.paintObserver) {
+      try { state.paintObserver.disconnect(); } catch (error) { /* 已经断了 */ }
+    }
+    state.bottomBar = null;
+    state.barLookupAt = 0;
     if (state.docTimer) { clearTimeout(state.docTimer); state.docTimer = 0; }
     resetPaint();
     state.el = null;
@@ -590,6 +706,28 @@ export const EDITOR_AGENT_SOURCE = String.raw`return (() => {
     state.el.addEventListener('mousemove', onMove);
     state.el.addEventListener('mouseleave', hideTip);
 
+    // 代码框尺寸一变就立刻重排：展开/收起「Test Case」、拖动分栏、字体变化都走这里，
+    // 不等 500ms 巡检，否则工具栏会明显滞后一截
+    state.bottomBar = null;
+    state.barLookupAt = 0;
+    // 编辑器自己的 DOM 一变（重画行、改选区、换主题）就同帧重刷颜色：
+    // CM6 会把 span 上的内联样式清掉，只靠 isConnected 判断不出来
+    if (typeof MutationObserver === 'function') {
+      if (state.paintObserver) state.paintObserver.disconnect();
+      state.paintObserver = new MutationObserver(() => scheduleLayout());
+      try {
+        state.paintObserver.observe(found.view.contentDOM, { childList: true, subtree: true, attributes: true, attributeFilter: ['style', 'class'], characterData: true });
+      } catch (error) { /* 观察不了就算了 */ }
+    }
+    if (typeof ResizeObserver === 'function') {
+      if (!state.resizeObserver) state.resizeObserver = new ResizeObserver(() => scheduleLayout());
+      try { state.resizeObserver.observe(found.el.closest('.cm-editor') || found.el); } catch (error) { /* 观察不了就算了 */ }
+      const bar = ensureBottomBar();
+      if (bar) {
+        try { state.resizeObserver.observe(bar); } catch (error) { /* 观察不了就算了 */ }
+      }
+    }
+
     updateBadge();
     post({ kind: 'hello', version: VERSION, language: readLanguage() });
     syncDoc(true);
@@ -612,9 +750,10 @@ export const EDITOR_AGENT_SOURCE = String.raw`return (() => {
 
     syncDoc(false);
     layout();
-    // CM6 重新渲染行之后旧 span 会被丢掉，颜色跟着没了；发现上过色的节点
-    // 已经不在文档里就整片重刷（比每 500ms 无条件重刷省得多）
-    if (!state.paintDirty && state.painted.length > 0 && !state.painted[0].isConnected) {
+    // CM6 重新渲染行（移动光标会重画当前行）之后旧 span 会被丢掉，颜色跟着没了。
+    // 只要发现**任何**一个上过色的节点掉出文档就重刷一次：重刷本身很便宜（每行一次
+    // posAtDOM），但漏掉的话看起来就是「光标一动颜色就没了」。
+    if (!state.paintDirty && state.painted.some((span) => !span.isConnected || !span.style.color)) {
       state.paintDirty = true;
     }
     if (state.paintDirty) {
@@ -683,17 +822,30 @@ export const EDITOR_AGENT_SOURCE = String.raw`return (() => {
     hideTip();
   };
 
-  // 整页滚动（整个作答面板一起动）不会触发编辑器自己的 scroll 事件，
-  // 但波浪线和工具栏都是按视口坐标摆的，必须跟着重排
-  let frame = 0;
-  const onPageScroll = () => {
+  // 统一的「尽快重排」入口：rAF 合帧，避免一次交互里连做好几次布局。
+  // 点「Test Case」展开面板时页面不滚、窗口不变，只有代码框变矮——
+  // 光靠 scroll/resize 事件是收不到的，所以下面还会挂 ResizeObserver。
+  const scheduleLayout = () => {
     hideTip();
-    if (frame) return;
-    frame = requestAnimationFrame(() => {
-      frame = 0;
+    // CM6 重画一行时会顺手清掉 span 上的内联样式，所以「重排」和「重刷颜色」一起做，
+    // 否则就得等下一轮巡检才补回来——那就是用户看到的「颜色闪一下才回来」
+    state.paintDirty = true;
+    if (state.layoutFrame) return;
+    state.layoutFrame = requestAnimationFrame(() => {
+      state.layoutFrame = 0;
+      if (state.paintDirty) {
+        state.paintDirty = false;
+        paintRainbow();
+      }
       layout();
       renderSquiggles();
     });
+  };
+
+  // 整页滚动（整个作答面板一起动）不会触发编辑器自己的 scroll 事件，
+  // 但波浪线和工具栏都是按视口坐标摆的，必须跟着重排
+  const onPageScroll = () => {
+    scheduleLayout();
   };
 
   /* ---------- 起停 ---------- */
@@ -709,8 +861,17 @@ export const EDITOR_AGENT_SOURCE = String.raw`return (() => {
     window.removeEventListener('message', onMessage);
     window.removeEventListener('resize', onResize);
     window.removeEventListener('scroll', onPageScroll, true);
-    if (frame) cancelAnimationFrame(frame);
-    frame = 0;
+    if (state.layoutFrame) cancelAnimationFrame(state.layoutFrame);
+    if (state.resizeObserver) {
+      try { state.resizeObserver.disconnect(); } catch (error) { /* 已经断了 */ }
+      state.resizeObserver = null;
+    }
+    if (state.paintObserver) {
+      try { state.paintObserver.disconnect(); } catch (error) { /* 已经断了 */ }
+      state.paintObserver = null;
+    }
+    state.layoutFrame = 0;
+    state.bottomBar = null;
     if (state.root) state.root.remove();
     state.root = null;
     state.bar = null;
@@ -728,7 +889,8 @@ export const EDITOR_AGENT_SOURCE = String.raw`return (() => {
   window.addEventListener('resize', onResize);
   window.addEventListener('scroll', onPageScroll, true);
   state.tickTimer = setInterval(tick, 500);
-  globalThis[KEY] = { token: TOKEN, version: VERSION, destroy: destroy };
+  // state 挂出来只为排查（真机上「染色为什么丢了」这类问题，没有它只能靠猜）
+  globalThis[KEY] = { token: TOKEN, version: VERSION, destroy: destroy, state: state };
 
   tick();
   return { status: 'installed', token: TOKEN, version: VERSION };
