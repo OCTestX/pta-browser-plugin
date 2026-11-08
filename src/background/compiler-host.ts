@@ -149,7 +149,7 @@ function getFirefoxWorker(): Worker {
   return firefoxWorker;
 }
 
-async function sendToEngine(data: { id: number; code: string; stdin: string; lang?: string }): Promise<void> {
+async function sendToEngine(data: { id: number; code: string; stdin: string; lang?: string; check?: boolean }): Promise<void> {
   if (canOffscreen) {
     await ensureOffscreenDocument();
     await ext.runtime.sendMessage({ type: 'engine-request', data });
@@ -173,17 +173,15 @@ function keepAliveWhile(id: number): () => void {
   return () => clearInterval(interval);
 }
 
-/**
- * 在内置引擎里编译并运行一段 C 代码（排队执行，阶段化超时）。
- * 传了 signal 就能被「停止」打断：中止会直接把引擎换掉（死循环的程序没有检查点，
- * 留着它会把后面的编译一起堵住），然后以 AbortError 收场。
- */
-export function runInEngine(
-  code: string,
-  stdin: string,
-  signal?: AbortSignal,
-  lang?: 'c' | 'python',
-): Promise<EngineRunResult> {
+interface EnginePayload {
+  code: string;
+  stdin: string;
+  lang?: 'c' | 'python';
+  check?: boolean;
+}
+
+/** 排队送进引擎：引擎单线程，两路请求（编译运行 / 只检查）必须共用一条队列 */
+function enqueueEngine(payload: EnginePayload, signal?: AbortSignal): Promise<EngineRunResult> {
   installListener();
   const attempt = () =>
     new Promise<EngineRunResult>((resolve, reject) => {
@@ -219,7 +217,7 @@ export function runInEngine(
       armTimer(id, entry, 'compile');
       signal?.addEventListener('abort', onAbort, { once: true });
 
-      void sendToEngine({ id, code, stdin, lang }).catch((error: unknown) => {
+      void sendToEngine({ id, ...payload }).catch((error: unknown) => {
         pending.delete(id);
         clearTimeout(entry.timer);
         stopKeepAlive();
@@ -230,4 +228,26 @@ export function runInEngine(
   const run = queue.then(attempt, attempt);
   queue = run.catch(() => undefined);
   return run;
+}
+
+/**
+ * 在内置引擎里编译并运行一段 C 代码（排队执行，阶段化超时）。
+ * 传了 signal 就能被「停止」打断：中止会直接把引擎换掉（死循环的程序没有检查点，
+ * 留着它会把后面的编译一起堵住），然后以 AbortError 收场。
+ */
+export function runInEngine(
+  code: string,
+  stdin: string,
+  signal?: AbortSignal,
+  lang?: 'c' | 'python',
+): Promise<EngineRunResult> {
+  return enqueueEngine({ code, stdin, lang }, signal);
+}
+
+/**
+ * 只做语法检查（不运行）：作答区实时检查用。
+ * 超时按「编译」阶段算（60 秒），但一次检查本身只要几十毫秒。
+ */
+export function checkInEngine(code: string, signal?: AbortSignal): Promise<EngineRunResult> {
+  return enqueueEngine({ code, stdin: '', lang: 'c', check: true }, signal);
 }

@@ -89,6 +89,36 @@ const isEditableElement = (node) => {
 
 **写入**走 `src/background/input-methods.ts`：整段写入是编辑器事务（不触发页面事件），逐字输入是 `src/background/typist.ts` 的算法，真按键由 `src/background/debugger-input.ts` 用 `chrome.debugger` 发 CDP 事件（trusted），拿不到调试器就退回模拟事件并在结果里说明。
 
+## 2.1 作答区增强：为什么非要走 MAIN world
+
+「整理代码 / 彩虹括号 / 实时检查 / 函数注释」这组功能（v4.2 起）的代码位置：
+
+| 层 | 文件 | 干什么 |
+|---|---|---|
+| MAIN world | `src/background/editor-agent.ts`（一段字符串，由 `injectScript` 注入） | 找编辑器、读写正文、算字符坐标、画浮层、命中检测 |
+| 隔离世界 | `src/content/editor-assist.ts` | 让后台装 agent、算括号层数、整理代码、问后台要诊断 |
+| background | `src/background/index.ts` + `src/background/compile.ts` | 注入 agent、跑内置编译器的 `-fsyntax-only` |
+| 共享层 | `src/shared/code-format.ts` / `code-brackets.ts` / `code-diagnostics.ts` / `c-library-docs.ts` | 纯逻辑，Node 里单测（`scripts/test-editor-assist.mjs`） |
+
+**为什么不能让 content script 直接做**：实测（Chrome 150）在隔离世界里读 `.cm-content.cmTile` 是 `undefined`，同一个节点在 MAIN world 里才拿得到 `cmTile.view`（`EditorView`）。读全文、`dispatch` 写回、`coordsAtPos` / `domAtPos` 算坐标，全都只有主世界能做。
+
+**跨世界通信**：`window.postMessage` 双向都能送达（实测）。载荷上带一个每次安装都重新生成的随机 token（`__ptaEditorAssist` 字段），页面自己的消息、别的脚本伪造的消息都被 `isAssistMessage` 筛掉。页面脚本拿不到 `chrome.runtime`，所以「编译检查」这一跳是 主世界 → 隔离世界 → background 转发的。
+
+**彩虹括号不改 DOM 结构**：实测 CM6 把每个括号都渲染成**独立的单字符 span**（`tok-punctuation`），所以直接改这些 span 的 `color` 就够，不盖字形遮罩——不遮挡文本、不影响选区、不用复制字体度量。定位用 `view.domAtPos(offset)` 反查 DOM，并做两道校验：取到的字符必须就是那个括号、span 的 `textContent` 长度必须是 1；对不上就跳过这一处（宁可不上色，也不要染到邻居）。CM6 虚拟化滚动时会重建 span，所以 `scroll` / `resize` 之后按当前文档重刷一遍。
+
+**浮层位置**：实测作答区的头部行（语言选择器 + PTA 自己的 ⚙/帮助/键盘/调试/全屏图标）在 1043px 视口下几乎占满（空隙只有 17/28px），插按钮进去会把 PTA 的按钮挤走。所以工具栏是挂在 `body` 上的 `position: fixed` 浮层（`pointer-events: none`，只有按钮本身可点），定位在代码框右上角——那里只有代码，不会挡住页面控件。`document.body` 而不是 React 树里的节点，换题重渲染也删不掉它。
+
+**SPA 换题**：换题是前端路由，注入的 agent 跨题存活，但编辑器 DOM 会被换掉。agent 每 500ms 比对一次当前可写 `.cm-content`，变了就重新绑定（不靠 MutationObserver 监听整个页面，代价太大）。
+
+**clang 的列号按 UTF-8 字节算**：同一行前面插一个 `/*中*/`（5 字符 / 7 字节），列号从 20 变成 27。所以 `offsetOfPosition` 必须先把行内字节序列切到第 `column-1` 个字节，再数回字符数。含中文注释的行上差这一步，波浪线就会往右飘。
+
+**检查用 `-fsyntax-only`**：单次约 30–45ms（`compile` 约 38ms 且要产出 `.o`）。这条路不产目标文件、不链接、不运行。两个必须注意的引擎细节：
+
+- **不能计入 `MAX_RUNS_PER_ENGINE`**（100 次就重建引擎、重解 38MB sysroot）：实时检查一天能跑几千次。`checkOnEngine` 只复用同一个 memfs 文件 `check.c`（同名覆盖已验证不留残诊断），不碰 `engine.runs`。
+- **`log.text` 有 8MB 上限**，写满后 `hostWrite` 直接 return，之后的切片永远是空的。所以检查路径在日志超过 1MB 时自己把 `log.text` 清空。
+
+**已知引擎噪音**：每次写文件 memfs 会往**真实 stderr** 打 `Assertion failed: IsRegularFileNode(node)`，它不进 `log.text`，不要拿它当诊断。
+
 ## 3. 逐字敲代码
 
 `src/background/typist.ts`。算法要同时对付编辑器的「自动闭合」和「自动缩进」，核心三条：

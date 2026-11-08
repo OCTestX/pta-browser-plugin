@@ -221,4 +221,36 @@ check('适配笔记里的判题词表顺序说明存在', notes.includes('JUDGE_
 check('适配笔记里的编辑器选择器与代码一致', notes.includes('#pta-answer-editor') && ptaScripts.includes('#pta-answer-editor'));
 check('适配笔记提到 MAIN world 注入', notes.includes("world: 'MAIN'") && read('src/background/js-inject.ts').includes("'MAIN'"));
 
+/* ---------- 作答区增强（v4.2 / v5.0） ---------- */
+
+const agentSource = read('src/background/editor-agent.ts');
+const editorAssist = read('src/content/editor-assist.ts');
+const protocolSource = read('src/shared/editor-assist-protocol.ts');
+const bracketsSource = read('src/shared/code-brackets.ts');
+const engineShared = read('public/engine/shared.js');
+const engineCore = read('public/engine/engine-core.js');
+// checkOnEngine 是文件最后一个导出，从它切到结尾就是它的函数体
+const checkOnEngineBody = engineCore.slice(engineCore.indexOf('export async function checkOnEngine'));
+
+check('有括号层数模块（代码）', bracketsSource.includes('export function bracketDepths'));
+check('括号层数对颜色表取模（代码）', bracketsSource.includes('RAINBOW_COLORS.length'));
+check('有跨世界消息契约（代码）', protocolSource.includes('ASSIST_MESSAGE_KEY') && protocolSource.includes('isAssistMessage'));
+check('页面 agent 由后台按 MAIN world 注入（代码）', backgroundIndex.includes('injectScript(tabId, EDITOR_AGENT_SOURCE'));
+check('隔离世界算括号层数（代码）', editorAssist.includes('bracketDepths(message.text)'));
+check('实时检查走 editor/check（代码）', editorAssist.includes("type: 'editor/check'"));
+check('README 记录了作答区增强', readme.includes('### 作答区增强'));
+check('README 记录了整理代码按钮', readme.includes('整理代码'));
+check('README 记录了彩虹括号', readme.includes('彩虹括号'));
+check('README 记录了标准库函数注释', readme.includes('标准库函数注释'));
+check('README 说明了实时检查只支持 C', readme.includes('内置编译器只支持 C'));
+check('README 写明了只做语法检查、不运行代码', readme.includes('只做语法检查'));
+check('README 写明了整理不会覆盖新改动', readme.includes('这次整理直接取消'));
+check('引擎提供只检查的编译路径（代码）', engineShared.includes("'-fsyntax-only'"));
+check('只检查不链接不运行（代码）', checkOnEngineBody.includes("input: 'check.c'") && !checkOnEngineBody.includes('api.link('));
+check('语法检查不计入引擎重建计数（代码）', !checkOnEngineBody.includes('runs += 1'));
+check('适配笔记记录了 MAIN world 与 postMessage', notes.includes('postMessage') && notes.includes('cmTile.view'));
+check('适配笔记记录了 clang 列号按字节算', notes.includes('UTF-8 字节'));
+check('适配笔记记录了 fsyntax-only', notes.includes('-fsyntax-only'));
+check('编辑器增强的共享逻辑有单测', read('package.json').includes('test-editor-assist.mjs'));
+
 console.log('\n文档与代码一致。');

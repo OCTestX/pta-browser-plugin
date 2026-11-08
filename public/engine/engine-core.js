@@ -154,3 +154,44 @@ export async function runOnEngine(engine, request) {
   result.trap = trap;
   return result;
 }
+
+/**
+ * 只做语法检查（不链接、不运行），返回和 runOnEngine 同形状的结果：
+ *   ok            没有诊断
+ *   compile-error compileOutput 里是 clang 的诊断
+ *   engine-error  引擎自身出错
+ *
+ * 检查不产目标文件，也**不增加** engine.runs：实时检查一天能跑几千次，
+ * 按 MAX_RUNS_PER_ENGINE=100 重建会把 38MB sysroot 反复解包，界面会卡住好几秒。
+ */
+export async function checkOnEngine(engine, request) {
+  const { api, log } = engine;
+  const started = Date.now();
+  const strip = (text) => text.replace(ANSI_RE, '');
+
+  // 上一次的运行把日志写满后 hostWrite 就不再追加，切片会永远是空的：
+  // 检查路径自己回收，别让一次长会话把诊断饿死。
+  if (log.text.length > 1024 * 1024) {
+    log.text = '';
+    log.truncated = false;
+  }
+
+  const startLen = log.text.length;
+  try {
+    await api.compileOnly({ input: 'check.c', contents: request.code });
+  } catch (exn) {
+    // clang 报错：进程非零退出，诊断文本已经写进日志
+    if (typeof exn?.code === 'number' && exn.code !== 0) {
+      const result = emptyResult('compile-error', Date.now() - started);
+      result.compileOutput = strip(log.text.slice(startLen)).trim();
+      return result;
+    }
+    const result = emptyResult('engine-error', Date.now() - started);
+    result.message = exn?.message ?? String(exn);
+    return result;
+  }
+
+  const result = emptyResult('ok', Date.now() - started);
+  result.compileOutput = strip(log.text.slice(startLen)).trim();
+  return result;
+}

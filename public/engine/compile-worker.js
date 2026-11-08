@@ -7,11 +7,12 @@
 // 超时终止由宿主负责（worker.terminate 整个杀掉，死循环只有这样才能停下来）。
 //
 // 协议（postMessage）：
-//   收 { id, code, stdin, lang }
+//   收 { id, code, stdin, lang } 或 { id, code, check: true }
+//      （check: true = 只做语法检查，不链接不运行，结果不走 stage）
 //   回 { id, type: 'stage', stage }   阶段推进（compile / run），宿主据此重置超时
 //      { id, type: 'done', result }   结构化结果（含编译错误 / 运行结果 / 引擎错误）
 
-import { createCEngine, runOnEngine, MAX_RUNS_PER_ENGINE } from './engine-core.js';
+import { createCEngine, runOnEngine, checkOnEngine, MAX_RUNS_PER_ENGINE } from './engine-core.js';
 
 let engine = null;
 let enginePromise = null;
@@ -113,11 +114,29 @@ async function runPython({ id, code, stdin }) {
 /* ---------- C ---------- */
 
 async function handle(ev) {
-  const { id, code, stdin, lang } = ev.data ?? {};
+  const { id, code, stdin, lang, check } = ev.data ?? {};
   if (typeof id !== 'number' || typeof code !== 'string') return;
 
   if (lang === 'python') {
     await runPython({ id, code, stdin: typeof stdin === 'string' ? stdin : '' });
+    return;
+  }
+
+  // 实时检查：只做语法检查，不链接不运行
+  if (check === true) {
+    let checkEngine;
+    try {
+      checkEngine = await getEngine();
+    } catch (error) {
+      postMessage({ id, type: 'done', result: {
+        stage: 'engine-error',
+        message: `内置编译器加载失败：${error?.message ?? error}`,
+      } });
+      return;
+    }
+    const checked = await checkOnEngine(checkEngine, { code });
+    if (checked.stage === 'engine-error') engine = null; // 下次重建
+    postMessage({ id, type: 'done', result: checked });
     return;
   }
 

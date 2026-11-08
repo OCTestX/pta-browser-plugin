@@ -1,6 +1,8 @@
 // 带上 .ts 后缀：这个模块会被 scripts/test-compile.mjs 直接用 Node 导入（Node 不做省略后缀解析）
 import { truncate } from '../shared/tools.ts';
-import { runInEngine, type EngineRunResult } from './compiler-host.ts';
+import { parseClangDiagnostics, offsetOfPosition } from '../shared/code-diagnostics.ts';
+import type { DiagnosticBox } from '../shared/editor-assist-protocol.ts';
+import { runInEngine, checkInEngine, type EngineRunResult } from './compiler-host.ts';
 
 /**
  * 内置 JavaScript 运行器：在本地用浏览器/Node 的 JS 引擎跑一段代码，捕获 stdout/stderr。
@@ -220,6 +222,84 @@ export async function compileAndRun(options: CompileOptions): Promise<CompileRes
     case 'ok':
       return { ...base, ok: true, statusText: '运行成功' };
   }
+}
+
+/** 实时检查的结果：给页面脚本直接画波浪线用 */
+export interface CodeCheckResult {
+  ok: boolean;
+  /** 非空表示这次没检查（比如语言不是 C），只更新一行提示文案 */
+  note: string;
+  diagnostics: DiagnosticBox[];
+  errorCount: number;
+  message: string;
+}
+
+/** 内置编译器只有 C 的驱动配置，别的语言不做实时检查，如实说明 */
+export function isCheckableLanguage(language: string): boolean {
+  const lang = String(language ?? '').toLowerCase();
+  // 'c' / 'C (gcc)' / 'gcc' / 'clang' 算 C；'cpp' 'c++' 'python' 'java' 都不算
+  return /^c\b/.test(lang) || /gcc|clang/.test(lang);
+}
+
+/**
+ * 诊断指向的那一段字符：用来画波浪线。
+ * 落在标识符/数字上就一直取到标识符结束，否则取到行尾的空白或分隔符之前（最多 40 字符）。
+ */
+export function diagnosticRange(code: string, from: number): { from: number; to: number } {
+  const source = String(code ?? '');
+  if (from < 0 || from >= source.length) return { from: Math.max(0, from), to: Math.max(0, from) };
+  const lineEnd = source.indexOf('\n', from) < 0 ? source.length : source.indexOf('\n', from);
+  const word = /^[A-Za-z_][A-Za-z_0-9]*/.exec(source.slice(from, lineEnd));
+  if (word) return { from, to: from + word[0].length };
+  let to = from;
+  while (to < lineEnd && to - from < 40 && !/[\s;,)}]/.test(source[to])) to += 1;
+  return { from, to: to > from ? to : Math.min(from + 1, source.length) };
+}
+
+/**
+ * 用内置编译器给作答区代码做一次「只编译不运行」的检查。
+ * 只支持 C（引擎的 clang 驱动硬编码 -x c），别的语言返回 note 让界面如实显示。
+ */
+export async function checkCode(code: string, language: string, signal?: AbortSignal): Promise<CodeCheckResult> {
+  const source = String(code ?? '');
+  const empty: CodeCheckResult = { ok: true, note: '', diagnostics: [], errorCount: 0, message: '' };
+  if (!isCheckableLanguage(language)) {
+    return { ...empty, note: '内置编译器只支持 C，其他语言不做实时检查' };
+  }
+  if (source.trim() === '') return empty;
+
+  let raw: EngineRunResult;
+  try {
+    raw = await checkInEngine(source, signal);
+  } catch (error) {
+    if (error instanceof Error && error.name === 'EngineTimeout') return { ...empty, ok: false, message: error.message };
+    throw error;
+  }
+  if (raw.stage === 'engine-error') {
+    return { ...empty, ok: false, message: raw.message || '内置编译器内部错误' };
+  }
+
+  const diagnostics: DiagnosticBox[] = [];
+  for (const item of parseClangDiagnostics(raw.compileOutput)) {
+    // clang 的列号是 UTF-8 字节偏移，offsetOfPosition 负责换算成字符下标
+    const offset = offsetOfPosition(source, item.line, item.column);
+    if (offset < 0) continue;
+    const range = diagnosticRange(source, offset);
+    diagnostics.push({
+      from: range.from,
+      to: range.to,
+      severity: item.severity,
+      message: item.message,
+      advice: item.advice,
+    });
+  }
+  return {
+    ok: true,
+    note: '',
+    diagnostics,
+    errorCount: diagnostics.filter((item) => item.severity === 'error').length,
+    message: '',
+  };
 }
 
 export function formatCompileResult(result: CompileResult): string {

@@ -1,4 +1,5 @@
 import type { ApiMessage } from './types';
+import type { DiagnosticBox } from './editor-assist-protocol';
 import type { Settings, SettingsView } from './settings';
 
 /* ---------- background -> content ---------- */
@@ -108,6 +109,10 @@ export type ContentRequest =
   | { type: 'chat/attach' }
   /** 用户在 ask 工具的卡片上点了一个选项 */
   | { type: 'chat/ask-answer'; requestId: string; callId: string; choice: string }
+  /** 编辑器增强：让后台把 MAIN world 的 agent 装进页面（PTA 作答区只有主世界能拿到编辑器实例） */
+  | { type: 'editor/assist/install' }
+  /** 编辑器增强：把作答区当前代码送进内置编译器做一次「只编译不运行」的检查 */
+  | { type: 'editor/check'; code: string; language: string }
   | { type: 'settings/get' }
   | { type: 'settings/save'; patch: Partial<Settings> }
   /** 设置页的「模拟输入测试」：按指定方法往作答区写一次文本 */
@@ -132,6 +137,8 @@ export function isContentRequest(message: unknown): message is ContentRequest {
       message.type === 'chat/stop' ||
       message.type === 'chat/attach' ||
       message.type === 'chat/ask-answer' ||
+      message.type === 'editor/assist/install' ||
+      message.type === 'editor/check' ||
       message.type === 'settings/get' ||
       message.type === 'settings/save' ||
       message.type === 'tool/test-input' ||
@@ -189,6 +196,23 @@ export interface ModelsListResponse {
 }
 
 export type SettingsResponse = SettingsView;
+
+/** 编辑器增强的安装结果：token 是页面脚本与隔离世界之间的暗号，空串表示没装上 */
+export interface EditorAssistInstallResponse {
+  ok: boolean;
+  token: string;
+  message: string;
+  world?: 'MAIN' | 'ISOLATED';
+}
+
+/** 作答区实时检查的结果：diagnostics 的 from/to 是字符下标，页面直接拿来画波浪线 */
+export interface EditorCheckResponse {
+  ok: boolean;
+  note: string;
+  diagnostics: DiagnosticBox[];
+  errorCount: number;
+  message: string;
+}
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null;

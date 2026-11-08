@@ -891,6 +891,21 @@ class API {
                           'c', input);
   }
 
+  /**
+   * 只做语法检查（-fsyntax-only）：不产出 .o、不链接、不运行。
+   * 实时检查用：比 compile 快一半，也不往 memfs 里堆目标文件。
+   */
+  async compileOnly(options) {
+    const input = options.input;
+    const contents = options.contents;
+
+    await this.ready;
+    this.memfs.addFile(input, contents);
+    const clang = await this.getModule(this.clangFilename);
+    return await this.run(clang, 'clang', '-cc1', '-fsyntax-only',
+                          ...this.clangCommonArgs, '-x', 'c', input);
+  }
+
   async link(obj, wasm) {
     const stackSize = 1024 * 1024;
 

@@ -5,6 +5,7 @@ import type {
   AttachChatResponse,
   BackgroundEvent,
   DiffPayload,
+  EditorAssistInstallResponse,
   ModelsListResponse,
   RunToolRequest,
   StartChatResponse,
@@ -18,6 +19,11 @@ import { DEFAULT_INPUT_METHOD, findInputMethod } from '../shared/input-methods';
 import { pasteIntoEditor, runInputMethod } from './input-methods';
 import { readClipboardText } from './clipboard';
 import { openExplanation } from './explain-pages';
+import { injectScript } from './js-inject';
+import { EDITOR_AGENT_SOURCE } from './editor-agent';
+import { EDITOR_ASSIST_VERSION, type EditorAssistInstallArgs } from '../shared/editor-assist-protocol';
+import { C_LIBRARY_DOCS } from '../shared/c-library-docs';
+import { checkCode } from './compile';
 import { checkForUpdates, loadSettings, saveSettings, toSettingsView } from './settings';
 
 const TOGGLE_PANEL: BackgroundEvent = { type: 'toggle-panel' };
@@ -148,6 +154,41 @@ ext.runtime.onMessage.addListener((message: unknown, sender, sendResponse) => {
   const tabId = sender.tab?.id;
   void (async () => {
     switch (message.type) {
+      case 'editor/assist/install': {
+        // 作答区只有 MAIN world 拿得到 CodeMirror 实例，装脚本这件事只能由后台做
+        if (tabId === undefined) {
+          sendResponse({ ok: false, token: '', message: '当前页面不支持（请刷新页面后重试）' } satisfies EditorAssistInstallResponse);
+          return;
+        }
+        const token = createId();
+        const args: EditorAssistInstallArgs = {
+          token,
+          version: EDITOR_ASSIST_VERSION,
+          docs: C_LIBRARY_DOCS,
+          // v4.2 只开这两个；v5.0 再把 check / hover 打开
+          features: { format: true, rainbow: true, check: false, hover: false },
+        };
+        const injected = await injectScript(tabId, EDITOR_AGENT_SOURCE, args);
+        // 页面里已经装过时它会把**自己那份** token 交回来，两边必须用同一个
+        let used = token;
+        try {
+          const parsed = JSON.parse(injected.output) as { token?: unknown };
+          if (typeof parsed.token === 'string' && parsed.token) used = parsed.token;
+        } catch {
+          // 输出不是 JSON 就不要了，按新 token 走
+        }
+        sendResponse({
+          ok: injected.ok,
+          token: injected.ok ? used : '',
+          message: injected.ok ? '' : injected.output,
+          world: injected.world,
+        } satisfies EditorAssistInstallResponse);
+        return;
+      }
+      case 'editor/check': {
+        sendResponse(await checkCode(message.code, message.language));
+        return;
+      }
       case 'settings/get': {
         const view = toSettingsView(await loadSettings());
         const update = await checkForUpdates();
