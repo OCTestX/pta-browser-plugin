@@ -16,6 +16,7 @@ import {
   READ_PTA_COMPILE_RESULT_SCRIPT,
   SIMULATE_PTA_RUN_SCRIPT,
   SUBMIT_ANSWER_SCRIPT,
+  WRITE_ANSWERS_SCRIPT,
 } from '../src/background/pta-scripts.ts';
 
 const check = (label, ok, detail) => {
@@ -1200,6 +1201,81 @@ const tabbedLogOut = await runScript(tabbedLogRun, SIMULATE_PTA_RUN_SCRIPT, { wa
 check('结果为空时回退到 Compiler\'s Log', tabbedLogOut.includes('NameError'));
 check('回退说明来自哪个页签', tabbedLogOut.includes("Compiler's Log"));
 
+/* ---------- C++ 编译失败：只有 Compiler's Log / Non-zero Exit Code ---------- */
+
+// 复刻真实的 C++ 编译失败页面（2026-11 实测）：
+//   · 没有 Running Result 页签，错误原文只在 Compiler's Log 里；
+//   · 状态条（Last Tested At / Non-zero Exit Code）跑完就出现，但页面停在 Test Case 页签。
+// 旧逻辑会空等到超时，然后报「没读到输出」，模型以为还没跑完。
+function createCppCompileErrorPage() {
+  const dom = new JSDOM(
+    `<!doctype html><html><body>
+       <div class="CodingProblemAnswerForm_JoDvx">
+         <div class="cm-editor"><div class="cm-scroller">
+           <div class="cm-content" contenteditable="true"><div class="cm-line">int main() { return 0; }</div></div>
+         </div></div>
+       </div>
+       <div id="testPanel">
+         <div class="headerWrap"><div class="headerRow"><div class="tabs">
+           <div class="tabItem"><button id="tabCase"><div class="pc-text">Test Case</div></button></div>
+           <div class="tabItem"><button id="tabLog"><div class="pc-text">Compiler's Log</div></button></div>
+         </div></div></div>
+         <div id="statusWrap"><span id="status"></span></div>
+         <div id="stage"></div>
+         <button id="run">Run Test Case</button>
+       </div>
+     </body></html>`,
+    {
+      url: 'https://pintia.cn/problem-sets/1/exam/problems/type/7?problemSetProblemId=3',
+      runScripts: 'outside-only',
+      pretendToBeVisual: true,
+    },
+  );
+  const window = installInnerText(dom.window);
+  const doc = window.document;
+  const readonlyEditor = (lines) => {
+    const wrap = doc.createElement('div');
+    wrap.innerHTML = '<div class="cm-editor"><div class="cm-scroller">'
+      + '<div class="cm-content" contenteditable="false" aria-readonly="true"></div></div></div>';
+    const content = wrap.querySelector('.cm-content');
+    for (const line of lines) {
+      const row = doc.createElement('div');
+      row.className = 'cm-line';
+      row.textContent = line;
+      content.appendChild(row);
+    }
+    return wrap;
+  };
+  const caseBody = doc.createElement('div');
+  caseBody.innerHTML = '<div class="cm-content" contenteditable="true"><div class="cm-line">1 2</div></div>';
+  const logBody = readonlyEditor([
+    "main.cpp:4:10: error: use of undeclared identifier 'cout2'",
+    '    cout2 << 1;',
+    '    ^~~~~',
+    '1 error generated.',
+  ]);
+  const stage = doc.querySelector('#stage');
+  stage.replaceChildren(caseBody);
+  doc.querySelector('#tabCase').addEventListener('click', () => stage.replaceChildren(caseBody));
+  doc.querySelector('#tabLog').addEventListener('click', () => stage.replaceChildren(logBody));
+  // 跑完只更新状态条，不自动切到日志页签（真机就是这样）
+  doc.querySelector('#run').addEventListener('click', () => {
+    window.setTimeout(() => {
+      doc.querySelector('#status').textContent = 'Last Tested At 2026-11-11 12:00:00  Non-zero Exit Code';
+    }, 30);
+  });
+  return window;
+}
+
+const cppErrorPage = createCppCompileErrorPage();
+const cppErrorStarted = Date.now();
+const cppErrorOut = await runScript(cppErrorPage, SIMULATE_PTA_RUN_SCRIPT, { waitSeconds: 5, pollMs: 10 });
+check('C++ 编译失败时带回编译器日志原文', cppErrorOut.includes("use of undeclared identifier 'cout2'"), cppErrorOut);
+check('C++ 编译失败不会被报成没读到输出', !cppErrorOut.includes('没读到输出'), cppErrorOut);
+check('C++ 编译失败带上状态条结论', cppErrorOut.includes('Non-zero Exit Code'), cppErrorOut);
+check('C++ 编译失败说明来自 Compiler\'s Log', cppErrorOut.includes("Compiler's Log"), cppErrorOut);
+check('状态条一出结论就收工，不空等到超时', Date.now() - cppErrorStarted < 3000, Date.now() - cppErrorStarted);
+
 /* ---------- 作答区的语言（Python 2 / Python 3 要分得清） ---------- */
 
 // 复刻 PTA 的 react-select：控制块显示当前语言，点开后菜单里是可选项
@@ -1263,6 +1339,144 @@ check('LANGUAGE_SCRIPT 也接受 language 参数（工具名）', switchedByAlia
 const noPython3Page = createLanguagePage('Python (python2)', ['Python (python2)']);
 const refused = await runScript(noPython3Page, LANGUAGE_SCRIPT, { target: 'python3' });
 check('切不了的时候如实报告并列出可选语言', refused.ok === false && String(refused.detail || '').includes('Python (python2)'), refused);
+
+// 真机 2026-11：react-select 的菜单只认 mousedown。只在控制块上 click 时菜单根本不展开
+// （点完页面里一个 .select__option 都没有），旧逻辑在这里读到空就报「不允许切」。
+function createMousedownLanguagePage(language, options = []) {
+  const dom = new JSDOM(
+    `<!doctype html><html><body>
+       <div class="select__control">${language}</div>
+       <div class="select__menu" style="display:none">
+         ${options.map((option) => `<div class="select__option">${option}</div>`).join('')}
+       </div>
+     </body></html>`,
+    { url: 'https://pintia.cn/problem-sets/1/exam/problems/type/7', runScripts: 'outside-only' },
+  );
+  const window = dom.window;
+  const doc = window.document;
+  const control = doc.querySelector('.select__control');
+  const menu = doc.querySelector('.select__menu');
+  // 只有 mousedown 才展开：click 什么都不做
+  control.addEventListener('mousedown', () => { menu.style.display = ''; });
+  doc.addEventListener('click', (event) => {
+    const option = event.target.closest ? event.target.closest('.select__option') : null;
+    if (!option) return;
+    control.textContent = option.textContent;
+    menu.style.display = 'none';
+  });
+  return window;
+}
+
+const sixLanguages = ['C (gcc 9.2)', 'C++ (g++)', 'Java (java8)', 'Python (python3)', 'Go (go1.18)', 'Rust (rustc 1.60)'];
+const cppSwitchPage = createMousedownLanguagePage('C (gcc 9.2)', sixLanguages);
+const cppSwitched = await runScript(cppSwitchPage, LANGUAGE_SCRIPT, { target: 'cpp' });
+check('click 打不开菜单时用 mousedown 展开，cpp 能切到 C++ (g++)', cppSwitched.ok === true && String(cppSwitched.detail || '').includes('C++ (g++)'), cppSwitched);
+check('切到 C++ 后读回来的语言是 cpp', cppSwitched.language === 'cpp', cppSwitched);
+
+for (const alias of ['c++', 'g++', 'cxx']) {
+  const page = createMousedownLanguagePage('C (gcc 9.2)', sixLanguages);
+  const out = await runScript(page, LANGUAGE_SCRIPT, { target: alias });
+  check('C++ 的别名 ' + alias + ' 也能匹配到 C++ (g++)', out.ok === true && out.language === 'cpp', out);
+}
+
+// 'c' 不能被 'C++ (g++)' 抢走：归一化后 C 与 C++ 是两个不同的名字
+const cOnlyPage = createMousedownLanguagePage('C++ (g++)', ['C (gcc 9.2)', 'C++ (g++)']);
+const cOnlySwitched = await runScript(cOnlyPage, LANGUAGE_SCRIPT, { target: 'c' });
+check('传 c 时切的是 C (gcc 9.2)，不是 C++', cOnlySwitched.ok === true && cOnlySwitched.language === 'c' && String(cOnlySwitched.detail || '').includes('C (gcc 9.2)'), cOnlySwitched);
+
+/* ---------- 判断题：题干行号槽与 T/F 作答 ---------- */
+
+// 复刻真实的判断题页面（2026-11 实测）：
+//   · 第 22 题的题干就是一块只读代码，行号槽和 .cm-content 是兄弟节点，
+//     innerText 会把行号「1」并到题干最前面（模型看到「题干：1」）；
+//   · 单选框的 id 是 ...-TRUE / ...-FALSE，不是选项字母，答案却常写成 T / F。
+function createJudgementPage(count = 52) {
+  const items = [];
+  for (let index = 1; index <= count; index += 1) {
+    items.push(`
+      <div class="questionItem">
+        <div class="questionMeta">${index} 判断题 1 分</div>
+        <div class="questionWrap">
+          <div class="questionBody">
+            <div class="questionStem">
+              <div class="cm-editor"><div class="cm-scroller">
+                <div class="cm-gutters"><div class="cm-lineNumbers"><div class="cm-gutterElement">1</div></div></div>
+                <div class="cm-content" contenteditable="false" aria-readonly="true"><div class="cm-line">int x = ${index};</div></div>
+              </div></div>
+            </div>
+            <div class="optionsWrap">
+              <div class="option"><label><input type="radio" id="input-radio-option-${index}-TRUE" name="question-${index}" value="TRUE"><span>True</span></label></div>
+              <div class="option"><label><input type="radio" id="input-radio-option-${index}-FALSE" name="question-${index}" value="FALSE"><span>False</span></label></div>
+            </div>
+          </div>
+        </div>
+      </div>`);
+  }
+  const dom = new JSDOM(
+    `<!doctype html><html><head><title>判断题 - Problem List</title></head><body>${items.join('')}</body></html>`,
+    {
+      url: 'https://pintia.cn/problem-sets/1/exam/problems/type/1?problemSetProblemId=22',
+      runScripts: 'outside-only',
+      pretendToBeVisual: true,
+    },
+  );
+  return installInnerText(dom.window);
+}
+
+const judgementPage = createJudgementPage();
+const judgementProblem = await runScript(judgementPage, READ_PROBLEM_SCRIPT, {});
+const stemLines = judgementProblem.split('\n').filter((line) => line.startsWith('题干：'));
+check('52 道判断题的题干都抠出来了', stemLines.length === 52, stemLines.length);
+check('判断题题干不带只读代码块的行号槽', stemLines[0] === '题干：int x = 1;', stemLines[0]);
+check('第 22 题的题干也不以孤立行号开头', stemLines[21] === '题干：int x = 22;', stemLines[21]);
+check('没有任何一道题的题干只剩一个行号', !stemLines.some((line) => /^题干：\s*\d+\s*$/.test(line)), stemLines.filter((line) => /^题干：\s*\d+\s*$/.test(line)));
+
+// 作答：52 组单选框，答案写 T / F
+const answerPage = createJudgementPage();
+const answerTokens = Array.from({ length: 52 }, (_, index) => (index % 2 === 0 ? 'T' : 'F')).join(' ');
+const answers = await runScript(answerPage, WRITE_ANSWERS_SCRIPT, { text: answerTokens });
+check('52 道判断题的 T / F 全部填上', answers.ok === true && answers.filled.length === 52 && answers.problems.length === 0, answers.problems);
+const checkedIds = Array.from(answerPage.document.querySelectorAll('input[type=radio]:checked')).map((radio) => radio.id);
+check(
+  'T 落到 ...-TRUE、F 落到 ...-FALSE',
+  checkedIds.length === 52 && checkedIds.every((id, index) => id.endsWith(index % 2 === 0 ? '-TRUE' : '-FALSE')),
+  checkedIds.slice(0, 4),
+);
+
+// 选项原文（True / False）也要能填
+const wordPage = createJudgementPage(2);
+const wordAnswers = await runScript(wordPage, WRITE_ANSWERS_SCRIPT, { text: 'True False' });
+check('写 True / False 也能填上', wordAnswers.ok === true && wordAnswers.filled.length === 2, wordAnswers);
+
+// 选择题的 A/B/C/D 不能被 T/F 的改动带坏
+function createChoicePage() {
+  const items = [1, 2, 3].map((index) => `
+    <div class="questionItem">
+      <div class="questionMeta">${index} 单选题 2 分</div>
+      <div class="questionWrap">
+        <div class="questionBody">
+          <div class="questionStem">第 ${index} 题的题干</div>
+          <div class="optionsWrap">
+            ${['A', 'B', 'C', 'D'].map((letter) => `<div class="option"><label><input type="radio" id="input-radio-option-${index}-${letter}" name="choice-${index}" value="${letter}"><span>${letter}. 选项${letter}</span></label></div>`).join('')}
+          </div>
+        </div>
+      </div>
+    </div>`).join('');
+  const dom = new JSDOM(
+    `<!doctype html><html><head><title>选择题</title></head><body>${items}</body></html>`,
+    {
+      url: 'https://pintia.cn/problem-sets/1/exam/problems/type/2?problemSetProblemId=23',
+      runScripts: 'outside-only',
+      pretendToBeVisual: true,
+    },
+  );
+  return installInnerText(dom.window);
+}
+
+const choicePage = createChoicePage();
+const choiceAnswers = await runScript(choicePage, WRITE_ANSWERS_SCRIPT, { text: 'B A C' });
+const choiceChecked = Array.from(choicePage.document.querySelectorAll('input[type=radio]:checked')).map((radio) => radio.id);
+check('选择题仍然按 A/B/C/D 选项字母填', choiceAnswers.ok === true && choiceChecked.map((id) => id.slice(-1)).join('') === 'BAC', choiceChecked);
 
 /* ---------- 提交按钮可用性 ---------- */
 

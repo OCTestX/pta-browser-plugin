@@ -77,7 +77,7 @@ export function useChat(hasApiKey: boolean) {
     return () => window.removeEventListener('pagehide', flush);
   }, []);
 
-  // 刷新页面后把上次的对话恢复回来（按页面地址分桶）
+  // 刷新页面后把上次的对话恢复回来（按标签页分桶：同 URL 的另一个标签页不共享）
   //
   // 另外还要问后台一句「这个标签页上有正在跑的对话吗」：
   // PTA 自己刷新页面时（判题流程、整页跳转），面板会重新挂载，
@@ -116,12 +116,12 @@ export function useChat(hasApiKey: boolean) {
     };
   }, []);
 
-  // 对话一变就存回去：刷新、关页面再打开都还在。
-  // 必须防抖：流式输出时每个字都会触发一次 setMessages，
-  // 一次回答能写几百次，chrome.storage.local 的写入配额扛不住（每分钟 120 次）。
+  // 对话一变就存回去：刷新、关页面再打开都还在（sessionStorage 刷新不丢）。
+  // 仍然防抖：流式输出时每个字都会触发一次 setMessages，一次回答能存几百次，
+  // 每次都把整份会话序列化写进 sessionStorage 没必要。
   //
-  // 正在跑的那一轮另外按 requestId 存一份：赶题模式会在题目之间跳，
-  // 每换一题地址就变了，只按地址存会把一段对话拆成好几段。
+  // 正在跑的那一轮另外按 requestId 存一份：赶题模式会整页跳转，
+  // 面板重新挂载时靠 chat/attach 拿回 requestId，再从这份里恢复对话。
   useEffect(() => {
     // 刚挂载时的那一帧还没恢复，别把欢迎语写回去把旧对话覆盖掉
     if (messages.length === 1 && messages[0].id === 'welcome') return;

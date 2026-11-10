@@ -264,35 +264,46 @@ async function typeAndSend(cdp, pageSession, text) {
 
 /* ---------- 读插件的持久化对话 ---------- */
 
-const STORE_KEY = 'pta-assistant-chat';
+// 对话按标签页存在 content script 的 sessionStorage 里：
+//   标签页 id: pta-assistant-tab-id（刷新保留）
+//   对话键:   pta-assistant-chat:<tabId>，桶 tab:<tabId>
+// 不再读 chrome.storage.local，也不按页面地址分桶。
+const TAB_ID_KEY = 'pta-assistant-tab-id';
+const CHAT_KEY_PREFIX = 'pta-assistant-chat:';
 
-function bucketKey(url) {
-  const parsed = new URL(url);
-  return `${parsed.origin}${parsed.pathname}${parsed.search}`;
+function bucketKey(_url) {
+  // 兼容旧调用点；实际键由当前标签页的 sessionStorage 决定。
+  return 'tab';
 }
 
-async function readStored(cdp, pageSession, contextId, key) {
+async function readStored(cdp, pageSession, contextId, _key) {
   const raw = await cdp.evaluate(
     pageSession,
-    `(async ({ storeKey, key }) => {
-      const raw = await chrome.storage.local.get(storeKey);
-      return JSON.stringify((raw[storeKey] || {})[key] || []);
-    })(${JSON.stringify({ storeKey: STORE_KEY, key })})`,
+    `(() => {
+      const tabId = sessionStorage.getItem(${JSON.stringify(TAB_ID_KEY)});
+      if (!tabId) return '[]';
+      const raw = sessionStorage.getItem(${JSON.stringify(CHAT_KEY_PREFIX)} + tabId);
+      const store = raw ? JSON.parse(raw) : {};
+      return JSON.stringify(store['tab:' + tabId] || []);
+    })()`,
     contextId,
   );
   return raw ? JSON.parse(raw) : [];
 }
 
-async function clearStored(cdp, pageSession, contextId, key) {
+async function clearStored(cdp, pageSession, contextId, _key) {
   await cdp.evaluate(
     pageSession,
-    `(async ({ storeKey, key }) => {
-      const raw = await chrome.storage.local.get(storeKey);
-      const store = raw[storeKey] || {};
-      delete store[key];
-      await chrome.storage.local.set({[storeKey]: store});
+    `(() => {
+      const tabId = sessionStorage.getItem(${JSON.stringify(TAB_ID_KEY)});
+      if (!tabId) return 'no-tab';
+      const storageKey = ${JSON.stringify(CHAT_KEY_PREFIX)} + tabId;
+      const raw = sessionStorage.getItem(storageKey);
+      const store = raw ? JSON.parse(raw) : {};
+      delete store['tab:' + tabId];
+      sessionStorage.setItem(storageKey, JSON.stringify(store));
       return 'cleared';
-    })(${JSON.stringify({ storeKey: STORE_KEY, key })})`,
+    })()`,
     contextId,
   );
 }
@@ -450,7 +461,7 @@ async function main() {
     throw new Error('没找到插件的隔离世界（扩展没注入？）');
   }
 
-  /** 清空这道题的存盘对话并重载页面，让面板从空白开始 */
+  /** 清空当前标签页的存盘对话并重载页面，让面板从空白开始 */
   async function freshPanel(url) {
     const key = bucketKey(url);
     const contextId = await waitForExtensionWorld();

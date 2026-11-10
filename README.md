@@ -21,7 +21,7 @@ PTA 助手是一个运行在浏览器里的 PTA（拼题A）解题助手：自�
 | 读取 PTA 的编译错误 | `read_pta_compile_result` 读页面上的「编译器输出」（输出、异常堆栈、编译错误） |
 | 禁粘贴也能贴 | 接管 `Ctrl+V` / `⌘V`，读剪贴板后走插件自己的写入链路；抢不过页面时用 `Ctrl+M`；右键粘贴同样接管 |
 | 粘贴焦点判定 | 只有焦点在 PTA 的可写作答区里才接管，别的地方照常粘贴 |
-| 视觉模式（VLM） | 题面含图片时自动切视觉模式；模型不支持看图时主动提醒本次已被降级为纯文本 |
+| 视觉模式（VLM） | 题面含图片时把图片作为 `image_url` 发给支持看图的模型；不支持时明确降级纯文本；模型下拉用 eye icon 标出视觉能力 |
 | 提交后自动刷新 | 等待判题结论时，每 5 秒点一次页面上的「刷新 / Reload」按钮 |
 | 多标签页独立 | 面板开关、agent 会话、图标节流都按标签页隔离，可以同时开好几个 |
 | 检查更新 | 设置页顶部比对 GitHub / Gitee 的 release 标签，有新版本就提示 |
@@ -30,7 +30,7 @@ PTA 助手是一个运行在浏览器里的 PTA（拼题A）解题助手：自�
 | diff 全屏 | diff 卡片可在新标签页显示完整改动，不折叠没改动的行 |
 | 公式与 Markdown | 流式渲染 Markdown、表格与 KaTeX 公式 |
 | 随时停止 | 模型流、页面脚本、编译、逐字输入、写入作答区都能被「停止」打断 |
-| 对话持久化 | 按页面地址分桶存进浏览器本地，刷新不丢 |
+| 对话持久化 | 按标签页存进 `sessionStorage`，刷新不丢；同一题开两个标签也互不串 |
 | 斜杠指令 | 输入 `/` 列出可用指令，上下键选、回车发送：`/new` `/resolve` `/what` `/why` |
 | 连按回车开新会话 | 输入框空着的时候连按三次回车，直接开新会话 |
 | 选择题 / 判断题 | 读题面会报题型并列出全部小题；答案用空格分隔填进单选框 |
@@ -220,11 +220,11 @@ diff 卡片表头有「全屏查看」：新标签页打开完整 diff，不折�
 
 | 状态 | 说明 |
 |---|---|
-| 输入草稿 | 没发出去的文本保存在本地，刷新不丢 |
+| 输入草稿 | 没发出去的文本按标签页存在 `sessionStorage`，刷新不丢；不同标签互不串 |
 | 布局位置 | 拖动/缩放，刷新页面后自动恢复 |
-| 对话记录 | 按页面地址分桶存盘（同一道题恢复同一段对话，最多 60 条、单条 8000 字符） |
+| 对话记录 | 按标签页存盘（刷新恢复本标签这一份；最多 60 条、单条 8000 字符） |
 
-对话记录存在 `chrome.storage.local`，按页面地址分桶：同一道题恢复同一段对话，换题就是新的一段，不会串上下文。点「新会话」会把存盘的那份一起清掉。
+对话记录存在每个标签页自己的 `sessionStorage`，按标签页分桶：刷新恢复本标签这一份；同一道题开两个标签也互不串。点「新会话」只清当前标签页这份。
 
 ### 多个标签页同时用
 
@@ -322,7 +322,7 @@ diff 卡片表头有「全屏查看」：新标签页打开完整 diff，不折�
 **`write_document`**：把整理好的内容写成文件下载到本机；超过面板能力的长文档用它，不要在回答里贴整篇。
 多文件题（type/9，上传 zip）传 `files`（键为 zip 内路径、值为文件文本），插件用浏览器原生代码打包成 zip 下载，用户再点「Upload Answer Zip」上传。
 
-**`write_zip`**：专门给上传 zip 的多文件题用；只接受 `filename` + `files`，生成标准 zip 并触发下载。含 `..` 的路径会被丢弃。
+**`write_zip`**：专门给上传 zip 的多文件题用；只接受 `filename` + `files`，生成标准 zip 并触发下载。含 `..` 的路径会被丢弃。若模型接口把自由对象 `files` 强制序列化成 `{}`（例如 Qwen），可改用 `filesJson` 传 JSON 字符串。
 
 ### 提示词里的硬规矩
 
@@ -437,8 +437,8 @@ src/
     shortcuts.ts         Alt+G 打开并聚焦输入框、Esc 关闭
     paste.ts             Ctrl+V / Ctrl+M / 右键粘贴的内置粘贴与焦点判定
     pageTools.ts         需要页面上下文的工具
-    panelStore.ts        面板开关、布局、草稿（按标签页隔离的内存状态）
-    chatStore.ts         对话持久化（按页面地址分桶）
+    panelStore.ts        面板开关、布局、草稿（草稿按标签页存 sessionStorage）
+    chatStore.ts         对话持久化（按标签页分桶，sessionStorage）
     hooks/               useChat、useSettings、usePanelLayout
     components/          Composer（输入区）、MessageList、ToolCard、DiffView、Markdown、SettingsPanel
   diff/                  全屏 diff 标签页（main.tsx + DiffPage.tsx）
@@ -529,10 +529,10 @@ npm run icons              # 重新生成图标（python3 + Pillow）
 
 ### 视觉模式怎么判断的
 
-1. AI 调 `read_problem` 读题面，题面里的图片会被摊平成 `[图片 …]` 占位
+1. AI 调 `read_problem` 读题面，图片在文本里留 `[图片 …]` 占位；视觉模式激活时插件再把真实 URL 作为 `image_url` 内容块补发给模型
 2. 插件用 `statementHasImages()` 看有没有这个占位
 3. 有图片就按设置（自动 / 开 / 关）决定要不要走视觉模式
-4. 当前模型不支持看图（`modelSupportsVlm()` 按模型名判断）时，**提醒一次**本次被降级成纯文本，然后照常继续跑，不中断工具链
+4. 当前模型不支持看图（`modelSupportsVision()` 按集中能力表判断，含 Qwen3.8-27B）时，**提醒一次**本次被降级成纯文本，然后照常继续跑，不中断工具链
 
 ### 性能
 
@@ -572,6 +572,7 @@ npm run icons              # 重新生成图标（python3 + Pillow）
 
 | 版本 | 主要内容 |
 |---|---|
+| v6.7.0 | 多标签改为标签页级 `sessionStorage`：草稿/对话刷新保留，同 URL 两个标签也互不串；顺手修掉 reload 后布局被重置。`set_language` 支持 react-select `mousedown` 展开与 `cpp/c++/g++` 别名，判断题选项接受 `T/TRUE/FALSE` 并剥离题干行号槽，`simulate_pta_run` 在编译错误出现时立即读回编译器日志。视觉模式真正把图片作为 `image_url` 送进模型，修正 `vlmMode=off` 语义，加入 Qwen3.8-27B 视觉能力与模型下拉 eye icon；Qwen 的 `files` 空对象用 `filesJson` 兜底。C++ 引擎按阶段超时、排队超时不再重启引擎、日志写满后仍能回收编译诊断。新增 `test-tab-store` / `test-model-capabilities`，扩充 `test-compile` 与 `test-pta-tools` |
 | v6.6.0 | 上传 zip 的多文件题（type/9）现在能真正交付答案：新增独立工具 `write_zip`（只接受 `filename` + `files`，键为 zip 内路径、值为文件文本），用浏览器原生 Blob 生成标准 zip 并触发下载，用户再点「Upload Answer Zip」上传；`write_document` 也支持 `files` 兼容旧调用。不引外部库、路径穿越 `../` 会被拒绝。`read_problem` 会从 Problem Folder 抠出文件清单、提醒样例不是 stdin，并明确让模型用 `write_zip` 打包；README / 提示词 / 工具 schema 同步；jsdom 冒烟覆盖 zip 打包，Node 侧用 Python `zipfile` 验证生成的 zip 字节、文件名与内容。修复内置 Python 运行器 stdin 耗尽后返回空串、导致 `sys.stdin.read()` 死循环的问题：改为返回 `null` 表示 EOF，并新增回归测试 |
 | v6.5.0 | 真机打开「101计划 Python 版数据结构」的 type/9 多文件题，发现新版多文件题**根本没有代码编辑器**：作答区是「上传 zip」+ 文件清单，`read_editor_code all=true` / `write_editor_code editorIndex` 用不上。现在 `read_problem` 检测不到可写编辑器时明确说明这是上传 zip 题、让模型按文件清单交付内容，不再假装有「作答区模板」；README、提示词、工具 schema 同步区分「上传 zip 的多文件题」与「确实有多个代码框的老题」。真机 `read_problem` 已验证给出正确作答方式 |
 | v6.4.0 | 真机 7-2 复测发现 `simulate_pta_run` 仍会把可见的用例表当结果：新考试页把本次结论放在状态条（Last Tested At / Non-zero Exit Code）而不是结果框里。改成先认状态条变化 / 结果框由隐藏变可见 / 输出容器新写入文本，再扣掉运行前就存在的只读框；单测覆盖「用例表本来就可见」「结果页签预先渲染」「老页面 #out 写入」三种路径。真机最终不再返回 4 段假样例，而是如实提示「没读到输出」或给出状态条结论 |

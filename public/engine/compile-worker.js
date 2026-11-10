@@ -65,7 +65,9 @@ function getPyodide() {
 
 async function runPython({ id, code, stdin }) {
   const started = Date.now();
-  postMessage({ id, type: 'stage', stage: 'run' });
+  // Pyodide 首次加载要十几秒，这段时间算「加载」不算「运行」：
+  // 混进运行预算里，第一次跑 Python 就会被误判成死循环
+  postMessage({ id, type: 'stage', stage: 'prepare' });
 
   let stdout = '';
   let stderr = '';
@@ -73,6 +75,7 @@ async function runPython({ id, code, stdin }) {
 
   try {
     const py = await getPyodide();
+    postMessage({ id, type: 'stage', stage: 'run' });
 
     // Pyodide 的 stdin 要按行喂：input() 一次取一行；耗尽后必须返回 null 表示 EOF
     py.setStdin({ stdin: makeStdinReader(stdin) });
@@ -121,6 +124,7 @@ async function handle(ev) {
 
   // 实时检查：只做语法检查，不链接不运行
   if (check === true) {
+    postMessage({ id, type: 'stage', stage: 'prepare' });
     let checkEngine;
     try {
       checkEngine = await getEngine();
@@ -131,12 +135,15 @@ async function handle(ev) {
       } });
       return;
     }
+    // 引擎就绪：接下来的时间才真正花在 -fsyntax-only 上（宿主的检查预算从这里算）
+    postMessage({ id, type: 'stage', stage: 'check' });
     const checked = await checkOnEngine(checkEngine, { code, lang, prelude: ev.data?.prelude === true });
     if (checked.stage === 'engine-error') engine = null; // 下次重建
     postMessage({ id, type: 'done', result: checked });
     return;
   }
 
+  postMessage({ id, type: 'stage', stage: 'prepare' });
   let current;
   try {
     current = await getEngine();
@@ -162,5 +169,14 @@ async function handle(ev) {
 // 引擎单线程，一次只跑一个请求；队列化防并发把日志切片搅乱
 let queue = Promise.resolve();
 self.onmessage = (ev) => {
-  queue = queue.then(() => handle(ev)).catch(() => undefined);
+  const id = ev.data?.id;
+  queue = queue.then(() => handle(ev)).catch((error) => {
+    // handle 正常应该把失败包成 result 回话；这里兜底，
+    // 别让请求在宿主那边白白等到超时（超时会把整个引擎重启一遍）
+    if (typeof id !== 'number') return;
+    postMessage({ id, type: 'done', result: {
+      stage: 'engine-error',
+      message: `编译引擎异常：${error?.message ?? error}`,
+    } });
+  });
 };

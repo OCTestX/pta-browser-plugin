@@ -82,6 +82,8 @@ export const SYSTEM_PROMPT = [
   '',
   '在 PTA 页面上做这些事，都有专用工具，优先用它们：',
   '- read_problem：拿到当前这道题的题面（含样例、公式）。要解题、要写代码之前，先调它。',
+  '  题面里的图片：视觉模式开启、模型支持看图、图片地址可发送时，插件会另发一条带 image_url 的消息把图片真正给你；',
+  '  工具结果里只有 [图片…] 文字占位、没有图像输入时，说明你**没有**看到图，不要假装看过，只能按 alt/标题文字推断或让用户描述。',
   '- read_editor_code：读出作答区里用户现在的代码。',
   '  多文件题（type/9）新版是上传 zip（没有可写编辑器）；只有页面确实存在多个代码编辑器时，才传 all=true 列出序号并用 write_editor_code 的 editorIndex 逐个写。',
   '- write_editor_code：把代码写进作答区（默认整段覆写）。写完会自动回读比对、拿题面第一组样例编译比对输出、并看提交按钮能不能点——这三项结论都在返回值里；有「不一致/按钮禁用」就先按结论修，别急着交付。',
@@ -123,7 +125,9 @@ export const SYSTEM_PROMPT = [
   '- date：拿到当前日期。',
   '- write_document：把整理好的内容写成文件下载到用户电脑。需要交付文档/题解时用它，不要在回答里贴整篇长文档。',
   '  多文件题（type/9，上传 zip）传 files 对象：键是 zip 内路径、值是文件文本，插件会打包成 zip 下载，用户再点「Upload Answer Zip」上传。',
+  '  **如果接口把自由对象参数清成了 `{}`（Qwen 等模型会这样），改用 filesJson**：把同样的 {"路径": "文件内容"} 序列化成 JSON 字符串放进 filesJson。',
   '- write_zip：专门给上传 zip 的多文件题用：传 filename 和 files（键为 zip 内路径、值为文件文本），插件生成 zip 并下载。',
+  '  同样支持 filesJson（files 的 JSON 字符串）；files 是空对象又没有 filesJson 时会直接报错，不会生成空 zip。',
   '- write_explanation_page：交出一份自包含的单文件 HTML 讲解页（用户用 /what 时用）。交完插件会给用户一张「打开讲解页」的邀请卡片。',
   '- next_problem：切到题目列表里的下一道题（只有用户点「/fuck」赶题模式时才用）。做完一题提交后调它接着做下一道，',
   '  它会告诉你这是第几题、还剩几题；说「没有下一题了」就停下来汇总。',
@@ -176,7 +180,8 @@ export const TOOL_SCHEMAS: ToolSchema[] = [
     function: {
       name: 'read_problem',
       description:
-        '拿到用户当前这道题的题面（标题、地址、题目 ID、题目描述原文、样例输入输出）。公式会转成 LaTeX 写进题面里；题面用图片画的公式会给出图片的 alt/链接，需要你自己看图理解。想解题先调它，不要靠猜页面内容。'
+        '拿到用户当前这道题的题面（标题、地址、题目 ID、题目描述原文、样例输入输出）。公式会转成 LaTeX 写进题面里；题面用图片画的公式会给出图片的 alt/链接。'
+        + '视觉模式开启且当前模型支持看图时，插件会另发一条带 image_url 的消息把图片真正交给你；只看到 [图片…] 文字占位就说明没有发图，不要假装看过图。想解题先调它，不要靠猜页面内容。'
         + '返回值第一行会写明**题目类型**（编程题 / 选择题 / 判断题 / 代码填空 / 多文件）；是选择题或判断题时，会把这一页上**所有小题**连同各自的选项一起列出来，答案要用空格分隔后交给 write_editor_code。',
       parameters: {
         type: 'object',
@@ -363,15 +368,21 @@ export const TOOL_SCHEMAS: ToolSchema[] = [
       description:
         '把内容写成文件并触发浏览器下载，用于交付题解、笔记这类文档。不要在回答里重复输出同一份内容。'
         + '多文件题（type/9，上传 zip）传 files 对象：键是 zip 内路径（如 "src/a.py"），值是文件文本；'
-        + '插件会打包成 zip 下载，用户可直接用「Upload Answer Zip」上传。',
+        + '插件会打包成 zip 下载，用户可直接用「Upload Answer Zip」上传。'
+        + '**如果模型接口会把自由对象清成 {}，改用 filesJson**（files 的 JSON 字符串）。',
       parameters: {
         type: 'object',
         properties: {
           filename: { type: 'string', description: '文件名，带扩展名，例如 "题解-1.md"；传 files 时给 .zip 名' },
-          content: { type: 'string', description: '文件内容（markdown 或纯文本）；传 files 时可省略' },
+          content: { type: 'string', description: '文件内容（markdown 或纯文本）；传 files/filesJson 时可省略' },
           files: {
             type: 'object',
             description: '多文件题：{ "src/a.py": "文件内容", ... }，会打成 zip 下载',
+            additionalProperties: { type: 'string' },
+          },
+          filesJson: {
+            type: 'string',
+            description: 'files 的 JSON 字符串，例如 "{\\"src/a.py\\": \\"print(1)\\"}"。接口不支持自由对象参数时用它，插件会解析成 files；不要和空 files 一起传',
           },
         },
         required: ['filename'],
@@ -385,17 +396,23 @@ export const TOOL_SCHEMAS: ToolSchema[] = [
       description:
         '给「上传 zip」的多文件题（type/9）生成答案压缩包并下载。files 的键是 zip 内路径（例如 "src/a.py"、'
         + '"main.sh"），值是文件文本；插件会生成标准 zip，用户下载后点页面上的「Upload Answer Zip」上传。'
-        + '含 ".." 的路径会被丢弃。',
+        + '含 ".." 的路径会被丢弃。**如果接口把自由对象参数清成 {}（Qwen 等模型会这样），改用 filesJson**：'
+        + '把 {"路径": "文件内容"} 序列化成 JSON 字符串；files 是空对象又没有 filesJson 时会直接报错，不会生成空 zip。',
       parameters: {
         type: 'object',
         properties: {
           filename: { type: 'string', description: '下载的 zip 文件名，例如 "实验13-1.zip"' },
           files: {
             type: 'object',
-            description: '{ "src/a.py": "文件内容", "main.sh": "文件内容" }',
+            description: '{ "src/a.py": "文件内容", "main.sh": "文件内容" }；接口清空自由对象时改用 filesJson',
+            additionalProperties: { type: 'string' },
+          },
+          filesJson: {
+            type: 'string',
+            description: 'files 的 JSON 字符串，例如 "{\\"src/a.py\\": \\"print(1)\\"}"；files 空了就用它',
           },
         },
-        required: ['filename', 'files'],
+        required: ['filename'],
       },
     },
   },
@@ -602,18 +619,121 @@ export function isToolName(value: string): value is ToolName {
   return (TOOL_NAMES as string[]).includes(value);
 }
 
-/** 解析模型给的参数，失败时把原因返回给模型让它重试 */
-export function parseToolArguments(raw: string): { ok: true; args: Record<string, unknown> } | { ok: false; error: string } {
-  if (!raw.trim()) return { ok: true, args: {} };
+export type ToolArgumentsResult =
+  | { ok: true; args: Record<string, unknown> }
+  | { ok: false; error: string };
+
+/** files 被清成空对象时的统一提示：把 JSON 字符串塞进 filesJson 再来一次 */
+const EMPTY_FILES_HINT =
+  'files 是空对象（有些模型接口会把自由对象强制序列化成 {}）。'
+  + '请改用 filesJson：把完整的 {"路径": "文件内容"} 序列化成 JSON 字符串放进 filesJson，再调用一次；'
+  + '不要传空的 files，插件不会生成空 zip。';
+
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+/** 解析 filesJson：接受 JSON 字符串（兼容被多包了一层字符串的）或已经是对象的情况 */
+function parseFilesJson(value: unknown): { ok: true; files: Record<string, string> } | { ok: false; error: string } {
+  let parsed: unknown = value;
   try {
-    const parsed: unknown = JSON.parse(raw);
-    if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
-      return { ok: false, error: '参数必须是一个 JSON 对象' };
+    // 有些接口会把字符串参数再序列化一次，这里最多拆两层
+    for (let depth = 0; depth < 2 && typeof parsed === 'string'; depth += 1) {
+      parsed = JSON.parse(parsed);
     }
-    return { ok: true, args: parsed as Record<string, unknown> };
   } catch (error) {
-    return { ok: false, error: `参数不是合法 JSON：${error instanceof Error ? error.message : String(error)}` };
+    return {
+      ok: false,
+      error: `filesJson 不是合法 JSON：${error instanceof Error ? error.message : String(error)}。`
+        + '请把 {"路径": "文件内容"} 整段序列化成字符串再传。',
+    };
   }
+  if (!isPlainObject(parsed)) {
+    return { ok: false, error: 'filesJson 解析后必须是对象，形如 {"src/a.py": "print(1)"}' };
+  }
+  const files: Record<string, string> = {};
+  for (const [path, text] of Object.entries(parsed)) {
+    if (typeof text !== 'string') {
+      return { ok: false, error: `filesJson 里「${path}」的内容必须是字符串` };
+    }
+    files[path] = text;
+  }
+  return { ok: true, files };
+}
+
+/**
+ * 参数下发前的兼容处理：把 write_zip / write_document 的 filesJson 解析成 files。
+ *
+ * Qwen 在硅基流动上会把自由对象 `files` 强制序列化成 `{}`，于是 zip 里一个文件都没有；
+ * 字符串参数不会被动，所以让模型改传 filesJson（{"路径": "内容"} 的 JSON 字符串）。
+ * files 非空时优先用 files；files 是空对象又没有 filesJson 时明确报错，绝不静默生成空 zip。
+ */
+export function normalizeToolArguments(name: string, args: Record<string, unknown>): ToolArgumentsResult {
+  if (name !== 'write_zip' && name !== 'write_document') return { ok: true, args };
+
+  const files = args.files;
+  const filesIsObject = isPlainObject(files);
+  const hasFiles = filesIsObject && Object.keys(files).length > 0;
+  const filesJson = args.filesJson;
+  const hasFilesJson = typeof filesJson === 'string'
+    ? filesJson.trim().length > 0
+    : filesJson !== undefined && filesJson !== null;
+
+  // 页面工具只认 files，filesJson 是兼容层，不要往下传
+  const cleaned: Record<string, unknown> = { ...args };
+  delete cleaned.filesJson;
+
+  if (hasFiles) return { ok: true, args: cleaned };
+
+  if (hasFilesJson) {
+    const parsed = parseFilesJson(filesJson);
+    if (!parsed.ok) return parsed;
+    if (Object.keys(parsed.files).length === 0) return { ok: false, error: EMPTY_FILES_HINT };
+    cleaned.files = parsed.files;
+    return { ok: true, args: cleaned };
+  }
+
+  if (name === 'write_zip') {
+    return {
+      ok: false,
+      error: filesIsObject
+        ? EMPTY_FILES_HINT
+        : 'write_zip 缺少 files（或 filesJson）参数：请给出 zip 内路径到文件文本的映射，例如 {"src/a.py": "print(1)"}',
+    };
+  }
+
+  // write_document：单文件用 content，多文件才要 files/filesJson
+  const content = typeof args.content === 'string' ? args.content : '';
+  if (content.trim()) {
+    // 模型误传了空 files 时，别让它把单文件下载变成一次空 zip
+    delete cleaned.files;
+    return { ok: true, args: cleaned };
+  }
+
+  return {
+    ok: false,
+    error: filesIsObject
+      ? EMPTY_FILES_HINT
+      : 'write_document 缺少 content（单文件）或 files/filesJson（多文件 zip）',
+  };
+}
+
+/** 解析模型给的参数，失败时把原因返回给模型让它重试 */
+export function parseToolArguments(raw: string, toolName?: string): ToolArgumentsResult {
+  let args: Record<string, unknown> = {};
+  if (raw.trim()) {
+    try {
+      const parsed: unknown = JSON.parse(raw);
+      if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
+        return { ok: false, error: '参数必须是一个 JSON 对象' };
+      }
+      args = parsed as Record<string, unknown>;
+    } catch (error) {
+      return { ok: false, error: `参数不是合法 JSON：${error instanceof Error ? error.message : String(error)}` };
+    }
+  }
+  // 空参数也要过一遍兼容层：write_zip 一个参数都不给时同样要给出 filesJson 的明确提示
+  return toolName ? normalizeToolArguments(toolName, args) : { ok: true, args };
 }
 
 export function truncate(text: string, limit = MAX_TOOL_RESULT): string {

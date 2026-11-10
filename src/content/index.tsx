@@ -73,7 +73,7 @@ function start(): void {
 }
 
 function bootPanel(): void {
-  // 初始化共享状态（从 storage.local 恢复面板开关 + 草稿等）
+  // 草稿在 panelStore 模块加载时已从本标签页的 sessionStorage 恢复，这里只是保留启动入口
   void initState();
   // 接管 Ctrl+V / Ctrl+M：PTA 禁粘贴时用插件自己的写入链路把剪贴板内容塞进作答区
   installPasteBridge();

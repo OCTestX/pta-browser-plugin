@@ -740,6 +740,9 @@
 }
 
 .model-list__item {
+  display: flex;
+  align-items: center;
+  gap: 5px;
   padding: 5px 8px;
   border: none;
   border-radius: 6px;
@@ -749,6 +752,23 @@
   font-size: 12px;
   text-align: left;
   cursor: pointer;
+}
+
+/* 模型名太长时省略，眼睛图标始终留在名字后面 */
+.model-list__name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* 支持看图的模型标记：内联 SVG 眼睛，靠 title 说明能力 */
+.model-vision {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  color: var(--pta-accent);
+  cursor: help;
 }
 
 .model-list__item:hover {

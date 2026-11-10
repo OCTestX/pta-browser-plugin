@@ -30,8 +30,39 @@ export const ENGINE_CONFIG = Object.freeze({
 const ANSI_RE = /\x1b\[[0-9;]*m/g;
 /** 引擎日志上限：防病态输出把内存吃爆（上游同款防线） */
 const LOG_CAP = 8 * 1024 * 1024;
+/**
+ * 日志回收阈值：hostWrite 写满 LOG_CAP 之后就不再追加，之后的切片永远是空的。
+ * 每次运行 / 检查前自己回收一次，长会话里后面的编译错误才不会变成「没有诊断」。
+ */
+const LOG_RESET_THRESHOLD = 1024 * 1024;
 /** memfs 里的文件只增不减，跑多了由 Worker 重建引擎防膨胀 */
 export const MAX_RUNS_PER_ENGINE = 100;
+
+const stripNoise = (text) => text
+  .replace(ANSI_RE, '')
+  // LLVM 的 wasm 构建对某些 sysroot 条目会打「Assertion failed: IsRegularFileNode」，
+  // 但编译本身是成功的；这些行不能当成编译诊断交给模型
+  .replace(/^Assertion failed: .*$/gm, '')
+  .replace(/\n{3,}/g, '\n\n');
+
+/**
+ * 编译 / 链接诊断：把引擎自己的噪音去掉再交给模型——
+ *   `> clang -cc1 ...`：命令回显，不是诊断
+ *   `Error: process exited with code 1.`：App.run 失败时追加的退出说明
+ */
+const stripDiagnostics = (text) =>
+  stripNoise(text)
+    .replace(/^> .*$/gm, '')
+    .replace(/^Error: process exited with code \d+\.$/gm, '')
+    .trim();
+
+/** 日志被截断或太长就先回收：不回收的话 hostWrite 从此一条都不记，诊断全是空的 */
+function resetLogIfStuffed(log) {
+  if (log.truncated || log.text.length > LOG_RESET_THRESHOLD) {
+    log.text = '';
+    log.truncated = false;
+  }
+}
 
 /**
  * 建一个引擎实例（含 memfs、sysroot 解包）。
@@ -81,6 +112,7 @@ const emptyResult = (stage, elapsedMs) => ({
 export async function runOnEngine(engine, request) {
   const { api, log } = engine;
   engine.runs += 1;
+  resetLogIfStuffed(log);
   const name = `pta${engine.runs}`;
   const lang = String(request.lang || 'c').toLowerCase();
   const cpp = lang === 'cpp' || lang === 'c++' || lang === 'cxx';
@@ -89,12 +121,6 @@ export async function runOnEngine(engine, request) {
   const wasm = `${name}.wasm`;
   const stdin = typeof request.stdin === 'string' ? request.stdin : '';
   const started = Date.now();
-  const strip = (text) => text
-    .replace(ANSI_RE, '')
-    // LLVM 的 wasm 构建对某些 sysroot 条目会打「Assertion failed: IsRegularFileNode」，
-    // 但编译本身是成功的；这些行不能当成编译诊断交给模型
-    .replace(/^Assertion failed: .*$/gm, '')
-    .replace(/\n{3,}/g, '\n\n');
 
   /* ---------- 编译 ---------- */
   if (request.onStage) request.onStage('compile');
@@ -105,11 +131,13 @@ export async function runOnEngine(engine, request) {
     // clang 报错：进程以非零码退出（ProcExit），诊断文本已写进日志
     if (typeof exn?.code === 'number' && exn.code !== 0) {
       const result = emptyResult('compile-error', Date.now() - started);
-      result.compileOutput = strip(log.text.slice(startLen)).trim();
+      result.compileOutput = stripDiagnostics(log.text.slice(startLen));
+      if (!result.compileOutput) result.message = '编译器报错退出，但没有输出诊断文本';
       return result;
     }
-    // 引擎本身崩了（wasm trap / 内存不够）
+    // 引擎本身崩了（wasm trap / 内存不够）：崩之前打出来的那截诊断一起带回去
     const result = emptyResult('engine-error', Date.now() - started);
+    result.compileOutput = stripDiagnostics(log.text.slice(startLen));
     result.message = exn?.message ?? String(exn);
     return result;
   }
@@ -120,7 +148,8 @@ export async function runOnEngine(engine, request) {
     await api.link(obj, wasm, { lang });
   } catch {
     const result = emptyResult('link-error', Date.now() - started);
-    result.compileOutput = strip(log.text.slice(startLen)).trim();
+    result.compileOutput = stripDiagnostics(log.text.slice(startLen));
+    if (!result.compileOutput) result.message = '链接失败，但没有输出诊断文本';
     return result;
   }
 
@@ -146,7 +175,7 @@ export async function runOnEngine(engine, request) {
   }
 
   // 程序 stdout = 日志切片去掉首行命令回显、App.run 追加的 Error 尾块
-  let stdout = strip(log.text.slice(startLen));
+  let stdout = stripNoise(log.text.slice(startLen));
   stdout = stdout.replace(/^> [^\n]*\.wasm\n/, '');
   stdout = stdout.replace(/\n?Error: process exited with code \d+\.\n?$/, '');
   if (trap !== null) {
@@ -177,20 +206,13 @@ export async function runOnEngine(engine, request) {
 export async function checkOnEngine(engine, request) {
   const { api, log } = engine;
   const started = Date.now();
-  const strip = (text) => text
-    .replace(ANSI_RE, '')
-    .replace(/^Assertion failed: .*$/gm, '')
-    .replace(/\n{3,}/g, '\n\n');
   const lang = String(request.lang || 'c').toLowerCase();
   const cpp = lang === 'cpp' || lang === 'c++' || lang === 'cxx';
   const checkInput = cpp ? 'check.cpp' : 'check.c';
 
   // 上一次的运行把日志写满后 hostWrite 就不再追加，切片会永远是空的：
   // 检查路径自己回收，别让一次长会话把诊断饿死。
-  if (log.text.length > 1024 * 1024) {
-    log.text = '';
-    log.truncated = false;
-  }
+  resetLogIfStuffed(log);
 
   const startLen = log.text.length;
   try {
@@ -199,15 +221,18 @@ export async function checkOnEngine(engine, request) {
     // clang 报错：进程非零退出，诊断文本已经写进日志
     if (typeof exn?.code === 'number' && exn.code !== 0) {
       const result = emptyResult('compile-error', Date.now() - started);
-      result.compileOutput = strip(log.text.slice(startLen)).trim();
+      result.compileOutput = stripDiagnostics(log.text.slice(startLen));
+      if (!result.compileOutput) result.message = '编译器报错退出，但没有输出诊断文本';
       return result;
     }
     const result = emptyResult('engine-error', Date.now() - started);
+    // 引擎崩之前往往已经打出了半截诊断，一起带回去
+    result.compileOutput = stripDiagnostics(log.text.slice(startLen));
     result.message = exn?.message ?? String(exn);
     return result;
   }
 
   const result = emptyResult('ok', Date.now() - started);
-  result.compileOutput = strip(log.text.slice(startLen)).trim();
+  result.compileOutput = stripDiagnostics(log.text.slice(startLen));
   return result;
 }

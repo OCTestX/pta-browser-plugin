@@ -46,7 +46,13 @@ const FUCK_MAX_TOOL_ROUNDS = 300;
 import { streamChat } from './deepseek';
 import { injectScript } from './js-inject';
 import { loadSettings } from './settings';
-import { modelSupportsVlm, statementHasImages } from '../shared/settings';
+import { statementHasImages } from '../shared/settings';
+import {
+  decideVisionMode,
+  extractImageUrls,
+  visionUserMessage,
+  type VisionApiMessage,
+} from '../shared/model-capabilities';
 import { commandForcesWrite, parseSlashCommand } from '../shared/commands';
 import { diffLines, diffStats } from '../shared/diff';
 import {
@@ -158,6 +164,36 @@ function pickAutoAnswer(options: string[]): string {
   return allow ?? options[0] ?? '做';
 }
 
+/** 视觉模式判定后追加在 read_problem 结果末尾的说明：让模型知道自己没看到图 */
+const VISION_OFF_NOTE =
+  '\n（视觉模式已关闭：上面的图片没有作为图像输入发给你，不要假装看过图。'
+  + '需要读图时请让用户把设置里的视觉模式改成「自动」或「开」。）';
+const VISION_UNSUPPORTED_NOTE =
+  '\n（当前模型不支持图像输入：上面的图片没有发给你，不要假装看过图，只能依据图片的 alt/标题文字推断。）';
+const VISION_UNSENDABLE_NOTE =
+  '\n（题面里的图片是内嵌 data: URI，插件拿不到可发送的地址，没有真正发图；不要假装看过图。）';
+
+/**
+ * 把视觉消息塞进 conversation。
+ *
+ * ApiMessage 的 content 只声明了字符串（content script 拼出来的消息都是字符串），
+ * 视觉消息在运行时是 OpenAI 兼容的内容块数组。这是全项目唯一需要放宽类型的地方，
+ * 断言只留在这一处，别处继续按 ApiMessage 使用。
+ */
+function pushVisionMessage(conversation: ApiMessage[], message: VisionApiMessage): void {
+  conversation.push(message as unknown as ApiMessage);
+}
+
+/** 题面里的图片可能是相对地址：拿标签页地址补全 */
+async function currentTabUrl(tabId: number): Promise<string | undefined> {
+  try {
+    const tab = await ext.tabs.get(tabId);
+    return typeof tab?.url === 'string' ? tab.url : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 /**
  * agent loop：请求模型 → 如果它要调工具就执行 → 把结果回灌 → 再来一轮，直到它给出最终回答。
  * 最多 MAX_TOOL_ROUNDS 轮，防止模型来回刷工具。
@@ -196,11 +232,12 @@ export async function runAgent(options: RunAgentOptions): Promise<void> {
   let askUsedThisTurn = false;
   let writeDenied = false;
   let submitDenied = false;
-  // 本轮是否检测到图片、是否启用 VLM、是否已提示降级
+  // 本轮是否检测到图片、是否真的把图发给了模型、降级/关闭提示是否已经说过
   let problemHasImage = false;
   let vlmActiveForTurn = false;
-  let remindedVlmDowngrade = false;
-  let vlmHintPushed = false;
+  let vlmNoticeShown = false;
+  // 已经发过的图片地址：同一张图不要在后续轮次里重复发
+  const sentImageUrls = new Set<string>();
   let lastAutoDiffRight: string | null = null;
 
   for (let round = 0; round < maxRounds; round += 1) {
@@ -263,6 +300,9 @@ export async function runAgent(options: RunAgentOptions): Promise<void> {
       tool_calls: toolCalls,
     });
 
+    // 同一条 assistant 消息可能带多个 tool_call：图片消息要等这一批工具结果全部回灌完再发，
+    // 否则 user 消息会插在 assistant(tool_calls) 与后面的 tool 结果之间，接口会拒绝这种历史。
+    const pendingImageUrls: string[] = [];
     for (const call of toolCalls) {
       throwIfAborted(signal);
       events.onToolStart({
@@ -307,26 +347,51 @@ export async function runAgent(options: RunAgentOptions): Promise<void> {
         if (choiceDeniesWrite(outcome.output)) writeDenied = true;
         if (choiceDeniesSubmit(outcome.output)) submitDenied = true;
       }
-      // VLM：读到题面后看是否包含图片占位，按设置决定是否按 VLM 模式工作。
-      // 模型本身不看图时，先提醒一次降级，不阻断工具链。
+      // 视觉输入：read_problem 把图片摊平成 [图片… <url>]，这里按设置决定是否真的发图。
+      // 只有「auto/on + 模型支持看图 + 拿到可发送的 http(s) 地址」才构造 image_url 内容块；
+      // 其余情况都给模型一句明确的「没有发图」，不能让它假装看过图。
       if (toolName === 'read_problem' && !outcome.isError) {
         problemHasImage = statementHasImages(outcome.output);
         if (problemHasImage) {
-          const wantsVlm = settings.vlmMode === 'on' || settings.vlmMode === 'auto';
-          if (wantsVlm && !modelSupportsVlm(settings.model)) {
+          const decision = decideVisionMode({
+            mode: settings.vlmMode,
+            model: settings.model,
+            hasImages: true,
+          });
+          if (decision === 'active') {
+            const { urls } = extractImageUrls(outcome.output, await currentTabUrl(tabId));
+            const fresh = urls.filter((url) => !sentImageUrls.has(url));
+            if (fresh.length > 0) {
+              vlmActiveForTurn = true;
+              for (const url of fresh) sentImageUrls.add(url);
+              pendingImageUrls.push(...fresh);
+            } else if (urls.length === 0 && pendingImageUrls.length === 0) {
+              // 题面里的图只有内嵌 data: URI（或没有 src）：拿不到可发送的地址
+              vlmActiveForTurn = false;
+              outcome = { ...outcome, output: outcome.output + VISION_UNSENDABLE_NOTE };
+              if (!vlmNoticeShown) {
+                events.onNotice('题面包含图片，但图片是内嵌 data: URI，插件拿不到可发送的图片地址，已按纯文本处理（模型没有看到图）。');
+                vlmNoticeShown = true;
+              }
+            }
+          } else if (decision === 'off') {
+            // 用户明确关掉了视觉模式：就算模型能看图也不发，更不能提示「支持看图」
             vlmActiveForTurn = false;
-            if (!remindedVlmDowngrade) {
-              events.onNotice(`题面包含图片，但当前模型（${settings.model}）不支持看图，已按纯文本模式处理。可在设置里把视觉模式改为 off，或换一台看图模型再试。`);
-              remindedVlmDowngrade = true;
+            outcome = { ...outcome, output: outcome.output + VISION_OFF_NOTE };
+            if (!vlmNoticeShown) {
+              events.onNotice('视觉模式已关闭（off）：题面里的图片不会发给模型，已按纯文本处理。要识别题面图片，请把设置里的视觉模式改成「自动」或「开」。');
+              vlmNoticeShown = true;
             }
           } else {
-            vlmActiveForTurn = true;
+            // 设置想看图，但当前模型不支持：提示一次降级，不阻断工具链
+            vlmActiveForTurn = false;
+            outcome = { ...outcome, output: outcome.output + VISION_UNSUPPORTED_NOTE };
+            if (!vlmNoticeShown) {
+              events.onNotice(`题面包含图片，但当前模型（${settings.model}）不支持看图，已按纯文本模式处理。可在设置里把视觉模式改为 off，或换一台看图模型再试。`);
+              vlmNoticeShown = true;
+            }
           }
         }
-      }
-      if (vlmActiveForTurn && !vlmHintPushed) {
-        conversation.push({ role: 'system', content: '【视觉模式】本题题面包含图片，当前模型支持看图，可结合图像内容理解题面。' });
-        vlmHintPushed = true;
       }
 
       // 后台刚自动展示过同一份改动时，模型再调 diff 就不重复画一张
@@ -361,6 +426,19 @@ export async function runAgent(options: RunAgentOptions): Promise<void> {
         tool_call_id: call.id,
         content: truncate(outcome.output, TOOL_RESULT_LIMITS[toolName as keyof typeof TOOL_RESULT_LIMITS]),
       });
+    }
+
+    // 所有 tool 结果都回灌完了，再发图像消息：assistant(tool_calls) → tool… → user(图片) 才是合法顺序。
+    // 这里发的是真正的 OpenAI 兼容 image_url 内容块，不是文本占位。
+    if (vlmActiveForTurn && pendingImageUrls.length > 0) {
+      pushVisionMessage(
+        conversation,
+        visionUserMessage(
+          `【视觉模式】以下图片由插件自动附上（不是用户的新请求）：read_problem 读到的题面图片（${pendingImageUrls.length} 张），`
+          + '请结合图片内容理解题面（图片里的公式、示意图、函数图像等）。',
+          pendingImageUrls,
+        ),
+      );
     }
   }
 
@@ -598,7 +676,8 @@ export async function runTool(
     return { output: `没有名为 ${name} 的工具，可用工具：${TOOL_NAMES.join('、')}`, isError: true };
   }
 
-  const parsed = parseToolArguments(rawArguments);
+  // 带工具名解析：write_zip / write_document 的 filesJson 在这里解析成 files
+  const parsed = parseToolArguments(rawArguments, name);
   if (!parsed.ok) return { output: parsed.error, isError: true };
   const args = parsed.args;
 

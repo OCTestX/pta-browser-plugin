@@ -1,9 +1,14 @@
+// 带上 .ts 后缀：scripts/test-model-capabilities.mjs 直接用 Node 导入本模块
+// （Node 不做省略后缀解析；Vite 与 tsc 都认这个写法）
+import { modelSupportsVision } from './model-capabilities.ts';
+import type { VlmMode } from './model-capabilities.ts';
+
 export interface Settings {
   apiKey: string;
   baseURL: string;
   model: string;
   /** 视觉模式：auto 按题面是否有图片自动切换；on 强制开启；off 强制关闭 */
-  vlmMode: 'auto' | 'on' | 'off';
+  vlmMode: VlmMode;
   /**
    * 强制用 PTA 自己的运行环境跑代码（默认关）。
    * 打开后 compile_and_run_c / _python / _js 一律改走 PTA 的测试面板，
@@ -39,7 +44,7 @@ export interface SettingsView {
   model: string;
   hasApiKey: boolean;
   /** 视觉模式（自/开/关） */
-  vlmMode?: 'auto' | 'on' | 'off';
+  vlmMode?: VlmMode;
   /** 是否强制用 PTA 的运行环境跑代码（默认关） */
   forcePtaRun?: boolean;
   /**
@@ -82,18 +87,14 @@ export function isCompleteBaseURL(baseURL: string): boolean {
   }
 }
 
-/** 已知能看图的模型前缀，命中才允许按 VLM 模式工作 */
+/**
+ * 已知能看图的模型前缀，命中才允许按 VLM 模式工作。
+ *
+ * 能力表集中在 shared/model-capabilities.ts：这里只是老名字的兼容入口，
+ * 别再把前缀列表抄回来。
+ */
 export function modelSupportsVlm(model: string): boolean {
-  if (!model) return false;
-  const m = model.toLowerCase();
-  const visionPrefixes = [
-    'qwen-vl', 'qwen-vl-',
-    'deepseek-vl',
-    'gpt-4o', 'gpt-4-turbo', 'gpt-4-vision',
-    'claude-3', 'claude-3.5', 'claude-4',
-    'gemini-',
-  ];
-  return visionPrefixes.some((prefix) => m.startsWith(prefix));
+  return modelSupportsVision(model);
 }
 
 /** 判断题面文字里是否包含图片占位（read_problem 把图片摊平成 [图片 ...]） */

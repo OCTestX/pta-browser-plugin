@@ -1,70 +1,100 @@
-// 全局共享的输入草稿 + 本标签页私有的悬浮窗开关
-// 草稿通过 chrome.storage.local 跨标签页、跨页面同步：
-// 刷新页面、关掉重开都能恢复草稿，拖动/缩放的位置也一起记住。
-// 悬浮窗开关（panelOpen）只在当前标签页内存里，不进 storage、不跨标签页同步。
-
-import { ext } from '../shared/browser';
+// 本标签页的输入草稿 + 悬浮窗开关
+//
+// 隔离单位是标签页，不是地址：同一个题目的两个标签页应该各写各的草稿。
+// 所以草稿写在 sessionStorage 里（天然按标签页隔离、刷新不丢），键再按标签页 id
+// 命名，含义写明白。不再往 chrome.storage.local 写，也就没有跨标签页同步。
+// 悬浮窗开关（panelOpen）只活在内存里：刷新后默认关闭，点图标才打开。
 
 type Listener = () => void;
 
-const STATE_KEY = 'pta-assistant-state';
+// 标签页 id 存在 sessionStorage 里：刷新页面不会丢，所以刷新后还是同一个 id、
+// 同一份草稿；新开的标签页是另一份 sessionStorage，会拿到新的 id。
+// chatStore 用的是同一个键，两个模块在同一个标签页里读到的是同一个 id。
+const TAB_ID_KEY = 'pta-assistant-tab-id';
+const DRAFT_KEY_PREFIX = 'pta-assistant-draft';
 
-interface AssistantState {
-  layoutResetCount: number;
-  draft: string;
+// content script 启动时取一次 sessionStorage。
+// 取不到（非浏览器环境、隐私模式抛异常）就退化成纯内存状态，功能不炸。
+const tabStorage = ((): Storage | null => {
+  try {
+    return typeof sessionStorage === 'undefined' ? null : sessionStorage;
+  } catch {
+    return null;
+  }
+})();
+
+let cachedTabId = '';
+
+function tabId(): string {
+  if (cachedTabId) return cachedTabId;
+  if (!tabStorage) {
+    cachedTabId = 'unknown';
+    return cachedTabId;
+  }
+  try {
+    const existing = tabStorage.getItem(TAB_ID_KEY);
+    if (existing) {
+      cachedTabId = existing;
+      return cachedTabId;
+    }
+  } catch {
+    cachedTabId = 'unknown';
+    return cachedTabId;
+  }
+  const created = `tab-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
+  try {
+    tabStorage.setItem(TAB_ID_KEY, created);
+  } catch {
+    // 写不进去也不影响这次会话，内存里照样能存
+  }
+  cachedTabId = created;
+  return cachedTabId;
 }
 
-const DEFAULT_STATE: AssistantState = {
-  layoutResetCount: 0,
-  draft: '',
-};
+function draftKey(): string {
+  return `${DRAFT_KEY_PREFIX}:${tabId()}`;
+}
 
-// 当前页面的内存缓存
-let currentState: AssistantState = { ...DEFAULT_STATE };
-// 标记：本页面是否已经有本地变更（toggle / 打字等），
-// 如果有，就不要等 storage 异步返回后把这些变更给覆盖掉
-let mutated = false;
+function readDraft(): string {
+  if (!tabStorage) return '';
+  try {
+    return tabStorage.getItem(draftKey()) ?? '';
+  } catch {
+    return '';
+  }
+}
+
+function writeDraft(draft: string): void {
+  if (!tabStorage) return;
+  try {
+    // 空草稿不占地方，也免得刷新后恢复出一个空字符串
+    if (draft) tabStorage.setItem(draftKey(), draft);
+    else tabStorage.removeItem(draftKey());
+  } catch {
+    // 配额满 / 隐私模式：存不下就只留内存，至少这次输入不丢
+  }
+}
+
 const listeners = new Set<Listener>();
 
 function emit(): void {
   listeners.forEach((listener) => listener());
 }
 
-// 初始化：从 storage.local 恢复状态。
-// 仅在「页面刚加载、用户还没动过」的时候回放，否则会把刚刚 toggle 打开的状态给冲掉。
-// 注意：panelOpen 不回放——刷新后悬浮窗默认关闭，点图标才打开（保持 toggle 语义）；
-// draft 回放，保证跨页面刷新后输入框内容不丢。
+// 草稿在模块加载时同步恢复：React 首帧就能读到上次的内容，不需要异步回放。
+// 也就不存在「storage 还没返回、用户已经打字导致互相覆盖」的竞态。
+let draft = readDraft();
+
+/**
+ * 兼容入口：状态现在在模块加载时就从 sessionStorage 恢复了，没有异步回放要等。
+ * 保留这个函数是为了不改 index.tsx 的启动顺序。
+ */
 export async function initState(): Promise<void> {
-  const result = await ext.storage.local.get([STATE_KEY]);
-  const stored = result[STATE_KEY] as AssistantState | undefined;
-  if (stored && !mutated) {
-    currentState = { ...DEFAULT_STATE, ...stored };
-    emit();
-  }
-}
-
-// 保存到 storage.local
-async function persist(): Promise<void> {
-  await ext.storage.local.set({ [STATE_KEY]: currentState });
-}
-
-// 监听 storage 变化，实现跨标签页同步
-const onChanged = ext.storage.onChanged;
-if (onChanged && typeof onChanged.addListener === 'function') {
-  onChanged.addListener((changes) => {
-    if (changes[STATE_KEY]) {
-      const next = changes[STATE_KEY].newValue as AssistantState | undefined;
-      if (next) {
-        currentState = { ...DEFAULT_STATE, ...next };
-        emit();
-      }
-    }
-  });
+  // 草稿已经在模块加载时读出来了
 }
 
 // 本标签页悬浮窗开关：只在当前 tab 内有效。
-// 不写 storage、不参与 storage 变更同步，
-// 这样在 A 标签页打开悬浮窗不会让 B 标签页的面板也弹出来。
+// 不写 storage，这样在 A 标签页打开悬浮窗不会让 B 标签页的面板也弹出来。
 let panelOpen = false;
 
 export function isPanelOpen(): boolean {
@@ -88,16 +118,18 @@ export function subscribePanel(listener: Listener): () => void {
   };
 }
 
-// 布局重置
+// 布局重置：双击插件图标 = 把位置与大小恢复默认。
+// 这是一个一次性的命令计数，只放内存——刷新后没有「待重置」这回事，
+// 也免得刷新时把刚调好的布局又重置一遍。
+let resetCount = 0;
+
 export function requestLayoutReset(): void {
-  mutated = true;
-  currentState = { ...currentState, layoutResetCount: currentState.layoutResetCount + 1 };
+  resetCount += 1;
   emit();
-  void persist();
 }
 
 export function layoutResetCount(): number {
-  return currentState.layoutResetCount;
+  return resetCount;
 }
 
 export function subscribeLayoutReset(listener: Listener): () => void {
@@ -107,17 +139,16 @@ export function subscribeLayoutReset(listener: Listener): () => void {
   };
 }
 
-// 全局共享的输入草稿
+// 本标签页的输入草稿
 export function getDraft(): string {
-  return currentState.draft;
+  return draft;
 }
 
-export function setDraft(draft: string): void {
-  if (currentState.draft === draft) return;
-  mutated = true;
-  currentState = { ...currentState, draft };
+export function setDraft(next: string): void {
+  if (draft === next) return;
+  draft = next;
+  writeDraft(next);
   emit();
-  void persist();
 }
 
 export function subscribeDraft(listener: Listener): () => void {

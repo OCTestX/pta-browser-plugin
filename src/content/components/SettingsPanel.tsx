@@ -10,6 +10,7 @@ import {
   type SettingsView,
 } from '../../shared/settings';
 import { INPUT_METHODS, INPUT_METHOD_GROUPS, inputMethodIndex } from '../../shared/input-methods';
+import { modelSupportsVision, modelVisionTitle } from '../../shared/model-capabilities';
 import { SYSTEM_PROMPT } from '../../shared/tools';
 import type { ModelsListResponse, TestInputResponse } from '../../shared/messages';
 
@@ -65,6 +66,27 @@ interface SettingsPanelProps {
   view: SettingsView | null;
   onSave: (patch: Partial<Settings>) => Promise<unknown>;
   onBack: () => void;
+}
+
+/**
+ * 模型能力标记：支持看图的模型在名字后面挂一只眼睛。
+ * 显示与否只看 shared/model-capabilities.ts 的能力表，别在这里另写前缀判断。
+ */
+function VisionIcon({ model }: { model: string }) {
+  return (
+    <span className="model-vision" role="img" title={modelVisionTitle(model)} aria-label="支持看图">
+      <svg viewBox="0 0 16 16" width="13" height="13" aria-hidden="true" focusable="false">
+        <path
+          d="M8 3.2C4.7 3.2 2 5.4 1.2 8c.8 2.6 3.5 4.8 6.8 4.8s6-2.2 6.8-4.8C14 5.4 11.3 3.2 8 3.2Z"
+          fill="none"
+          stroke="currentColor"
+          strokeWidth="1.3"
+          strokeLinejoin="round"
+        />
+        <circle cx="8" cy="8" r="2.1" fill="currentColor" />
+      </svg>
+    </span>
+  );
 }
 
 export function SettingsPanel({ view, onSave, onBack }: SettingsPanelProps) {
@@ -313,6 +335,7 @@ export function SettingsPanel({ view, onSave, onBack }: SettingsPanelProps) {
             value={model}
             onChange={(event) => setModel(event.target.value)}
           />
+          {modelSupportsVision(model) && <VisionIcon model={model} />}
           {canListModels && (
             <button
               type="button"
@@ -337,13 +360,14 @@ export function SettingsPanel({ view, onSave, onBack }: SettingsPanelProps) {
                   key={id}
                   type="button"
                   className={`model-list__item${id === model ? ' model-list__item--on' : ''}`}
-                  title={id}
+                  title={modelVisionTitle(id)}
                   onClick={() => {
                     setModel(id);
                     setModelsOpen(false);
                   }}
                 >
-                  {id}
+                  <span className="model-list__name">{id}</span>
+                  {modelSupportsVision(id) && <VisionIcon model={id} />}
                 </button>
               ))}
           </span>

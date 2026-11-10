@@ -109,7 +109,8 @@ const HELPERS = `
       // 结构：input → label → span → span(选项区) → div(本题正文) → …
       const optionsWrap = radios[0].closest('label')?.parentElement?.parentElement;
       const body = optionsWrap ? optionsWrap.parentElement : null;
-      let stem = body ? textOf(body) : '';
+      // 题干里可能嵌着只读代码块，行号槽（1 / 2 / …）不是题面内容，读文本前先摘掉
+      let stem = body ? textWithoutGutters(body) : '';
       if (optionsWrap) stem = stem.split(textOf(optionsWrap)).join(' ');
       stem = cleanChoiceStem(stem);
       // 再上一层是题号、分数、作者这些信息
@@ -628,6 +629,33 @@ const HELPERS = `
   // 只读判定沿用 isEditableElement 的反面：aria-readonly=true 或 contenteditable=false 都算只读
   const isReadonlyContent = (node) => Boolean(node) && !isEditableElement(node);
 
+  // CodeMirror 的行号槽 / 折叠槽：它们是 .cm-content 的兄弟节点，不是题面内容。
+  // 判断题第 22 题的题干是一块只读代码时，行号槽里的「1」会被 innerText 一起带出来，
+  // 模型看到的就是「题干以 1 开头」。
+  const GUTTER_SELECTOR = '.cm-gutters, .cm-gutterElement, .cm-lineNumbers, .cm-foldGutter, [class*=gutter]';
+  const isGutterNode = (node) => {
+    if (!node || node.nodeType !== 1) return false;
+    try { return Boolean(node.matches && node.matches(GUTTER_SELECTOR)); } catch (e) { return false; }
+  };
+
+  // 取文本前把行号槽临时收起来，读完立刻还原：
+  // 不能克隆出来再读 —— 克隆节点没有布局，真实浏览器的 innerText 会退化成 textContent，
+  // 换行全丢，题干就挤成一行了。
+  const textWithoutGutters = (node) => {
+    if (!node) return '';
+    const gutters = Array.from(node.querySelectorAll(GUTTER_SELECTOR));
+    const saved = gutters.map((gutter) => gutter.getAttribute('style'));
+    for (const gutter of gutters) gutter.style.display = 'none';
+    try {
+      return textOf(node);
+    } finally {
+      gutters.forEach((gutter, index) => {
+        if (saved[index] === null) gutter.removeAttribute('style');
+        else gutter.setAttribute('style', saved[index]);
+      });
+    }
+  };
+
   // 样例框的判定：
   //   1) 优先认 PTA 自己的标记 div[data-code]（data-lang 是 in / out）；
   //   2) 兼容没有 data-code 的老页面：包着只读 .cm-content 的 CodeMirror 容器也算。
@@ -677,6 +705,8 @@ const HELPERS = `
       if (node.nodeType !== 1) return;
       const tag = node.tagName;
       if (tag === 'SCRIPT' || tag === 'STYLE' || tag === 'NOSCRIPT') return;
+      // 行号槽 / 折叠槽不是题面内容（没被认成样例框的只读代码块也会带它们）
+      if (isGutterNode(node)) return;
       // 样例框整块换成真实内容：行号槽（9 / 1 / 2）、工具条、折叠标记 ▸ 一律不要
       if (isSampleBox(node)) {
         const value = sampleBoxContent(node);
@@ -761,33 +791,135 @@ const HELPERS = `
   // 有些题被题组配置成了 Python 2（页面上写「Python (python2)」），
   // 而插件内置的 Python 运行器是 Python 3，写 Python 3 的代码提交过去会直接报
   // 「Non-zero Exit Code」。这里把页面上的语言切到 Python 3（题组允许的话）。
-  const switchLanguage = (target) => {
-    const wanted = String(target || '').toLowerCase();
-    if (!wanted) return { ok: false, detail: '没说要切到哪个语言' };
+  //
+  // 语言名归一化：页面上的选项写的是「C++ (g++)」「Python (python3)」「C (gcc 9.2)」，
+  // 模型传进来的是 cpp / c++ / g++ / cxx / py3 这类别名。先归一化成同一个标准名再比，
+  // 不能用「子串命中」硬凑 —— 'c' 会命中 'c++'，把 C++ 题切到 C。
+  const normalizeLanguageName = (value) => {
+    const text = String(value || '').toLowerCase().replace(/\\s+/g, ' ').trim();
+    if (!text) return '';
+    // C++ 必须排在 C 前面：'c++' 也会被 /^c\\b/ 命中（c 与 + 之间是词边界）
+    if (/c\\+\\+|cpp|cxx|g\\+\\+|clang\\+\\+|c语言\\+\\+/.test(text)) return 'cpp';
+    if (/c#|csharp|\\.net\\b/.test(text)) return 'csharp';
+    if (/python|^py[23]?$/.test(text)) {
+      // 版本号在括号里（「Python (python3)」），也可能直接写 py2 / py3
+      const version = /python[^0-9]*([23])/.exec(text) || /^py([23])$/.exec(text);
+      if (version) return version[1] === '2' ? 'python2' : 'python3';
+      return 'python';
+    }
+    if (/javascript|js语言|node|^js\\b/.test(text)) return 'js';
+    if (/typescript|^ts\\b/.test(text)) return 'typescript';
+    if (/golang|go语言|^go/.test(text)) return 'go';
+    if (/kotlin/.test(text)) return 'kotlin';
+    if (/rust/.test(text)) return 'rust';
+    if (/swift/.test(text)) return 'swift';
+    if (/php/.test(text)) return 'php';
+    if (/ruby/.test(text)) return 'ruby';
+    if (/^c\\b|^c\\d|\\bc\\s*\\(|c语言|gcc|clang/.test(text)) return 'c';
+    return '';
+  };
+
+  // 元素（含祖先）在页面上真的显示着：react-select 的菜单是点开之后才挂上去的，
+  // 提前渲染在 DOM 里的隐藏选项不能当成「可选语言」
+  const isShownNode = (node) => {
+    const view = node && node.ownerDocument ? node.ownerDocument.defaultView : null;
+    for (let current = node; current && current.nodeType === 1; current = current.parentElement) {
+      if (current.hidden) return false;
+      if (/display\\s*:\\s*none/i.test(String(current.getAttribute('style') || ''))) return false;
+      if (!view || !view.getComputedStyle) continue;
+      let style = null;
+      try { style = view.getComputedStyle(current); } catch (e) {}
+      if (style && style.display === 'none') return false;
+    }
+    return true;
+  };
+
+  const switchLanguage = async (target) => {
+    const raw = String(target || '').trim();
+    if (!raw) return { ok: false, detail: '没说要切到哪个语言' };
+    const wanted = normalizeLanguageName(raw);
 
     const control = document.querySelector('.select__control');
     if (!control) return { ok: false, detail: '页面上找不到语言选择器' };
 
     // 先记下现在的选择，切完要对比
     const before = textOf(control).trim();
+
+    // react-select 只认 mousedown / pointerdown：只在控制块上 click 的话菜单不会展开
+    //（真机 2026-11 实测：点完页面里一个 .select__option 都没有）。
+    // 手柄挂在内部的 value-container / input 上，事件会从那里冒泡到控制块，所以只派发一次，
+    // 打两遍反而可能把已经展开的菜单再关掉。
+    const pressTarget = control.querySelector('input, [class*=select__value-container], [class*=select__input]') || control;
+    const press = (node) => {
+      for (const type of ['pointerdown', 'mousedown', 'mouseup']) {
+        try {
+          node.dispatchEvent(new MouseEvent(type, { bubbles: true, cancelable: true, view: window, button: 0 }));
+        } catch (e) {}
+      }
+    };
+    press(pressTarget);
     control.click();
-    const options = Array.from(document.querySelectorAll('.select__option, [role=option]'));
+
+    const readOptions = () => Array.from(document.querySelectorAll('.select__option, [role=option]'))
+      .filter((option) => !(option.classList && option.classList.contains('select__option--is-disabled')))
+      .filter((option) => {
+        const text = textOf(option).trim();
+        return text.length > 0 && text.length <= 40 && isShownNode(option);
+      });
+
+    // 菜单是异步渲染的：等 .select__option 真出现再找，别点完立刻读
+    let options = [];
+    const openStartedAt = Date.now();
+    let retried = false;
+    while (Date.now() - openStartedAt < 1500) {
+      options = readOptions();
+      if (options.length > 0) break;
+      if (aborted()) return { ok: false, detail: '已按用户要求停止切换语言' };
+      // 有些页面第一次 mousedown 只拿到焦点，菜单要第二下才展开
+      if (!retried && Date.now() - openStartedAt > 600) {
+        retried = true;
+        press(pressTarget);
+      }
+      await sleepOrAbort(50);
+    }
+
     const match = options.find((option) => {
-      const text = textOf(option).trim().toLowerCase();
-      if (!text || text.length > 40) return false;
-      if (option.classList.contains('select__option--is-disabled')) return false;
-      if (wanted === 'python3') return /python[^0-9]*3/.test(text);
-      if (wanted === 'python2') return /python[^0-9]*2/.test(text);
-      return text.indexOf(wanted) >= 0;
+      const text = textOf(option).trim();
+      if (!wanted) return text.toLowerCase().indexOf(raw.toLowerCase()) >= 0;
+      const name = normalizeLanguageName(text);
+      if (name === wanted) return true;
+      // 只说了 python、没指定版本：python2 / python3 都算命中
+      return wanted === 'python' && (name === 'python2' || name === 'python3');
     });
     if (!match) {
       // 把下拉收起来，别留个遮在页面上的菜单
       document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', keyCode: 27, bubbles: true }));
-      return { ok: false, detail: '这个题不允许切到 ' + wanted + '（可选：' + options.map((o) => textOf(o).trim()).filter(Boolean).slice(0, 6).join(' / ') + '）' };
+      const listed = Array.from(document.querySelectorAll('.select__option, [role=option]'))
+        .map((option) => textOf(option).trim())
+        .filter(Boolean)
+        .slice(0, 6)
+        .join(' / ');
+      return {
+        ok: false,
+        detail: '这个题不允许切到 ' + raw
+          + (listed ? '（可选：' + listed + '）' : '（菜单没展开，页面上读不到可选语言）'),
+      };
     }
+
     const label = textOf(match).trim();
+    press(match);
     match.click();
-    return { ok: true, detail: '作答语言已从「' + before + '」切到「' + label + '」' };
+
+    // 选中状态是异步更新的：等控制块上的文字变过来再回报，别把已经切好的说成没切
+    const switchDeadline = Date.now() + 1500;
+    while (Date.now() < switchDeadline && textOf(control).trim() === before) {
+      await sleepOrAbort(50);
+    }
+    const after = textOf(control).trim();
+    if (after === before && label !== before) {
+      return { ok: false, detail: '点了「' + label + '」但页面上的语言没变（还是「' + before + '」），可能这个选项被题组锁住了' };
+    }
+    return { ok: true, detail: '作答语言已从「' + before + '」切到「' + (after || label) + '」' };
   };
 
   // PTA 有个 bug：提交后判题结果不会自己更新，页面上会出现一个「刷新 / Reload」按钮，
@@ -1436,14 +1568,40 @@ for (let index = 0; index < keys.length; index += 1) {
     continue;
   }
   const radios = groups.get(keys[index]);
-  // 先按字母找（单选框的 id 形如 input-radio-option-<题号>-A）
-  const letter = token.replace(/^[A-Za-z]\\s*[.．、)）]\\s*/, '').trim();
-  let hit = radios.find((radio) => String(radio.id || '').toUpperCase().endsWith('-' + letter.toUpperCase()));
+  const idOf = (radio) => String(radio.id || '').toUpperCase();
+  const optionText = (radio) => {
+    const label = radio.closest('label');
+    return String(label ? textOf(label) : '').replace(/\\s+/g, ' ').trim();
+  };
+  // 判断题：模型写 T / F，页面上的单选框是 TRUE / FALSE（id 形如 input-radio-option-22-TRUE），
+  // 选项文字可能是 True / False，也可能是 对 / 错。这三种写法都要认，不能只当选项字母去找 '-T'。
+  const TRUE_ALIASES = ['TRUE', 'T', '对', '正确', '√'];
+  const FALSE_ALIASES = ['FALSE', 'F', '错', '错误', '×'];
+  const boolKey = token.toUpperCase();
+  const boolAliases = TRUE_ALIASES.indexOf(boolKey) >= 0
+    ? TRUE_ALIASES
+    : (FALSE_ALIASES.indexOf(boolKey) >= 0 ? FALSE_ALIASES : []);
+  let hit = null;
+  if (boolAliases.length > 0) {
+    // 先按 id 后缀找（-TRUE / -FALSE），再按选项原文找
+    hit = radios.find((radio) => boolAliases.some((alias) => idOf(radio).endsWith('-' + alias)));
+    if (!hit) {
+      hit = radios.find((radio) => {
+        const text = optionText(radio).toUpperCase();
+        return boolAliases.indexOf(text) >= 0
+          || boolAliases.some((alias) => alias.length >= 2 && text.indexOf(alias) >= 0);
+      });
+    }
+  }
   if (!hit) {
-    // 再按选项原文找
+    // 再按选项字母找（单选框的 id 形如 input-radio-option-<题号>-A）
+    const letter = token.replace(/^[A-Za-z]\\s*[.．、)）]\\s*/, '').trim();
+    hit = radios.find((radio) => idOf(radio).endsWith('-' + letter.toUpperCase()));
+  }
+  if (!hit) {
+    // 最后按选项原文找
     hit = radios.find((radio) => {
-      const label = radio.closest('label');
-      const text = String(label ? textOf(label) : '').replace(/^\\s*[A-Za-z]\\s*[.．、)）]?\\s*/, '').trim();
+      const text = optionText(radio).replace(/^[A-Za-z]\\s*[.．、)）]?\\s*/, '').trim();
       return text === token || text.includes(token);
     });
   }
@@ -1622,7 +1780,7 @@ export const LANGUAGE_SCRIPT = `${HELPERS}
 const current = detectLanguage();
 const target = String(__args.target || __args.language || '').trim();
 if (!target) return { language: current };
-const switched = switchLanguage(target);
+const switched = await switchLanguage(target);
 return { language: detectLanguage(), ...switched };
 `;
 
@@ -1935,32 +2093,46 @@ if (stdin) {
 }
 
 // 三、记下点之前的输出，用来判断「有没有变成新结果」
+// 页签标题 / 结果块标题下面的正文：先找只读 CodeMirror，再退到 pre / code。
+// 读到空就继续往上找：新版页面的 Running Result 页签没内容时，那个空结果框
+// 不能挡住后面真正的 Compiler's Log（否则 C++ 编译错误永远读不到）。
+const readLabeledBlock = (label) => {
+  for (const node of document.querySelectorAll('span, div, p, label, button')) {
+    if (node.children.length > 0) continue;
+    if (textOf(node) !== label) continue;
+    let holder = node.parentElement;
+    for (let depth = 0; holder && depth < 10; depth += 1) {
+      // 结果是只读的 CodeMirror：按编辑器内容读，不要按 innerText（会带上行号槽）。
+      // 页面上可能同时挂着一堆隐藏的旧面板，优先读真正显示着的那几块。
+      const editors = Array.from(holder.querySelectorAll('.cm-content')).filter((e) => {
+        const readonly = e.getAttribute('aria-readonly') === 'true' || e.getAttribute('contenteditable') === 'false';
+        return readonly;
+      });
+      const shownEditors = editors.filter((e) => isShownNode(e));
+      const picked = shownEditors.length > 0 ? shownEditors : editors;
+      if (picked.length > 0) {
+        const value = picked.map((e) => readFromDom(e)).filter(Boolean).join('\\n---\\n');
+        if (value) return value;
+      }
+      const blocks = holder.querySelectorAll('pre, code, [class*=output], [class*=stdout], [class*=stderr]');
+      if (blocks.length > 0) {
+        const value = Array.from(blocks).map((b) => textOf(b)).filter(Boolean).join('\\n---\\n');
+        if (value) return value;
+      }
+      holder = holder.parentElement;
+    }
+  }
+  return '';
+};
+
 const readOutput = () => {
   // 英文页：Running Result（实际输出）/ Compiler's Log（编译日志）与 Expected Result（期望输出）
   // 中文页：一块「编译器输出」。新版页面这三块是页签，容器在标题上方第 5 层，
   // 所以祖先链要多找几层（以前卡在 5 层，永远读不到新版页面的输出）。
   const OUTPUT_LABELS = ['Running Result', '运行结果', '运行输出', '编译器输出', '编译输出', "Compiler's Log", '编译日志', '编译信息'];
   for (const label of OUTPUT_LABELS) {
-    for (const node of document.querySelectorAll('span, div, p, label, button')) {
-      if (node.children.length > 0) continue;
-      if (textOf(node) !== label) continue;
-      let holder = node.parentElement;
-      for (let depth = 0; holder && depth < 10; depth += 1) {
-        // 结果是只读的 CodeMirror：按编辑器内容读，不要按 innerText（会带上行号槽）
-        const editors = Array.from(holder.querySelectorAll('.cm-content')).filter((e) => {
-          const readonly = e.getAttribute('aria-readonly') === 'true' || e.getAttribute('contenteditable') === 'false';
-          return readonly;
-        });
-        if (editors.length > 0) {
-          return editors.map((e) => readFromDom(e)).filter(Boolean).join('\\n---\\n');
-        }
-        const blocks = holder.querySelectorAll('pre, code, [class*=output], [class*=stdout], [class*=stderr]');
-        if (blocks.length > 0) {
-          return Array.from(blocks).map((b) => textOf(b)).filter(Boolean).join('\\n---\\n');
-        }
-        holder = holder.parentElement;
-      }
-    }
+    const value = readLabeledBlock(label);
+    if (value) return value;
   }
   return '';
 };
@@ -2015,13 +2187,24 @@ const activateTab = (labels) => {
   return '';
 };
 
-// 运行前读一次旧结果（可能是上一轮遗留在页面上的），用来区分「新结果」。
-const beforeOutput = readOutput();
-// 结果判定不再用「readOutput() 前后文本不一样」：真实考试页的只读用例表本来就存在，
-// readOutput() 会把它们整份读回来，点运行后永远「有输出」。只认新增/变了的只读编辑器。
-runButton.click();
-await sleepOrAbort(500);
-const resultTab = activateTab(['Running Result', '运行结果', '运行输出']);
+// 编译器日志 / 编译器输出：C++ 编译不过时 Running Result 是空的，
+// 页面上只剩这一块（新版页面连 Running Result 页签都没有），错误原文全在这里。
+const LOG_LABELS = ["Compiler's Log", '编译日志', '编译信息', '编译器输出', '编译输出'];
+// 状态条上的失败结论：只有它、没有 Running Result 时也算跑完了，不能当成「还没跑」
+const FAIL_STATUS = /Non-zero Exit Code|Compile Error|Compilation Error|编译错误|编译失败|Runtime Error|运行错误|Segmentation fault/i;
+const readCompilerLog = () => {
+  for (const label of LOG_LABELS) {
+    const value = readLabeledBlock(label);
+    if (!value) continue;
+    // 从页签标题往上摸会摸到整块测试区：扣掉运行前就有的用例表内容，
+    // 只有用例表说明日志是空的，别把用例表当成编译错误带回去
+    const kept = value.split('\\n---\\n')
+      .map((part) => part.trim())
+      .filter((part) => part && testCaseBefore.indexOf(part) < 0);
+    if (kept.length > 0) return kept.join('\\n---\\n');
+  }
+  return '';
+};
 
 // 真机 7-2：PTA 新考试页把「上次测试状态」放在页签下面的状态条里
 //（Last Tested At / Non-zero Exit Code），输出本身可能只是 Test Case 页里的用例表。
@@ -2040,7 +2223,18 @@ const statusText = () => {
   }
   return '';
 };
+
+// 运行前读一次旧结果 / 旧状态（可能是上一轮遗留在页面上的），用来区分「新结果」。
+// 状态必须在点运行**之前**读：C++ 语法错误几十毫秒就出结论，
+// 点完再读的话「运行前」拿到的已经是这次的状态，statusReady() 永远不成立。
+const beforeOutput = readOutput();
 const beforeStatus = statusText();
+// 结果判定不再用「readOutput() 前后文本不一样」：真实考试页的只读用例表本来就存在，
+// readOutput() 会把它们整份读回来，点运行后永远「有输出」。只认新增/变了的只读编辑器。
+runButton.click();
+await sleepOrAbort(500);
+const resultTab = activateTab(['Running Result', '运行结果', '运行输出']);
+
 const statusReady = () => {
   const after = statusText();
   return after.length > 0 && after !== beforeStatus ? after : '';
@@ -2071,6 +2265,8 @@ const freshResult = () => {
 const deadline = Date.now() + waitSeconds * 1000;
 let latest = '';
 let changed = false;
+let logNote = '';
+let statusNote = '';
 while (Date.now() < deadline) {
   await sleepOrAbort(pollMs);
   if (aborted()) return '已按用户要求停止等待运行结果';
@@ -2080,35 +2276,62 @@ while (Date.now() < deadline) {
     changed = true;
     break;
   }
-}
-
-// 运行结果为空时，编译错误/异常通常落在 Compiler's Log 页签里
-let logNote = '';
-if (!changed) {
-  const logTab = activateTab(["Compiler's Log", '编译日志', '编译信息']);
-  if (logTab) {
-    await sleepOrAbort(300);
-    const log = freshResult();
+  // 状态条已经给出失败结论（Non-zero Exit Code / Compile Error）：C++ 编译不过时
+  // Running Result 是空的，别再空等到超时，立刻去编译器日志里把原文捞回来
+  const state = statusReady();
+  if (state && FAIL_STATUS.test(state)) {
+    statusNote = state;
+    const logTab = activateTab(LOG_LABELS);
+    if (logTab) await sleepOrAbort(300);
+    const log = readCompilerLog();
     if (log) {
       latest = log;
       changed = true;
-      logNote = '（来自 ' + logTab + '）';
+      logNote = '（来自 ' + (logTab || '编译器日志') + '）';
     }
+    break;
+  }
+}
+
+// 本轮没读出「新」结果：编译错误 / 异常通常落在 Compiler's Log 页签里。
+// 连续两次同样的编译错误时日志跟运行前一模一样，freshResult() 会判成「不是新结果」，
+// 所以这里按标签直接把日志原文读回来 —— 空着交差比带一份旧日志更误导模型。
+if (!changed) {
+  const logTab = activateTab(LOG_LABELS);
+  if (logTab) await sleepOrAbort(300);
+  const log = readCompilerLog();
+  if (log) {
+    latest = log;
+    logNote = '（来自 ' + (logTab || '编译器日志') + '）';
   }
 }
 
 const expected = readExpected();
 const expectedNote = expected ? '\\n期望输出：\\n' + expected.slice(0, 800) : '';
+const status = statusNote || statusReady() || (FAIL_STATUS.test(statusText()) ? statusText() : '');
+const statusLine = status ? '\\n状态：' + status : '';
 
 if (!latest) {
-  return '已点击「运行测试」，但没读到输出（可能还在跑，稍后再用 read_pta_compile_result 读一次）';
+  // 只有状态条、没有输出：这是编译失败最常见的样子，
+  // 不能报成「没读到输出」让模型以为还没跑完。但状态是 Accepted 时不能吓人，
+  // 那是程序本来就没打印东西（比如只写文件 / 空输出）。
+  if (status && FAIL_STATUS.test(status)) {
+    return (filled ? filled + '\\n' : '')
+      + '已点击「运行测试」，这次没有运行输出。' + statusLine
+      + '\\n这通常是编译或运行失败：按状态里的错误信息改代码，不要当成通过。';
+  }
+  if (status) {
+    return (filled ? filled + '\\n' : '')
+      + '已点击「运行测试」，判定已经出来，但这次没有标准输出（程序可能什么都没打印）。' + statusLine;
+  }
+  return '已点击「运行测试」，但没读到输出（可能还在跑，稍后再用 read_pta_compile_result 读一次）'
+    + (filled ? '\\n' + filled : '');
 }
-if (!changed) {
-  return '已点击「运行测试」，但输出跟运行前一样（可能还在跑或这次没跑起来）。'
-    + (filled ? '\\n' + filled : '')
-    + '\\n当前输出：\\n' + latest.slice(0, 2000) + expectedNote;
-}
-const tabNote = (logNote || (resultTab ? '（' + resultTab + '）' : ''));
+
+const failed = FAIL_STATUS.test(latest) || FAIL_STATUS.test(status);
+const unchangedNote = changed ? '' : '（页面上的结果跟运行前一样，可能是上一次的）';
+const tabNote = logNote || (resultTab ? '（' + resultTab + '）' : '');
 return (filled ? filled + '\\n' : '')
-  + '已点击「运行测试」并读到输出' + tabNote + '：\\n' + latest.slice(0, 2000) + expectedNote;
+  + '已点击「运行测试」，' + (failed ? '读到编译 / 运行错误' : '读到输出')
+  + tabNote + unchangedNote + '：\\n' + latest.slice(0, 2000) + expectedNote + statusLine;
 `;

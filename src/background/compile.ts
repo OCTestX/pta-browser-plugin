@@ -2,7 +2,7 @@
 import { truncate } from '../shared/tools.ts';
 import { parseClangDiagnostics, offsetOfPosition, isFragmentContextDiagnostic } from '../shared/code-diagnostics.ts';
 import type { DiagnosticBox } from '../shared/editor-assist-protocol.ts';
-import { runInEngine, checkInEngine, type EngineRunResult } from './compiler-host.ts';
+import { runInEngine, checkInEngine, type EngineRunResult, type EngineStage } from './compiler-host.ts';
 
 /**
  * 内置 JavaScript 运行器：在本地用浏览器/Node 的 JS 引擎跑一段代码，捕获 stdout/stderr。
@@ -166,23 +166,24 @@ export async function compileAndRunPython(options: PyCompileOptions): Promise<Co
   try {
     raw = await runInEngine(code, stdin, signal, 'python');
   } catch (error) {
-    if (error instanceof Error && error.name === 'EngineTimeout') {
-      return {
-        ok: false,
-        statusText: '运行超时',
-        stdout: '',
-        stderr: '',
-        compileOutput: '',
-        message: error.message,
-        time: '',
-        memory: null,
-      };
-    }
-    throw error;
+    // 超时 / 引擎不可用：给出带阶段的结构化结果，别把「等太久」变成一个异常字符串
+    const failed = engineFailureResult(error);
+    if (!failed) throw error;
+    return failed;
   }
 
   if (raw.stage === 'engine-error') {
-    throw new Error(raw.message || '内置 Python 运行时内部错误');
+    return {
+      ok: false,
+      stage: 'engine-error',
+      statusText: '内置 Python 运行时出错',
+      stdout: raw.stdout,
+      stderr: raw.stderr,
+      compileOutput: raw.compileOutput,
+      message: raw.message || '内置 Python 运行时内部错误',
+      time: raw.elapsedMs > 0 ? `${(raw.elapsedMs / 1000).toFixed(2)}` : '',
+      memory: null,
+    };
   }
 
   const time = raw.elapsedMs > 0 ? `${(raw.elapsedMs / 1000).toFixed(2)}` : '';
@@ -254,6 +255,13 @@ export interface CompileOptions {
   signal?: AbortSignal;
 }
 
+/**
+ * 失败发生在哪一步。页面和模型据此区分「编译器忙」「加载太慢」「编译太慢」「程序死循环」：
+ *   queue / prepare / compile / check / run 是超时阶段（来自宿主的 EngineTimeout）
+ *   engine-error 是引擎自己出错
+ */
+export type CompileStage = EngineStage | 'engine-error';
+
 export interface CompileResult {
   /** 编译并运行成功（退出码 0） */
   ok: boolean;
@@ -265,6 +273,85 @@ export interface CompileResult {
   time: string;
   /** 内置引擎不统计内存，恒为 null（保留字段是为了不惊动老调用方） */
   memory: null;
+  /** 失败时停在哪一步；成功时不带这个字段 */
+  stage?: CompileStage;
+}
+
+const COMPILE_STAGES: readonly CompileStage[] = ['queue', 'prepare', 'compile', 'check', 'run', 'engine-error'];
+
+/** 引擎超时错误上的 stage（Error 没这个字段，先查再取，别硬转） */
+function errorStage(error: Error): CompileStage | undefined {
+  if (!('stage' in error)) return undefined;
+  return COMPILE_STAGES.find((item) => item === error.stage);
+}
+
+/** 超时的一句话状态：界面上先看这句就知道卡在哪一步 */
+function timeoutStatusText(stage: CompileStage | undefined): string {
+  if (stage === 'run') return '运行超时';
+  if (stage === 'check') return '检查超时';
+  if (stage === 'queue') return '内置引擎忙（排队超时）';
+  if (stage === 'prepare') return '引擎加载超时';
+  return '编译超时';
+}
+
+/**
+ * 引擎层的失败（超时 / 请求发不出去 / 没有 Worker）换成结构化结果。
+ * 抛异常只会剩下一个字符串，把「等了多久、卡在哪一步」全丢掉，模型和页面都读不出信息。
+ * 返回 null 表示这不是引擎失败（例如用户按了停止），调用方原样抛出。
+ * 导出给 scripts/test-compile.mjs 直接验证，不需要真机。
+ */
+export function engineFailureResult(error: unknown): CompileResult | null {
+  if (!(error instanceof Error)) return null;
+  // 用户按「停止」不是编译器的问题，保持中止语义
+  if (error.name === 'AbortError') return null;
+
+  const base = { stdout: '', stderr: '', compileOutput: '', time: '', memory: null } as const;
+  if (error.name === 'EngineTimeout') {
+    const stage = errorStage(error);
+    return { ...base, ok: false, stage: stage ?? 'compile', statusText: timeoutStatusText(stage), message: error.message };
+  }
+
+  return { ...base, ok: false, stage: 'engine-error', statusText: '内置编译器不可用', message: error.message };
+}
+
+/**
+ * 引擎结果 → 给模型 / 页面看的结果。编译错误一律把 clang 原文（compileOutput）带上；
+ * 引擎中途炸掉时，崩之前已经打出来的那截诊断也带回去，别只留一句「内部错误」。
+ * 导出给 scripts/test-compile.mjs 直接验证。
+ */
+export function toCompileResult(raw: EngineRunResult): CompileResult {
+  const time = raw.elapsedMs > 0 ? `${(raw.elapsedMs / 1000).toFixed(2)}` : '';
+  const base = { stdout: raw.stdout, stderr: raw.stderr, compileOutput: '', message: '', time, memory: null } as const;
+
+  switch (raw.stage) {
+    case 'compile-error':
+      return {
+        ...base,
+        ok: false,
+        stage: 'compile',
+        statusText: '编译错误',
+        compileOutput: raw.compileOutput,
+        // 诊断被日志上限截断时至少说清原因，别只回一句「编译错误」让模型猜
+        message: raw.compileOutput ? '' : raw.message || '编译器报错退出，但没有给出诊断文本',
+      };
+    case 'link-error':
+      return { ...base, ok: false, stage: 'compile', statusText: '链接错误', compileOutput: raw.compileOutput };
+    case 'run-exit':
+      return { ...base, ok: false, stage: 'run', statusText: `运行时错误（退出码 ${raw.exitCode}）` };
+    case 'run-trap':
+      return { ...base, ok: false, stage: 'run', statusText: '运行时错误（程序崩溃）', message: (raw.trap ?? '').split('\n')[0] };
+    case 'engine-error':
+      return {
+        ...base,
+        ok: false,
+        stage: 'engine-error',
+        statusText: '内置编译器错误',
+        compileOutput: raw.compileOutput,
+        message: raw.message || '内置编译器内部错误',
+      };
+    case 'ok':
+      return { ...base, ok: true, statusText: '运行成功' };
+  }
 }
 
 export async function compileAndRun(options: CompileOptions): Promise<CompileResult> {
@@ -287,40 +374,13 @@ async function runCWithEngine(options: CompileOptions, lang: 'c' | 'cpp'): Promi
   try {
     raw = await runInEngine(code, stdin, signal, lang);
   } catch (error) {
-    if (error instanceof Error && error.name === 'EngineTimeout') {
-      return {
-        ok: false,
-        statusText: '运行超时',
-        stdout: '',
-        stderr: '',
-        compileOutput: '',
-        message: error.message,
-        time: '',
-        memory: null,
-      };
-    }
-    throw error;
+    // 超时 / 引擎不可用 → 带 stage 的结构化结果；用户按停止仍然是异常
+    const failed = engineFailureResult(error);
+    if (!failed) throw error;
+    return failed;
   }
 
-  if (raw.stage === 'engine-error') {
-    throw new Error(raw.message || '内置编译器内部错误');
-  }
-
-  const time = raw.elapsedMs > 0 ? `${(raw.elapsedMs / 1000).toFixed(2)}` : '';
-  const base = { stdout: raw.stdout, stderr: raw.stderr, compileOutput: '', message: '', time, memory: null } as const;
-
-  switch (raw.stage) {
-    case 'compile-error':
-      return { ...base, ok: false, statusText: '编译错误', compileOutput: raw.compileOutput };
-    case 'link-error':
-      return { ...base, ok: false, statusText: '链接错误', compileOutput: raw.compileOutput };
-    case 'run-exit':
-      return { ...base, ok: false, statusText: `运行时错误（退出码 ${raw.exitCode}）` };
-    case 'run-trap':
-      return { ...base, ok: false, statusText: '运行时错误（程序崩溃）', message: (raw.trap ?? '').split('\n')[0] };
-    case 'ok':
-      return { ...base, ok: true, statusText: '运行成功' };
-  }
+  return toCompileResult(raw);
 }
 
 /** 实时检查的结果：给页面脚本直接画波浪线用 */
@@ -331,6 +391,8 @@ export interface CodeCheckResult {
   diagnostics: DiagnosticBox[];
   errorCount: number;
   message: string;
+  /** 失败时停在哪一步（超时阶段 / 引擎出错）；正常检查不带这个字段 */
+  stage?: CompileStage;
 }
 
 /** 内置编译器支持的前端：C 与 C++；Python / Java 等语言不做实时检查 */
@@ -370,6 +432,16 @@ export function diagnosticRange(code: string, from: number): { from: number; to:
   return { from: start, to: to > start ? to : Math.min(start + 1, source.length) };
 }
 
+/** clang 原文里的第一句诊断：用来在角落提示里说清「哪里错了」，别只留一句「检查失败」 */
+function firstDiagnosticLine(output: string): string {
+  const lines = String(output ?? '')
+    .split('\n')
+    .map((line) => line.trim())
+    .filter((line) => line && !/^Error: process exited with code \d+\.$/.test(line));
+  const first = lines.find((line) => line.includes('error:')) ?? lines[0] ?? '';
+  return first.slice(0, 300);
+}
+
 /**
  * 用内置编译器给作答区代码做一次「只编译不运行」的检查。
  * 支持 C 与 C++（引擎分别用 -x c / -x c++），别的语言返回 note 让界面如实显示。
@@ -394,15 +466,17 @@ export async function checkCode(
     // 独立检查时强制带上常用头，避免报一屏假「未声明」。
     raw = await checkInEngine(source, signal, lang, fragment);
   } catch (error) {
-    if (error instanceof Error && error.name === 'EngineTimeout') return { ...empty, ok: false, message: error.message };
-    throw error;
-  }
-  if (raw.stage === 'engine-error') {
-    return { ...empty, ok: false, message: raw.message || '内置编译器内部错误' };
+    // 超时 / 编译器忙 / 引擎不可用：带回 stage 和一句能看懂的说明，页面会把它显示在角落
+    const failed = engineFailureResult(error);
+    if (!failed) throw error;
+    return { ...empty, ok: false, stage: failed.stage, message: failed.message };
   }
 
+  // clang 的原文可能一条都解析不出来（位置越界、日志被截断），那时才用「第一句原文」兜底；
+  // 解析出来但被 fragment 过滤掉的假「未声明」不能以此为由再露出来
+  const parsed = parseClangDiagnostics(raw.compileOutput);
   const diagnostics: DiagnosticBox[] = [];
-  for (const item of parseClangDiagnostics(raw.compileOutput)) {
+  for (const item of parsed) {
     // note 是 clang 跟在报错后面、指在同一位置的补充说明（「include 这个头文件」之类），
     // 它和那条报错算同一件事，单独算一条只会让「N 个错误」翻倍
     if (item.severity === 'note') continue;
@@ -421,13 +495,31 @@ export async function checkCode(
       advice: item.advice,
     });
   }
-  return {
-    ok: true,
-    note: '',
-    diagnostics,
-    errorCount: diagnostics.filter((item) => item.severity === 'error').length,
-    message: '',
-  };
+  const errorCount = diagnostics.filter((item) => item.severity === 'error').length;
+
+  if (raw.stage === 'engine-error') {
+    // 引擎崩之前往往已经打出了真诊断：先把能画线的画出来，再在提示里说明引擎出错
+    return {
+      ...empty,
+      ok: false,
+      stage: 'engine-error',
+      diagnostics,
+      errorCount,
+      message: raw.message || '内置编译器内部错误',
+    };
+  }
+  // 报错了却一条诊断都解析不出来（日志被截断 / 原文格式不认识）：
+  // 把 clang 原文第一句带到提示里，界面不能安安静静什么都不说
+  if (raw.stage === 'compile-error' && parsed.length === 0) {
+    return {
+      ...empty,
+      stage: 'compile',
+      diagnostics,
+      errorCount,
+      message: firstDiagnosticLine(raw.compileOutput) || '编译失败，但没有可解析的诊断',
+    };
+  }
+  return { ok: true, note: '', diagnostics, errorCount, message: '' };
 }
 
 export function formatCompileResult(result: CompileResult): string {
@@ -440,6 +532,11 @@ export function formatCompileResult(result: CompileResult): string {
   if (result.compileOutput) {
     parts.push('', '编译错误：', '```', truncate(result.compileOutput, 2000), '```');
     return parts.join('\n');
+  }
+
+  // 编译阶段失败了却连一句诊断都没有：别让模型看到一片空白后自己猜
+  if (!result.ok && !result.message && (result.stage === 'compile' || result.stage === 'engine-error')) {
+    parts.push('', '编译器没有给出诊断文本（可能是引擎日志被截断）。');
   }
 
   if (result.stdout) {
