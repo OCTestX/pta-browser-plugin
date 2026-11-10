@@ -6,11 +6,13 @@
  *   · 一定不改任何 token 的内容（字符串、字符常量、注释里的字面量原样保留）；
  *   · 一定不改语义结构（不挪动代码、不合并行、不加删括号、不改 Python 的缩进）。
  *
- * 目前按语言分三套：
+ * 目前按语言分四套：
  *   · **C**（`formatCode(code, 'c')`）：运算符两侧统一一个空格、逗号/分号后补空格、
  *     按花括号重排缩进、**无花括号的控制体缩进一层**（`if (x)\n    return 1;`）。
  *   · **Python**：只规范符号运算符两侧的空格（`a==b` → `a == b`），
  *     **缩进一个字都不动**（那是语义），也不碰 `:`。
+ *   · **Java**：C 那套缩进 + 更保守的空格规则——泛型尖括号不拆（`List<String>`）、
+ *     `if (x)` 这类关键字后留空格、`import`/`package` 原样、文本块整段不动。
  *   · 其他大括号语言 / 不认识的语言：只清行尾空白、压空行（老行为，保守）。
  */
 
@@ -18,19 +20,20 @@
 export const INDENT_WIDTH = 4;
 
 /** 语言归类：决定用哪套整理策略 */
-export type CodeStyle = 'c' | 'python' | 'brace' | 'plain';
+export type CodeStyle = 'c' | 'java' | 'python' | 'brace' | 'plain';
 
 /**
  * 按语言选策略。
  *
- * 只有 C 和 Python 做了「加空格」这类改动，其余语言先保守处理：
+ * 只有 C、Java 和 Python 做了「加空格」这类改动，其余语言先保守处理：
  * 不认识的语法（模板、装饰器、lambda 里带冒号…）上动空格，风险大于收益。
  */
 export function codeStyleFor(language: string): CodeStyle {
   const lang = String(language ?? '').toLowerCase();
   if (/python/.test(lang)) return 'python';
   if (/^c\b/.test(lang) || /\bgcc\b|\bclang\b/.test(lang) || /^c$/.test(lang)) return 'c';
-  if (/^(cpp|c\+\+|java|js|javascript|golang|go|rust|php|swift|kotlin|cs|c#|scala|dart|ts|typescript)\b/.test(lang)) {
+  if (/^java(?![a-z])/.test(lang)) return 'java';
+  if (/^(cpp|c\+\+|js|javascript|golang|go|rust|php|swift|kotlin|cs|c#|scala|dart|ts|typescript)\b/.test(lang)) {
     return 'brace';
   }
   return 'plain';
@@ -196,8 +199,16 @@ export function tokenizeLine(line: string, options: { python?: boolean; inBlockC
     }
 
     if (ch === '/' && line[index + 1] === '*' && !python) {
-      block = true;
-      index += 2;
+      // 分隔符属于 token 内容：漏掉 `/*` 会把 `/* x */` 整理成 ` x */`，注释就没了
+      const end = line.indexOf('*/', index + 2);
+      if (end < 0) {
+        push('comment', line.slice(index));
+        index = line.length;
+        block = true;
+        break;
+      }
+      push('comment', line.slice(index, end + 2));
+      index = end + 2;
       continue;
     }
     if (ch === '/' && line[index + 1] === '/' && !python) {
@@ -466,10 +477,10 @@ function spaceTokens(tokens: Token[], python: boolean): string {
  * 规则：
  *   · 缩进 = 花括号深度 +（圆括号没闭合时多一层）+（上一行是没写 `{` 的控制语句时一层）
  *   · 以 } 开头的行按「收尾后」的深度算
- *   · case/default 标签少一层
+ *   · case/default 标签少一层（Java 模式只认带冒号的 default，免得误伤接口默认方法）
  *   · 预处理指令顶格；反斜杠续行保持顶格
  */
-export function reindentByBraces(code: string): string {
+export function reindentByBraces(code: string, options: { java?: boolean } = {}): string {
   const lines = code.replace(/\r\n?/g, '\n').split('\n');
   const out: string[] = [];
   let depth = 0;
@@ -504,7 +515,9 @@ export function reindentByBraces(code: string): string {
     if (pendingBody && !opensBrace) indent += 1;
     // 以 } 开头的行是收尾花括号，case/default 标签按惯例比块内语句少一层
     if (isBraceOnly) indent -= 1;
-    if (/^\s*(case\b|default\b)/.test(codeOnly)) indent -= 1;
+    if (/^\s*case\b/.test(codeOnly)) indent -= 1;
+    // Java 接口的 `default void f()` 也以 default 开头，只有带冒号的才是 switch 标签
+    if (/^\s*default\b/.test(codeOnly) && (!options.java || /:\s*$/.test(codeOnly.trim()))) indent -= 1;
     if (indent < 0) indent = 0;
 
     if (preprocessor) {
@@ -600,6 +613,285 @@ function formatPython(source: string): string {
 }
 
 /* ------------------------------------------------------------------ *
+ * Java：重排缩进 + 保守补空格（泛型尖括号绝不能拆）
+ * ------------------------------------------------------------------ */
+
+/** 这些关键字后面的 `(` 按惯例留一个空格：`if (x)`、`try (`、`catch (E e)` */
+const JAVA_PAREN_KEYWORDS = new Set(['if', 'for', 'while', 'switch', 'catch', 'synchronized', 'try']);
+
+/** 泛型参数里允许出现的符号：配对时见到别的一律判定「这不是泛型」 */
+const JAVA_GENERIC_INNER_OPS = new Set(['.', ',', '?', '&', '[', ']', '...', '::']);
+
+/** 泛型方法声明 `public <T>` / `static <T>`：`<` 前是这些修饰符时它是类型参数表 */
+const JAVA_GENERIC_PREFIX_WORDS = new Set([
+  'public', 'private', 'protected', 'static', 'final', 'abstract',
+  'synchronized', 'native', 'strictfp', 'default',
+]);
+
+/**
+ * 找出哪些 `<` / `>` / `>>` 是泛型括号。
+ *
+ * 判断刻意保守——拿不准就当比较运算符（多几个空格不伤代码，拆坏泛型直接编译不过）：
+ *   · `<` 前面必须是「像类型名」的词：首字母大写（`List` / `T` / `Map.Entry`）；
+ *   · 从 `<` 往后能在**同一行**里配对到闭合的尖括号，中间只允许类型参数里会出现的 token；
+ *   · 中间至少有一个首字母大写的类型名，或者干脆是空钻石 `<>`、纯通配符 `<?>` / `<?, ?>`。
+ */
+function markJavaGenerics(tokens: Token[]): Set<number> {
+  const marks = new Set<number>();
+  for (let index = 0; index < tokens.length; index += 1) {
+    const token = tokens[index];
+    if (token.kind !== 'op' || token.text !== '<') continue;
+    const prev = index > 0 ? tokens[index - 1] : null;
+    const modifierPrefixed = !!prev && prev.kind === 'word' && JAVA_GENERIC_PREFIX_WORDS.has(prev.text);
+    if (!modifierPrefixed && (!prev || prev.kind !== 'word' || !/^[A-Z_$]/.test(prev.text))) continue;
+
+    let depth = 0;
+    let sawTypeWord = false;
+    let sawWildcard = false;
+    let closeIndex = -1;
+    for (let cursor = index; cursor < tokens.length; cursor += 1) {
+      const cur = tokens[cursor];
+      if (cur.kind === 'op') {
+        if (cur.text === '<') {
+          depth += 1;
+          continue;
+        }
+        if (cur.text === '>' || cur.text === '>>') {
+          depth -= cur.text.length;
+          if (depth <= 0) {
+            closeIndex = cursor;
+            break;
+          }
+          continue;
+        }
+        if (cur.text === '?') sawWildcard = true;
+        if (JAVA_GENERIC_INNER_OPS.has(cur.text)) continue;
+        break;
+      }
+      // 数字、字符串都说明这不是类型参数
+      if (cur.kind !== 'word') break;
+      if (/^[A-Z_$]/.test(cur.text) || cur.text === 'extends' || cur.text === 'super') sawTypeWord = true;
+    }
+    if (closeIndex < 0) continue;
+    const emptyDiamond = closeIndex === index + 1;
+    // `<>` 空钻石、`<?>` / `Map<?, ?>` 纯通配符都没有类型名，也得认
+    if (!sawTypeWord && !sawWildcard && !emptyDiamond) continue;
+
+    for (let cursor = index; cursor <= closeIndex; cursor += 1) {
+      const cur = tokens[cursor];
+      if (cur.kind === 'op' && ['<', '>', '>>'].includes(cur.text)) marks.add(cursor);
+    }
+    index = closeIndex;
+  }
+  return marks;
+}
+
+/**
+ * 重新生成一行 Java 代码里的空格。
+ *
+ * 和 C 的 `spaceTokens` 的区别：
+ *   · 泛型的 `<` `>` 先判出来，判成泛型就一个空格都不加（`List<String>`、`Map<String, Integer>`）；
+ *   · `if` / `for` / `while` / `switch` / `try` / `catch` 后面的 `(` 留一个空格；
+ *   · `for (String s : list)` 的冒号按两侧空格处理（`case 1:` 的冒号仍然紧贴）；
+ *   · 没有指针语法，`*` 一律当乘法；`->` 两侧空格。
+ */
+function spaceTokensJava(tokens: Token[]): string {
+  const generics = markJavaGenerics(tokens);
+  let out = '';
+  let forceSpace = false;
+  let pendingTernary = 0;
+  /** 当前在泛型的第几层尖括号里（只用来认出通配符 `?`） */
+  let genericDepth = 0;
+  let parenDepth = 0;
+  /** `for (` 所在的圆括号层：这一层里的 `:` 是 for-each，不是三元/标签 */
+  let forEachDepth = 0;
+
+  const emit = (text: string, leadingSpace: boolean) => {
+    if (out.length > 0 && (leadingSpace || forceSpace)) out += ' ';
+    out += text;
+    forceSpace = false;
+  };
+
+  const startsExpression = (token: Token | null): boolean => {
+    if (!token) return true;
+    if (token.text === '(' || token.text === '[' || token.text === '{') return true;
+    if (token.kind === 'op') return ![')', ']', '}', '++', '--'].includes(token.text);
+    return token.kind === 'word' && ['return', 'case', 'else', 'do', 'throw', 'assert'].includes(token.text);
+  };
+
+  for (let index = 0; index < tokens.length; index += 1) {
+    const token = tokens[index];
+    const text = token.text;
+    const prev = index > 0 ? tokens[index - 1] : null;
+    const prevGenericClose = !!prev && generics.has(index - 1)
+      && (prev.text === '>' || prev.text === '>>');
+
+    if (token.kind === 'comment') {
+      emit(text, out.length > 0);
+      continue;
+    }
+
+    if (token.kind === 'word' || token.kind === 'number' || token.kind === 'string') {
+      // 泛型通配符 `?` 后面跟 `extends` / `super` 时才空格（`List<?>` 里 `?` 紧贴 `>`）
+      const afterWildcard = !!prev && prev.text === '?' && genericDepth > 0;
+      emit(text, prevGenericClose || afterWildcard || isValue(prev) || (!!prev && [')', ']', '}'].includes(prev.text)));
+      continue;
+    }
+
+    // ---- 泛型尖括号：紧贴两侧 ----
+    if (generics.has(index)) {
+      if (text === '<') genericDepth += 1;
+      else if (text === '>') genericDepth = Math.max(0, genericDepth - 1);
+      else genericDepth = Math.max(0, genericDepth - 2);
+      // `public <T>` 里修饰符和类型参数表之间按惯例空一格
+      const afterModifier = text === '<' && !!prev && prev.kind === 'word' && JAVA_GENERIC_PREFIX_WORDS.has(prev.text);
+      emit(text, afterModifier);
+      continue;
+    }
+
+    if (text === '(') {
+      emit(text, !!prev && prev.kind === 'word' && JAVA_PAREN_KEYWORDS.has(prev.text));
+      parenDepth += 1;
+      if (prev && prev.kind === 'word' && prev.text === 'for') forEachDepth = parenDepth;
+      continue;
+    }
+    if (text === ')') {
+      if (forEachDepth > 0 && parenDepth <= forEachDepth) forEachDepth = 0;
+      parenDepth = Math.max(0, parenDepth - 1);
+      emit(text, false);
+      continue;
+    }
+    if (text === '[' || text === ']') {
+      emit(text, false);
+      continue;
+    }
+    if (text === '{') {
+      // `new int[]{…}`、`= {…}` 是数组初始化，`{` 后面不空格；
+      // `if (x) { … }` 是语句块，`{` 后面留一格，单行块才不至于挤成 `{return`
+      const next = tokens[index + 1];
+      const initializer = prev
+        ? ['=', ',', '(', '[', '{', ']'].includes(prev.text)
+        : !next || next.text === '{' || next.text === '}' || next.kind === 'number' || next.kind === 'string';
+      emit(text, !!prev && !initializer);
+      forceSpace = !initializer;
+      continue;
+    }
+    if (text === '}') {
+      // 空块 `{}` 不空格；其余（`{ return a; }`）保留 `;` 带来的那个空格
+      if (prev && prev.text === '{') forceSpace = false;
+      emit(text, false);
+      continue;
+    }
+    if (text === '...') {
+      // 可变参数贴着类型名，和后面的形参之间留一格：`String... xs`
+      emit(text, false);
+      forceSpace = true;
+      continue;
+    }
+    if (text === ',' || text === ';') {
+      emit(text, false);
+      forceSpace = true;
+      continue;
+    }
+    if (text === '.' || text === '::') {
+      emit(text, false);
+      continue;
+    }
+    if (text === '->') {
+      emit(text, true);
+      forceSpace = true;
+      continue;
+    }
+    if (text === '++' || text === '--') {
+      emit(text, false);
+      continue;
+    }
+    if (text === '!' || text === '~') {
+      emit(text, startsExpression(prev));
+      continue;
+    }
+    if (text === '?') {
+      // 泛型里的 `?` 是通配符（`List<? extends Number>`），不是三元
+      if (genericDepth > 0) {
+        emit(text, false);
+        continue;
+      }
+      emit(text, true);
+      forceSpace = true;
+      pendingTernary += 1;
+      continue;
+    }
+    if (text === ':') {
+      if (pendingTernary > 0) {
+        emit(text, true);
+        forceSpace = true;
+        pendingTernary -= 1;
+        continue;
+      }
+      // for-each 的冒号两侧空格；`case 1:` / `default:` 的冒号保持紧贴
+      if (forEachDepth > 0) {
+        emit(text, true);
+        forceSpace = true;
+        continue;
+      }
+      emit(text, false);
+      continue;
+    }
+    if (text === '+' || text === '-') {
+      if (startsExpression(prev)) {
+        emit(text, false);
+        continue;
+      }
+      emit(text, true);
+      forceSpace = true;
+      continue;
+    }
+    // `>>>` 在共享词法里被拆成 `>>` + `>`：这里紧贴回去，避免 `a >> > b`
+    if (text === '>' && prev && prev.kind === 'op' && prev.text === '>>' && !generics.has(index - 1)) {
+      forceSpace = false;
+      emit(text, false);
+      forceSpace = true;
+      continue;
+    }
+
+    if (BINARY_OPS.has(text)) {
+      emit(text, true);
+      forceSpace = true;
+      continue;
+    }
+
+    // 剩下的标点（`@`、`##` 之类）：左边不加空格，别把 token 拆开
+    emit(text, false);
+  }
+
+  return out.replace(/\s+$/, '');
+}
+
+/** `import` / `package` 行的写法一个字都不动 */
+const JAVA_HEADER_LINE = /^\s*(?:import|package)\b/;
+
+/** Java：逐行补空格（`import`/`package`、块注释原样跳过），再重排缩进 */
+function formatJava(source: string): string {
+  // 文本块 `"""` 里的缩进是字符串内容的一部分，重排缩进会改值：整份退化成只清行尾空白
+  if (source.includes('"""')) return tidyPlain(source);
+
+  const lines = source.replace(/\r\n?/g, '\n').split('\n');
+  const spaced: string[] = [];
+  let inBlock = false;
+  for (const raw of lines) {
+    if (inBlock || JAVA_HEADER_LINE.test(raw) || /\\\s*$/.test(raw)) {
+      spaced.push(raw.replace(/[ \t]+$/, ''));
+      if (inBlock && raw.includes('*/')) inBlock = false;
+      continue;
+    }
+    const result = tokenizeLine(raw);
+    inBlock = result.inBlockComment;
+    spaced.push(spaceTokensJava(result.tokens));
+  }
+  return tidyPlain(reindentByBraces(spaced.join('\n'), { java: true }));
+}
+
+/* ------------------------------------------------------------------ *
  * 兜底清理
  * ------------------------------------------------------------------ */
 
@@ -659,6 +951,7 @@ export function formatCode(code: string, language: string): string {
   if (source.trim() === '') return source;
   const style = codeStyleFor(language);
   if (style === 'c') return formatC(source);
+  if (style === 'java') return formatJava(source);
   if (style === 'python') return formatPython(source);
   if (style === 'brace') {
     const reindented = reindentByBraces(source);

@@ -56,6 +56,25 @@ const DIAGNOSTIC_LINE = /^(.+?):(\d+):(\d+):\s*(error|warning|note):\s*(.*)$/;
  * 顺序有讲究：更具体的写法排在前面，避免被宽泛的规则先命中。
  */
 const ADVICE_RULES: ReadonlyArray<{ readonly match: string; readonly advice: string }> = [
+  // ---- Python（Pyodide 的 compile() 报错）----
+  // 这些关键词只出现在 Python 的报错里，放前面不会抢走 C/C++ 的建议。
+  // `expected ':'` 例外：clang 的 case 标签也会这么报，建议里把两种情况都写上。
+  { match: "expected ':'", advice: '这一行末尾少了冒号：Python 的 if / for / while / def / class 语句头，或 C/C++ 的 case 标签，都要以 : 结尾' },
+  { match: 'unexpected indent', advice: '这一行缩进多了：Python 靠缩进划分代码块，同一层的语句必须对齐' },
+  { match: 'expected an indented block', advice: '这里需要一段缩进的代码块：上一行以 : 结尾时，它的语句体不能空着' },
+  { match: 'unindent does not match', advice: '缩进没有对上外层：检查这一行前面的空格数，退回到和哪一层对齐' },
+  { match: 'inconsistent use of tabs and spaces', advice: '缩进混用了 Tab 和空格，全部改成空格（编辑器里看起来对齐不算数）' },
+  { match: 'unterminated triple-quoted string', advice: '三引号字符串没有闭合，补上结尾的 """' },
+  { match: 'unterminated string literal', advice: '字符串少了结尾的引号' },
+  { match: 'eof while scanning', advice: '代码在字符串或括号中间就结束了：检查引号和括号有没有闭合' },
+  { match: 'eol while scanning', advice: '字符串少了结尾的引号' },
+  { match: 'was never closed', advice: '这里的括号没有闭合，补上配对的右括号' },
+  { match: 'does not match opening parenthesis', advice: '括号类型对不上：（ ）[ ] { } 要成对使用，检查这一对括号' },
+  { match: 'unmatched ', advice: '括号没有配对：检查是不是多写了一个括号，或者少写了另一半' },
+  { match: 'missing parentheses in call to', advice: 'Python 3 里 print 等函数必须加括号，例如 print(x)' },
+  { match: 'unexpected character after line continuation', advice: '反斜杠续行后面不能再写别的字符，检查这一行的 \\' },
+  { match: 'source code cannot contain null bytes', advice: '代码里混进了空字符（\\0），删掉它' },
+  { match: 'invalid syntax', advice: '语法不合法：检查这一行的括号、逗号、冒号和关键字拼写' },
   { match: "expected ';'", advice: '这一行末尾少了分号，检查上一行是不是漏了 ;' },
   { match: "expected '}'", advice: '大括号没配对，数一下左右各有多少个 {' },
   { match: "expected ')'", advice: '括号没配对，检查函数调用的参数和括号是否都写全了' },

@@ -55,6 +55,42 @@ check(
   literalSafe,
 );
 
+// 块注释的分隔符必须留在 token 里：漏掉 `/*` 时 `/* x */` 会被整理成 ` x */`，注释就没了
+const blockCommentLine = formatCode('/* x */\nint a=1;', 'c');
+check(
+  '单行块注释保留 /* 与 */ 分隔符',
+  blockCommentLine === '/* x */\nint a = 1;',
+  blockCommentLine,
+);
+const blockCommentTail = formatCode('int a=1; /* x */', 'c');
+check(
+  '行尾块注释保留分隔符',
+  blockCommentTail === 'int a = 1; /* x */',
+  blockCommentTail,
+);
+const blockCommentMulti = formatCode('/* a\n b */\nint a=1;', 'c');
+check(
+  '多行块注释首尾分隔符都在',
+  blockCommentMulti.startsWith('/*')
+    && blockCommentMulti.includes('*/')
+    && blockCommentMulti.split('\n').pop() === 'int a = 1;',
+  blockCommentMulti,
+);
+const lineCommentOnly = formatCode('int a=1; // x', 'c');
+check(
+  '// 行注释内容不受影响',
+  lineCommentOnly === 'int a = 1; // x',
+  lineCommentOnly,
+);
+
+// C++ 走 brace 策略（只重排缩进、不动空格），块注释同样要原样保留
+const cppComments = formatCode('/* x */\nint a=1; /* y */', 'cpp');
+check(
+  'C++ 整理保留块注释分隔符',
+  cppComments === '/* x */\nint a=1; /* y */',
+  cppComments,
+);
+
 // 幂等：按两下按钮不能让它一直变
 const once = formatCode('int main(){int a=1;\nif(a>0){\nreturn a;}\nreturn 0;}', 'c');
 check('整理是幂等的', once === formatCode(once, 'c'), { once, again: formatCode(once, 'c') });
@@ -82,6 +118,94 @@ check(
   'Python 只规范运算符空格，缩进层级不动',
   pythonFormatted === 'def f(a, b):\n    x = a + b\n    return x',
   pythonFormatted,
+);
+
+// Java：以前落在 brace（只重排缩进，不补运算符空格），现在有独立策略；
+// 泛型尖括号必须先被判成泛型，否则 `List<String>` 会被拆成 `List < String >`
+const javaBasic = formatCode(
+  'class A{\npublic static void main(String[] args){\nint a=1+2;\nSystem.out.println(a);\n}\n}',
+  'java',
+);
+check(
+  'Java 按花括号重排缩进并补运算符空格',
+  javaBasic === 'class A {\n    public static void main(String[] args) {\n        int a = 1 + 2;\n        System.out.println(a);\n    }\n}',
+  javaBasic,
+);
+check('Java 整理是幂等的', javaBasic === formatCode(javaBasic, 'java'), formatCode(javaBasic, 'java'));
+
+const javaGenerics = formatCode(
+  'List<String> a=new ArrayList<>();\nMap<String,Integer> m=new HashMap<>();\nList<Map<String,Integer>> nested=null;',
+  'java',
+);
+check(
+  'Java 泛型尖括号不被拆成比较运算符',
+  javaGenerics === 'List<String> a = new ArrayList<>();\nMap<String, Integer> m = new HashMap<>();\nList<Map<String, Integer>> nested = null;',
+  javaGenerics,
+);
+
+const javaWildcards = formatCode('List<? extends Number> xs=null;\nMap<?,?> m=new HashMap<>();', 'java');
+check(
+  'Java 通配符泛型不被拆开',
+  javaWildcards === 'List<? extends Number> xs = null;\nMap<?, ?> m = new HashMap<>();',
+  javaWildcards,
+);
+
+// 文本块的缩进属于字符串内容，宁可整份不整理也不能改里面的空格
+const javaTextBlock = 'class A{\nString s="""\n  hi\n""";\n}';
+check(
+  'Java 文本块原样保留',
+  formatCode(javaTextBlock, 'java') === javaTextBlock,
+  formatCode(javaTextBlock, 'java'),
+);
+
+const javaCompare = formatCode('if(a<b){\nreturn 1;\n}', 'java');
+check(
+  'Java 比较运算符两侧补空格、if 后留空格',
+  javaCompare === 'if (a < b) {\n    return 1;\n}',
+  javaCompare,
+);
+
+const javaForEach = formatCode('for(String s:list){\nSystem.out.println(s);\n}', 'java');
+check(
+  'Java for-each 的冒号两侧补空格',
+  javaForEach === 'for (String s : list) {\n    System.out.println(s);\n}',
+  javaForEach,
+);
+
+const javaComments = formatCode('int a=1; /* x */\n// note\nint b=2;', 'java');
+check(
+  'Java 整理保留块注释与行注释',
+  javaComments === 'int a = 1; /* x */\n// note\nint b = 2;',
+  javaComments,
+);
+
+const javaImports = formatCode('import java.util.*;\nimport java.util.List;\nclass A{}', 'java');
+check(
+  'Java 不动 import 行',
+  javaImports.split('\n').slice(0, 2).join('|') === 'import java.util.*;|import java.util.List;',
+  javaImports,
+);
+
+// 泛型方法声明的 `<` 前面是修饰符（不是类型名），也得认出来，否则会变成 `< T extends … >`
+const javaGenericMethod = formatCode(
+  'public static <T extends Comparable<T>> T max(T a,T b){return a.compareTo(b)>0?a:b;}',
+  'java',
+);
+check(
+  'Java 泛型方法声明的尖括号不被拆开',
+  javaGenericMethod.includes('<T extends Comparable<T>> T max(T a, T b)'),
+  javaGenericMethod,
+);
+
+// 接口默认方法以 default 开头，不能被当成 switch 的 default 标签少缩一层
+const javaDefaultMethod = formatCode(
+  'interface Shape{\ndefault void print(){\nSystem.out.println("s");\n}\n}',
+  'java',
+);
+check(
+  'Java 接口 default 方法按方法缩进',
+  javaDefaultMethod === 'interface Shape {\n    default void print() {\n        System.out.println("s");\n    }\n}',
+  javaDefaultMethod,
 );
 
 const plainFormatted = formatCode('a  \n\n\n\nb  \n', 'unknownlang');

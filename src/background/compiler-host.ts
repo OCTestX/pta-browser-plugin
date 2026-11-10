@@ -432,6 +432,7 @@ export function runInEngine(
 
 /**
  * 只做语法检查（不运行）：作答区实时检查用。
+ * C / C++ 走 clang 的 -fsyntax-only，Python 走 Pyodide 的 compile()；
  * 预算按「检查」阶段算（20 秒），排队超过 12 秒就直接说编译器忙。
  */
 export function checkInEngine(

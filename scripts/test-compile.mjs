@@ -1,5 +1,6 @@
 // 内置 C 编译器：用真实引擎（clang22-noeh + lld22-noeh + sysroot22.tar）跑几段 C，
-// 顺带校验样例比对（尾部空白、末尾空行不算差异）。
+// 顺带校验样例比对（尾部空白、末尾空行不算差异）与 Python 语法检查
+// （浏览器里走 Pyodide；Node 里用 python3 只 compile 不执行）。
 // 宿主队列（阶段化超时 / 排队 / 中止）和编译错误的结构化返回用假回复验证，不需要真机。
 // 大资源缺失时（没跑过 npm run build）跳过真实编译并提示。
 // 用法：node scripts/test-compile.mjs
@@ -13,10 +14,12 @@ import {
   compileAndRunJs,
   compileAndRunCpp,
   checkCode,
+  checkPythonWithNode,
   engineFailureResult,
   toCompileResult,
 } from '../src/background/compile.ts';
 import { createEngineQueue } from '../src/background/compiler-host.ts';
+import { adviceForMessage } from '../src/shared/code-diagnostics.ts';
 import { createCEngine, runOnEngine, checkOnEngine } from '../public/engine/engine-core.js';
 import { makeStdinReader } from '../public/engine/worker-utils.js';
 
@@ -308,8 +311,100 @@ check(
     && /不可用/.test(offlineCheck.message),
   offlineCheck,
 );
-const pythonCheck = await checkCode('print(1)', 'Python');
-check('Python 不做实时检查，只回一句 note', pythonCheck.ok === true && pythonCheck.note !== '' && pythonCheck.diagnostics.length === 0);
+/* ---------- Python 语法检查（只 compile，不执行） ---------- */
+
+/** 诊断盒子里的字符下标 → 「第几行第几列」（列按字符算，只用于断言定位） */
+const positionOf = (text, offset) => {
+  const before = text.slice(0, offset).split('\n');
+  return { line: before.length, column: before[before.length - 1].length + 1 };
+};
+
+const pyCleanSource = 'n = int(input())\nprint(n + 1)\n';
+const pyClean = await checkCode(pyCleanSource, 'Python (python3)');
+check(
+  'Python 正确代码 0 诊断',
+  pyClean.ok === true && pyClean.errorCount === 0 && pyClean.diagnostics.length === 0 && pyClean.note === '',
+  pyClean,
+);
+
+const pyColonSource = 'x = 1\nif x == 1\n    print(x)\n';
+const pyColon = await checkCode(pyColonSource, 'python3');
+const pyColonBox = pyColon.diagnostics[0];
+check(
+  'Python 缺冒号：报在 if 行，带英文原文和中文建议',
+  pyColon.errorCount === 1
+    && positionOf(pyColonSource, pyColonBox.from).line === 2
+    && /expected ':'/.test(pyColonBox.message)
+    && /冒号/.test(pyColonBox.advice),
+  pyColon,
+);
+
+const pyIndentSource = 'x = 1\n    y = 2\n';
+const pyIndent = await checkCode(pyIndentSource, 'py3');
+const pyIndentBox = pyIndent.diagnostics[0];
+check(
+  'Python 缩进错误：指向第 2 行，不越到上一行',
+  pyIndent.errorCount === 1
+    && positionOf(pyIndentSource, pyIndentBox.from).line === 2
+    && pyIndentBox.from > pyIndentSource.indexOf('\n')
+    && /unexpected indent/.test(pyIndentBox.message)
+    && /缩进/.test(pyIndentBox.advice),
+  pyIndent,
+);
+
+const pyUnclosedSource = 'print(1,\n';
+const pyUnclosed = await checkCode(pyUnclosedSource, 'Python 3');
+const pyUnclosedBox = pyUnclosed.diagnostics[0];
+check(
+  'Python 未闭合括号：带位置和括号建议',
+  pyUnclosed.errorCount === 1
+    && positionOf(pyUnclosedSource, pyUnclosedBox.from).line === 1
+    && /never closed/.test(pyUnclosedBox.message)
+    && /括号/.test(pyUnclosedBox.advice),
+  pyUnclosed,
+);
+
+// 列号是 UTF-8 字节：同一行前面有中文时，换算成字符下标不能指偏
+const pyChineseSource = '中文 = 1\nif 中文 == 1\n    pass\n';
+const pyChinese = await checkCode(pyChineseSource, 'python3');
+const pyChineseBox = pyChinese.diagnostics[0];
+check(
+  'Python 中文标识符后面的报错列号不偏',
+  pyChinese.errorCount === 1
+    && positionOf(pyChineseSource, pyChineseBox.from).line === 2
+    && pyChineseBox.from === pyChineseSource.lastIndexOf('1'),
+  pyChinese,
+);
+
+// 「只 compile 不执行」：运行期错误不算语法错误，检查过程也不会产生 stdout
+const pyRuntimeOnly = await checkCode('raise SystemExit(1)\n1 / 0\n', 'Python');
+check('Python 检查只编译不执行（运行期错误不报）', pyRuntimeOnly.ok === true && pyRuntimeOnly.errorCount === 0, pyRuntimeOnly);
+const pyNoExecution = await checkPythonWithNode('print("这条不该执行")\n');
+check('Python 检查不执行代码，stdout 为空', pyNoExecution.stage === 'ok' && pyNoExecution.stdout === '', pyNoExecution);
+const pyDiagnosticText = await checkPythonWithNode('x = 1\nif x == 1\n    pass\n');
+check(
+  'Python 诊断原文是 <pta>:行:列: error: 说明',
+  /^<pta>:2:\d+: error: expected ':'\n$/.test(pyDiagnosticText.compileOutput),
+  pyDiagnosticText.compileOutput,
+);
+
+// 代码填空片段插进裁判程序后缩进层级未知：unexpected indent 不算学生的错
+const pyFragment = await checkCode('    x = 1\n', 'Python', undefined, true);
+check('Python 代码填空片段不报缩进假错', pyFragment.errorCount === 0 && pyFragment.diagnostics.length === 0, pyFragment);
+
+// Python 的常见报错都要有能照着改的中文建议（不能落到默认的「对照英文说明」）
+const pythonAdvice = [
+  ['invalid syntax', '语法'],
+  ['unexpected indent', '缩进'],
+  ['unindent does not match any outer indentation level', '缩进'],
+  ['unterminated string literal (detected at line 1)', '引号'],
+  ['EOF while scanning triple-quoted string literal', '引号'],
+];
+check(
+  'Python 常见报错都有中文建议',
+  pythonAdvice.every(([message, hint]) => adviceForMessage(message).includes(hint)),
+  pythonAdvice.map(([message]) => [message, adviceForMessage(message)]),
+);
 
 /* ---------- 真实引擎 ---------- */
 
@@ -561,8 +656,23 @@ check('样例不一致时指出第几行与期望/实际', diff.same === false &
 // 语言分类：C++ 必须排在 C 前面，否则 'C++ (g++)' 会被 /^c\b/ 判成 C
 check('C++ 语言标记识别为 cpp', checkLanguage('C++ (g++)') === 'cpp' && checkLanguage('cpp') === 'cpp' && checkLanguage('CXX') === 'cpp');
 check('C 语言标记仍识别为 c', checkLanguage('C') === 'c' && checkLanguage('C (gcc 9.2)') === 'c');
-check('Python/Java 不走内置实时检查', checkLanguage('Python') === null && checkLanguage('Java') === null);
-check('isCheckableLanguage 覆盖 C 与 C++', isCheckableLanguage('C') && isCheckableLanguage('C++'));
+check(
+  'Python 语言标记识别为 python',
+  checkLanguage('Python') === 'python'
+    && checkLanguage('Python (python3)') === 'python'
+    && checkLanguage('python3') === 'python'
+    && checkLanguage('py3') === 'python',
+);
+check(
+  'Java 语言标记识别为 java（JavaScript 不算）',
+  checkLanguage('Java') === 'java'
+    && checkLanguage('Java (javac 17)') === 'java'
+    && checkLanguage('JavaScript') === null,
+);
+check(
+  'isCheckableLanguage 覆盖 C / C++ / Python / Java',
+  ['C', 'C++', 'Python', 'Java'].every((name) => isCheckableLanguage(name)),
+);
 
 /* ---------- 内置 JavaScript 运行器：Node 风格垫片 ---------- */
 

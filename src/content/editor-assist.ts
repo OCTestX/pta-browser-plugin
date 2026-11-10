@@ -95,7 +95,8 @@ async function handle(token: string, message: AgentEvent): Promise<void> {
 }
 
 /**
- * 实时检查：只编译不运行（内置引擎的 -fsyntax-only，几十毫秒）。
+ * 实时检查：C/C++ 用内置引擎的 -fsyntax-only，Python3 用 Pyodide 的 compile()，
+ * 都只检查、不运行；Java 走规则检查。
  *
  * 结果带原文一起回给页面脚本：页面脚本只认「文本还对得上」的那一份，
  * 用户又改了字就直接丢掉，波浪线永远比正文慢一拍也不会画错位置。

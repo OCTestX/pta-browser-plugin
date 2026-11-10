@@ -1,6 +1,12 @@
 // 带上 .ts 后缀：这个模块会被 scripts/test-compile.mjs 直接用 Node 导入（Node 不做省略后缀解析）
 import { truncate } from '../shared/tools.ts';
-import { parseClangDiagnostics, offsetOfPosition, isFragmentContextDiagnostic } from '../shared/code-diagnostics.ts';
+import {
+  parseClangDiagnostics,
+  offsetOfPosition,
+  isFragmentContextDiagnostic,
+  type CodeDiagnostic,
+} from '../shared/code-diagnostics.ts';
+import { checkJava } from '../shared/java-diagnostics.ts';
 import type { DiagnosticBox } from '../shared/editor-assist-protocol.ts';
 import { runInEngine, checkInEngine, type EngineRunResult, type EngineStage } from './compiler-host.ts';
 
@@ -151,13 +157,17 @@ export interface PyCompileOptions {
   signal?: AbortSignal;
 }
 
+/** 当前是否跑在 Node（测试脚本）：Node 里没有 Worker / offscreen，也没有 Pyodide */
+function hasNodeRuntime(): boolean {
+  const g = globalThis as { process?: { versions?: { node?: string } } };
+  return !!g.process?.versions?.node;
+}
+
 export async function compileAndRunPython(options: PyCompileOptions): Promise<CompileResult> {
   const { code, stdin, signal } = options;
 
   // Node 环境：没有 Worker / offscreen，用 python3 子进程跑（仓库里的测试脚本走这条）
-  const g = globalThis as { process?: { versions?: { node?: string } } };
-  const hasNode = !!g.process?.versions?.node;
-  if (hasNode) {
+  if (hasNodeRuntime()) {
     return runPythonWithNode(code, stdin, signal);
   }
 
@@ -242,6 +252,103 @@ async function runPythonWithNode(code: string, stdin: string, signal?: AbortSign
       signal.addEventListener('abort', () => { try { child.kill(); } catch {} }, { once: true });
     }
     try { child.stdin.write(stdin || ''); child.stdin.end(); } catch {}
+  });
+}
+
+/** Node 侧 Python 检查脚本回给 JS 的 JSON（error 为 null 表示语法没问题） */
+interface PythonCheckPayload {
+  error?: { line?: unknown; column?: unknown; message?: unknown } | null;
+}
+
+/**
+ * Node 环境的 Python 语法检查：起 python3 只做 compile(source, '<pta>', 'exec')，不执行代码。
+ *
+ * 浏览器里走 compile-worker.js 的 Pyodide 分支；两边给出同一种结构化输出
+ * `<pta>:行:列: error: 说明`，checkCode 的解析与测试才能共用一条路。
+ * 导出给 scripts/test-compile.mjs 直接验证「只编译不执行」。
+ */
+export async function checkPythonWithNode(source: string, signal?: AbortSignal): Promise<EngineRunResult> {
+  const started = Date.now();
+  // 平台相关模块：静态 import 会把 node:child_process 带进浏览器构建，只能运行期加载
+  const modName = 'node:child_process';
+  const { spawn } = await import(modName);
+  // 与 compile-worker.js 里的 __pta_compile_check 保持一致：
+  // compile 只检查语法；行号从 1 开始，列号换算成 UTF-8 字节（offsetOfPosition 按字节解释）
+  const script = [
+    'import json, sys',
+    'source = sys.stdin.buffer.read().decode("utf-8")',
+    'payload = None',
+    'try:',
+    '    compile(source, "<pta>", "exec")',
+    'except (SyntaxError, IndentationError, TabError) as error:',
+    '    message = getattr(error, "msg", "") or str(error)',
+    '    line = getattr(error, "lineno", None) or 1',
+    '    text = getattr(error, "text", None) or ""',
+    '    offset = getattr(error, "offset", None) or 1',
+    '    indent = len(text) - len(text.lstrip(" \\t"))',
+    '    if indent:',
+    '        offset = max(offset, indent + 1)',
+    '    prefix = text[:max(0, offset - 1)]',
+    '    payload = {"line": line, "column": len(prefix.encode("utf-8")) + 1, "message": message}',
+    'except ValueError as error:',
+    '    payload = {"line": 1, "column": 1, "message": str(error)}',
+    'print(json.dumps({"error": payload}))',
+  ].join('\n');
+
+  return new Promise<EngineRunResult>((resolve) => {
+    const child = spawn('python3', ['-c', script], { stdio: ['pipe', 'pipe', 'pipe'] });
+    let stdout = '';
+    let stderr = '';
+    child.stdout.on('data', (d: unknown) => { stdout += String(d); });
+    child.stderr.on('data', (d: unknown) => { stderr += String(d); });
+
+    const finish = (result: Partial<EngineRunResult> & { stage: EngineRunResult['stage'] }): void => {
+      resolve({
+        stdout: '',
+        stderr: '',
+        compileOutput: '',
+        exitCode: 0,
+        trap: null,
+        message: '',
+        elapsedMs: Date.now() - started,
+        ...result,
+      });
+    };
+
+    child.on('error', (error: { message: string }) => {
+      finish({ stage: 'engine-error', message: `Python 语法检查起不来：${error.message}` });
+    });
+    child.on('close', () => {
+      // 只认最后一行：解释器启动时的杂音（sitecustomize 之类）不该把结果搅坏
+      const lastLine = stdout.trim().split('\n').at(-1) ?? '';
+      let parsed: PythonCheckPayload | null = null;
+      try {
+        parsed = JSON.parse(lastLine || 'null') as PythonCheckPayload | null;
+      } catch {
+        parsed = null;
+      }
+      if (!parsed || !('error' in parsed)) {
+        finish({ stage: 'engine-error', message: stderr.trim() || 'python3 没有返回检查结果' });
+        return;
+      }
+      const detail = parsed.error;
+      if (!detail) {
+        finish({ stage: 'ok' });
+        return;
+      }
+      const line = Number(detail.line) || 1;
+      const column = Number(detail.column) || 1;
+      const message = String(detail.message ?? '语法错误');
+      finish({
+        stage: 'compile-error',
+        exitCode: 1,
+        compileOutput: `<pta>:${line}:${column}: error: ${message}\n`,
+      });
+    });
+    if (signal) {
+      signal.addEventListener('abort', () => { try { child.kill(); } catch {} }, { once: true });
+    }
+    try { child.stdin.write(source); child.stdin.end(); } catch {}
   });
 }
 
@@ -395,11 +502,20 @@ export interface CodeCheckResult {
   stage?: CompileStage;
 }
 
-/** 内置编译器支持的前端：C 与 C++；Python / Java 等语言不做实时检查 */
-export type CheckLanguage = 'c' | 'cpp';
+/**
+ * 实时检查的语言：
+ *   · C / C++ 走内置 clang（-x c / -x c++）
+ *   · Python 走内置 Pyodide 的 compile()，只检查语法、不执行
+ *   · Java 没有内置编译器，只做括号 / 分号这类规则检查
+ */
+export type CheckLanguage = 'c' | 'cpp' | 'python' | 'java';
 
 export function checkLanguage(language: string): CheckLanguage | null {
   const lang = String(language ?? '').trim().toLowerCase();
+  // Python 的题面语言标记常见 `Python (python3)` / `python3` / `py3`
+  if (/python/.test(lang) || /^py3?\b/.test(lang)) return 'python';
+  // Java 常见 `Java` / `Java (javac 17)`；`javascript` 不算（java 后面没有词边界）
+  if (/^java\b/.test(lang) || /\bjavac\b/.test(lang)) return 'java';
   // C++ 必须先判：'c++' 也会被 /^c\b/ 命中（c 与 + 之间是词边界）
   if (/^(c\+\+|cpp|cxx)\b/.test(lang) || /\bc\+\+/.test(lang)) return 'cpp';
   if (/^c\b/.test(lang) || /gcc|clang/.test(lang)) return 'c';
@@ -417,13 +533,16 @@ export function isCheckableLanguage(language: string): boolean {
  * 区间会跨到下一行，页面那边「跨行不画」的判断会把整条诊断吃掉（实测就是这样：
  * 底部报了错，代码里一条波浪线都没有）。所以落点先往回退到本行最后一个非空白字符。
  *
+ * 往前退不能跨过行首：缩进错误报在第 2 行的空格上时，退过头会把波浪线画到第 1 行末尾。
+ *
  * 落在标识符/数字上就一直取到标识符结束，否则取到行尾的空白或分隔符之前（最多 40 字符）。
  */
 export function diagnosticRange(code: string, from: number): { from: number; to: number } {
   const source = String(code ?? '');
   if (source.length === 0) return { from: 0, to: 0 };
   let start = Math.max(0, Math.min(from, source.length - 1));
-  while (start > 0 && /[\s]/.test(source[start])) start -= 1;
+  const lineStart = source.lastIndexOf('\n', start - 1) + 1;
+  while (start > lineStart && /[\s]/.test(source[start])) start -= 1;
   const lineEnd = source.indexOf('\n', start) < 0 ? source.length : source.indexOf('\n', start);
   const word = /^[A-Za-z_][A-Za-z_0-9]*/.exec(source.slice(start, lineEnd));
   if (word) return { from: start, to: start + word[0].length };
@@ -442,48 +561,29 @@ function firstDiagnosticLine(output: string): string {
   return first.slice(0, 300);
 }
 
+/** Python 片段插进裁判程序后的缩进层级未知，这类报错在片段模式下不算学生的错 */
+const PYTHON_INDENT_DIAGNOSTIC =
+  /unexpected indent|expected an indented block|unindent does not match|inconsistent use of tabs/i;
+
 /**
- * 用内置编译器给作答区代码做一次「只编译不运行」的检查。
- * 支持 C 与 C++（引擎分别用 -x c / -x c++），别的语言返回 note 让界面如实显示。
+ * 引擎结果 → 前端诊断。C/C++ 与 Python 共用：
+ * 两边给的都是 `<文件>:行:列: 级别: 正文`，列号按 UTF-8 字节算。
  */
-export async function checkCode(
-  code: string,
-  language: string,
-  signal?: AbortSignal,
-  fragment = false,
-): Promise<CodeCheckResult> {
-  const source = String(code ?? '');
-  const empty: CodeCheckResult = { ok: true, note: '', diagnostics: [], errorCount: 0, message: '' };
-  const lang = checkLanguage(language);
-  if (!lang) {
-    return { ...empty, note: '内置编译器只支持 C / C++，其他语言不做实时检查' };
-  }
-  if (source.trim() === '') return empty;
-
-  let raw: EngineRunResult;
-  try {
-    // 代码填空题的作答区只是题面裁判程序的一部分：printf/puts 这些头在裁判程序里，
-    // 独立检查时强制带上常用头，避免报一屏假「未声明」。
-    raw = await checkInEngine(source, signal, lang, fragment);
-  } catch (error) {
-    // 超时 / 编译器忙 / 引擎不可用：带回 stage 和一句能看懂的说明，页面会把它显示在角落
-    const failed = engineFailureResult(error);
-    if (!failed) throw error;
-    return { ...empty, ok: false, stage: failed.stage, message: failed.message };
-  }
-
+function engineCheckResult(
+  source: string,
+  raw: EngineRunResult,
+  skip: (item: CodeDiagnostic) => boolean,
+): CodeCheckResult {
   // clang 的原文可能一条都解析不出来（位置越界、日志被截断），那时才用「第一句原文」兜底；
   // 解析出来但被 fragment 过滤掉的假「未声明」不能以此为由再露出来
   const parsed = parseClangDiagnostics(raw.compileOutput);
   const diagnostics: DiagnosticBox[] = [];
   for (const item of parsed) {
-    // note 是 clang 跟在报错后面、指在同一位置的补充说明（「include 这个头文件」之类），
+    // note 是编译器跟在报错后面、指在同一位置的补充说明（「include 这个头文件」之类），
     // 它和那条报错算同一件事，单独算一条只会让「N 个错误」翻倍
     if (item.severity === 'note') continue;
-    // 代码填空片段依赖题面/裁判提供的类型、常量、宏：独立编译的「未声明」是假报错，
-    // 直接丢掉；真正的语法错误（少分号、括号不配对等）继续上报
-    if (fragment && item.severity === 'error' && isFragmentContextDiagnostic(item.message)) continue;
-    // clang 的列号是 UTF-8 字节偏移，offsetOfPosition 负责换算成字符下标
+    if (skip(item)) continue;
+    // 列号是 UTF-8 字节偏移，offsetOfPosition 负责换算成字符下标
     const offset = offsetOfPosition(source, item.line, item.column);
     if (offset < 0) continue;
     const range = diagnosticRange(source, offset);
@@ -496,6 +596,7 @@ export async function checkCode(
     });
   }
   const errorCount = diagnostics.filter((item) => item.severity === 'error').length;
+  const empty: CodeCheckResult = { ok: true, note: '', diagnostics: [], errorCount: 0, message: '' };
 
   if (raw.stage === 'engine-error') {
     // 引擎崩之前往往已经打出了真诊断：先把能画线的画出来，再在提示里说明引擎出错
@@ -509,7 +610,7 @@ export async function checkCode(
     };
   }
   // 报错了却一条诊断都解析不出来（日志被截断 / 原文格式不认识）：
-  // 把 clang 原文第一句带到提示里，界面不能安安静静什么都不说
+  // 把原文第一句带到提示里，界面不能安安静静什么都不说
   if (raw.stage === 'compile-error' && parsed.length === 0) {
     return {
       ...empty,
@@ -520,6 +621,70 @@ export async function checkCode(
     };
   }
   return { ok: true, note: '', diagnostics, errorCount, message: '' };
+}
+
+/**
+ * 给作答区代码做一次「只检查不运行」的实时检查。
+ *
+ * C / C++ 用内置 clang；Python 用内置 Pyodide 的 compile(..., 'exec')；
+ * Java 没有内置编译器，只返回规则检查（note 里写明）。
+ * 别的语言返回 note 让界面如实显示。
+ */
+export async function checkCode(
+  code: string,
+  language: string,
+  signal?: AbortSignal,
+  fragment = false,
+): Promise<CodeCheckResult> {
+  const source = String(code ?? '');
+  const empty: CodeCheckResult = { ok: true, note: '', diagnostics: [], errorCount: 0, message: '' };
+  const lang = checkLanguage(language);
+  if (!lang) {
+    return { ...empty, note: '实时检查支持 C / C++ / Python / Java，其他语言不做检查' };
+  }
+  if (source.trim() === '') return empty;
+
+  // Java：不调用引擎，规则检查是纯函数，失败也画得出线
+  if (lang === 'java') {
+    const diagnostics = checkJava(source);
+    return {
+      ok: true,
+      note: 'Java 无内置编译器，仅规则检查',
+      diagnostics,
+      errorCount: diagnostics.filter((item) => item.severity === 'error').length,
+      message: '',
+    };
+  }
+
+  let raw: EngineRunResult;
+  try {
+    if (lang === 'python') {
+      // 浏览器走 Pyodide（Worker 里只 compile 不执行）；Node 测试环境没有 Pyodide，退回 python3
+      raw = hasNodeRuntime()
+        ? await checkPythonWithNode(source, signal)
+        : await checkInEngine(source, signal, 'python');
+    } else {
+      // 代码填空题的作答区只是题面裁判程序的一部分：printf/puts 这些头在裁判程序里，
+      // 独立检查时强制带上常用头，避免报一屏假「未声明」。
+      raw = await checkInEngine(source, signal, lang, fragment);
+    }
+  } catch (error) {
+    // 超时 / 编译器忙 / 引擎不可用：带回 stage 和一句能看懂的说明，页面会把它显示在角落
+    const failed = engineFailureResult(error);
+    if (!failed) throw error;
+    return { ...empty, ok: false, stage: failed.stage, message: failed.message };
+  }
+
+  return engineCheckResult(source, raw, (item) => {
+    // 代码填空片段依赖题面/裁判提供的类型、常量、宏：独立编译的「未声明」是假报错，
+    // 直接丢掉；真正的语法错误（少分号、括号不配对等）继续上报
+    if ((lang === 'c' || lang === 'cpp') && fragment && item.severity === 'error') {
+      return isFragmentContextDiagnostic(item.message);
+    }
+    // Python 片段：缩进取决于插入位置，unexpected indent 这类报错不算学生的错
+    if (lang === 'python' && fragment) return PYTHON_INDENT_DIAGNOSTIC.test(item.message);
+    return false;
+  });
 }
 
 export function formatCompileResult(result: CompileResult): string {

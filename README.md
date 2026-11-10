@@ -39,7 +39,7 @@ PTA 助手是一个运行在浏览器里的 PTA（拼题A）解题助手：自�
 | Tab 补全 | 输入 `/` 后可以用 Tab 补全选中的指令 |
 | 整理代码 | 作答区底部状态栏（「Test Case」右边）一个按钮：按语言重排缩进、在运算符两侧补空格（`7*2` → `7 * 2`）、无花括号的 `if`/`for`/`while` 体缩进一层；字符串和注释里的内容不动 |
 | 彩虹括号 | 作答区里的括号按嵌套层级上色并加粗，配对的左右括号同色 |
-| 实时语法检查 | 停手 0.35 秒后用内置 clang 只编译不运行，出错处画红色波浪线、上方显示错误数量，鼠标停在波浪线上给出中文修改建议（C / C++） |
+| 实时语法检查 | 停手 0.35 秒后检查：C/C++ 用内置 clang `-fsyntax-only`，Python3 用内置 Pyodide `compile()`；Java 只做规则检查。**只有 error 画红色波浪线**（warning 只进计数），状态栏显示「N 个错误」，悬停给出中文修改建议 |
 | 标准库中文注释 | 鼠标停在 `printf` / `malloc` / `sqrt` 这类 C 标准库函数名，或 `vector` / `sort` / `push_back` 这类 C++ STL 名字上，显示原型、作用与常见坑 |
 | 上下文进度 | 顶栏一个小圆环显示上下文填充比例，token 明细停在圆环的提示里；窗口大小用模型真实值（接口或 models.dev 数据集查得），查不到才按模型名估算 |
 
@@ -190,7 +190,7 @@ PTA 会拦截普通粘贴。插件**只在焦点位于 PTA 的可写作答区时
 |---|---|
 | 整理代码 | 按语言重排：C/C++/Java/JS 按花括号层级重排缩进（4 空格），Python 不动缩进、只统一 Tab/空格与空行；字符串、字符常量、注释里的内容一个字都不改 |
 | 彩虹括号 | 括号按嵌套层级上色，配对的左右括号同色；字符串和注释里的括号不参与 |
-| 实时语法检查 | 停手 0.35 秒后把代码送进内置 clang 做 `-fsyntax-only`（只编译、不链接、不运行，一次几十毫秒），**只有 error 画红色波浪线**（warning 只进计数），状态栏上显示「N 个错误」；鼠标停在波浪线上显示 clang 原文和一句中文修改建议 |
+| 实时语法检查 | 停手 0.35 秒后检查：C/C++ 送内置 clang 做 `-fsyntax-only`（只编译、不链接、不运行），Python3 送 Pyodide `compile()`（只编译、不执行），Java 做规则扫描；**只有 error 画红色波浪线**（warning 只进计数），状态栏显示「N 个错误」，悬停显示原文和中文建议 |
 | 标准库函数注释 | 鼠标停在 `printf` `malloc` `strlen` `sqrt` 这类 C 标准库 / `string.h` / `math.h` 函数名上，显示函数原型、作用与常见坑 |
 
 整理代码的具体规则（C）：
@@ -206,8 +206,8 @@ PTA 会拦截普通粘贴。插件**只在焦点位于 PTA 的可写作答区时
 
 三条边界，别被它误导：
 
-- **实时检查覆盖 C 与 C++**：引擎分别走 `-x c` 与 `-x c++ -std=c++17`，C++ 头文件来自 sysroot 里的 libc++，链接库是 `libc++ / libc++abi / libc`（见 `public/engine/shared.js`）。选 Python / Java 时，上面只显示一句「内置编译器只支持 C / C++，其他语言不做实时检查」，不画波浪线。
-- **只做语法检查，不运行代码**：`-fsyntax-only` 不产出目标文件、不链接，你的代码不会被执行，所以它比「编译并运行」快一半，也敢在每次停手后都跑一遍。
+- **实时检查覆盖 C / C++ / Python3 / Java**：C/C++ 引擎分别走 `-x c` 与 `-x c++ -std=c++17`（C++ 头文件来自 sysroot 里的 libc++）；Python3 用内置 Pyodide 的 `compile()`，只检查语法、不执行；Java 没有内置编译器，只做规则检查（括号/引号/明显缺分号/`if` 缺括号等）。C/C++ 与 Python3 的检查结果都会画波浪线。
+- **只做语法检查，不运行代码**：C/C++ 的 `-fsyntax-only` 不产出目标文件、不链接；Python3 只 `compile()` 不执行；Java 只做规则扫描。所以它比「编译并运行」快，也敢在每次停手后都跑一遍。
 - **整理代码绝不覆盖新改动**：整理请求带着发起时的原文，回到页面前会比对一次；这期间你又敲了字，这次整理直接取消（提示「代码刚变过，这次整理取消了」）。
 
 技术细节（为什么必须走 MAIN world、波浪线怎么定位、clang 的列号为什么按字节算）记在 **[docs/pta-page-notes.md](docs/pta-page-notes.md)** 第 2.1 节。
@@ -291,7 +291,7 @@ diff 卡片表头有「全屏查看」：新标签页打开完整 diff，不折�
 
 **`read_pta_compile_result`**：读 PTA 页面上的「编译器输出」区域：最近一次运行的输出、异常堆栈、编译错误。
 
-> **没有内置编译器的语言（Java、Go、C#、Rust 等）走这两个工具。** 插件**不内置 JRE / Go 工具链**，Java 这类语言本地跑不了，只能借 PTA 自己的编译器：先 `simulate_pta_run` 跑一遍拿结果，需要看编译错误再 `read_pta_compile_result`。不要因为本地跑不了就以为代码是对的。
+> **没有内置编译器的语言（Java、Go、C#、Rust 等）走这两个工具。** Java 另有代码整理和规则语法提示，但**不内置 JRE**，本地跑不了；Go / C# / Rust 也没有本地工具链。运行只能借 PTA 自己的编译器：先 `simulate_pta_run` 跑一遍拿结果，需要看编译错误再 `read_pta_compile_result`。不要因为本地跑不了就以为代码是对的。
 
 **`submit_answer` / `read_judge_result`**：提交后等判题结论。PTA 结果页不会自己刷新，等待循环里**每 5 秒点一次**页面上的「刷新 / Reload」按钮。提交前先确认上一次的「提交结果 dialog」已经关掉（`close_dialogs`），否则它会挡住提交按钮。
 
@@ -339,7 +339,7 @@ diff 卡片表头有「全屏查看」：新标签页打开完整 diff，不折�
 
 ## 内置编译器
 
-插件内置 **C**、Python、JavaScript 三种语言的编译运行环境：不联网、代码不出本机。
+插件内置 **C**、**C++**、Python、JavaScript 四种语言的编译运行环境：不联网、代码不出本机。
 
 | 工具 | 运行时 |
 |---|---|
@@ -424,7 +424,7 @@ src/
     input-methods.ts     写入作答区（编辑器事务 / 逐字输入）
     typist.ts            逐字输入
     debugger-input.ts    chrome.debugger 发 CDP 真实按键
-    compile.ts           内置运行器调度（C / Python / JS）
+    compile.ts           内置运行器调度（C / C++ / Python / JS）
     compiler-host.ts     承载 wasm 引擎的 Worker（Chrome 走 offscreen 文档）
     clipboard.ts         读剪贴板的后台兜底
     explain-pages.ts     讲解页的存与取（/what 生成的那份 HTML）
@@ -565,13 +565,14 @@ npm run icons              # 重新生成图标（python3 + Pillow）
 | 全屏 diff 提示已过期 | 只保留最近 8 份，回面板重新点一次 |
 | API Key 无效 | 设置页重填，或检查接口地址 |
 | 编译器加载失败 | 确认扩展允许 WASM；或用 PTA 的「运行测试」（`simulate_pta_run`） |
-| Java / Go / C# 这类语言跑不了 | C / C++ 有内置编译器；JRE / Go 工具链不内置：让 AI 用 `simulate_pta_run` 借 PTA 的环境跑 |
+| Java / Go / C# 这类语言跑不了 | Java 支持代码整理 + 规则语法提示，但不内置 JRE；Go / C# / Rust 也没有本地工具链。运行仍让 AI 用 `simulate_pta_run` 借 PTA 的环境 |
 | 判题一直卡住 | 插件每 5 秒自动点一次「刷新」；超时后可让 AI 调 `refresh_page` |
 
 ## 更新记录
 
 | 版本 | 主要内容 |
 |---|---|
+| v6.8.0 | 实时检查扩到 Python3：内置 Pyodide 只 `compile()` 不执行，返回行/UTF-8 字节列/中文建议；C/C++ 仍走 clang `-fsyntax-only`。Java 加入保守规则检查（括号/引号/明显缺分号/`if` 缺括号）与真正的 Java 代码整理（缩进、运算符空格、泛型尖括号保护、文本块保守跳过）。修 `/* ... */` 整理后丢失分隔符的问题；C/C++ 单行、行尾、多行块注释都保留 `/*`/`*/`。README、提示词与测试同步 |
 | v6.7.0 | 多标签改为标签页级 `sessionStorage`：草稿/对话刷新保留，同 URL 两个标签也互不串；顺手修掉 reload 后布局被重置。`set_language` 支持 react-select `mousedown` 展开与 `cpp/c++/g++` 别名，判断题选项接受 `T/TRUE/FALSE` 并剥离题干行号槽，`simulate_pta_run` 在编译错误出现时立即读回编译器日志。视觉模式真正把图片作为 `image_url` 送进模型，修正 `vlmMode=off` 语义，加入 Qwen3.8-27B 视觉能力与模型下拉 eye icon；Qwen 的 `files` 空对象用 `filesJson` 兜底。C++ 引擎按阶段超时、排队超时不再重启引擎、日志写满后仍能回收编译诊断。新增 `test-tab-store` / `test-model-capabilities`，扩充 `test-compile` 与 `test-pta-tools` |
 | v6.6.0 | 上传 zip 的多文件题（type/9）现在能真正交付答案：新增独立工具 `write_zip`（只接受 `filename` + `files`，键为 zip 内路径、值为文件文本），用浏览器原生 Blob 生成标准 zip 并触发下载，用户再点「Upload Answer Zip」上传；`write_document` 也支持 `files` 兼容旧调用。不引外部库、路径穿越 `../` 会被拒绝。`read_problem` 会从 Problem Folder 抠出文件清单、提醒样例不是 stdin，并明确让模型用 `write_zip` 打包；README / 提示词 / 工具 schema 同步；jsdom 冒烟覆盖 zip 打包，Node 侧用 Python `zipfile` 验证生成的 zip 字节、文件名与内容。修复内置 Python 运行器 stdin 耗尽后返回空串、导致 `sys.stdin.read()` 死循环的问题：改为返回 `null` 表示 EOF，并新增回归测试 |
 | v6.5.0 | 真机打开「101计划 Python 版数据结构」的 type/9 多文件题，发现新版多文件题**根本没有代码编辑器**：作答区是「上传 zip」+ 文件清单，`read_editor_code all=true` / `write_editor_code editorIndex` 用不上。现在 `read_problem` 检测不到可写编辑器时明确说明这是上传 zip 题、让模型按文件清单交付内容，不再假装有「作答区模板」；README、提示词、工具 schema 同步区分「上传 zip 的多文件题」与「确实有多个代码框的老题」。真机 `read_problem` 已验证给出正确作答方式 |

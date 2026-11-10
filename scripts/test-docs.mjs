@@ -244,7 +244,7 @@ check('README 记录了作答区增强', readme.includes('### 作答区增强'))
 check('README 记录了整理代码按钮', readme.includes('整理代码'));
 check('README 记录了彩虹括号', readme.includes('彩虹括号'));
 check('README 记录了标准库函数注释', readme.includes('标准库函数注释'));
-check('README 说明了实时检查只支持 C', readme.includes('内置编译器只支持 C'));
+check('README 说明了实时检查覆盖 C/C++/Python3/Java', readme.includes('实时检查覆盖 C / C++ / Python3 / Java'));
 check('README 写明了只做语法检查、不运行代码', readme.includes('只做语法检查'));
 check('README 写明了整理不会覆盖新改动', readme.includes('这次整理直接取消'));
 check('README 写明工具栏在底部状态栏（不挡代码）', readme.includes('底部状态栏'));

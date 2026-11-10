@@ -7,9 +7,9 @@
 // 超时终止由宿主负责（worker.terminate 整个杀掉，死循环只有这样才能停下来）。
 //
 // 协议（postMessage）：
-//   收 { id, code, stdin, lang } 或 { id, code, check: true }
-//      （check: true = 只做语法检查，不链接不运行，结果不走 stage）
-//   回 { id, type: 'stage', stage }   阶段推进（compile / run），宿主据此重置超时
+//   收 { id, code, stdin, lang } 或 { id, code, lang, check: true }
+//      （check: true = 只做语法检查，不链接不运行；C/C++ 走 -fsyntax-only，Python 走 compile()）
+//   回 { id, type: 'stage', stage }   阶段推进（compile / check / run），宿主据此重置超时
 //      { id, type: 'done', result }   结构化结果（含编译错误 / 运行结果 / 引擎错误）
 
 import { createCEngine, runOnEngine, checkOnEngine, MAX_RUNS_PER_ENGINE } from './engine-core.js';
@@ -111,11 +111,123 @@ async function runPython({ id, code, stdin }) {
   });
 }
 
+/* ---------- Python 语法检查（只 compile，不执行） ---------- */
+
+let pythonCheckerReady = false;
+
+/**
+ * 在 Python 侧装一个只做 compile() 的检查函数。
+ *
+ * 不把异常文本拼给 JS 再猜位置：Python 自己拿得到 lineno / offset / text，
+ * 这里直接把「行 + UTF-8 字节列 + 说明」序列化成 JSON 带回来。
+ */
+function ensurePythonChecker(py) {
+  if (pythonCheckerReady) return;
+  py.runPython(`
+import json as __pta_json
+
+def __pta_compile_check(source):
+    try:
+        compile(source, '<pta>', 'exec')
+    except (SyntaxError, IndentationError, TabError) as error:
+        message = getattr(error, 'msg', '') or str(error)
+        line = getattr(error, 'lineno', None) or 1
+        text = getattr(error, 'text', None) or ''
+        offset = getattr(error, 'offset', None) or 1
+        # 缩进错误常把位置指在行首空白里：挪到第一个非空白字符，波浪线才不会画在上一行
+        indent = len(text) - len(text.lstrip(' \\t'))
+        if indent:
+            offset = max(offset, indent + 1)
+        prefix = text[:max(0, offset - 1)]
+        # 列号按 UTF-8 字节给：宿主用 offsetOfPosition 换算成字符下标，中文注释不会指偏
+        return __pta_json.dumps({
+            'line': line,
+            'column': len(prefix.encode('utf-8')) + 1,
+            'message': message,
+        })
+    except ValueError as error:
+        # 源码里有 NUL 之类，compile 自己拒绝且不给位置：指到第一行
+        return __pta_json.dumps({'line': 1, 'column': 1, 'message': str(error)})
+    return ''
+`);
+  pythonCheckerReady = true;
+}
+
+async function checkPython({ id, code }) {
+  const started = Date.now();
+  // 先报 check 阶段：宿主从这里开始按「检查」预算计时，加载 Pyodide 的时间也算在里面
+  postMessage({ id, type: 'stage', stage: 'check' });
+
+  let py;
+  try {
+    py = await getPyodide();
+    ensurePythonChecker(py);
+  } catch (error) {
+    postMessage({ id, type: 'done', result: {
+      stage: 'engine-error',
+      message: `内置 Python 检查器加载失败：${error?.message ?? error}`,
+      elapsedMs: Date.now() - started,
+    } });
+    return;
+  }
+
+  // compile(source, '<pta>', 'exec') 只做语法分析，绝不执行用户代码
+  let payload = '';
+  try {
+    py.globals.set('__pta_source', code);
+    payload = py.runPython('__pta_compile_check(__pta_source)');
+  } catch (error) {
+    postMessage({ id, type: 'done', result: {
+      stage: 'engine-error',
+      message: `Python 语法检查失败：${error?.message ?? error}`,
+      elapsedMs: Date.now() - started,
+    } });
+    return;
+  } finally {
+    try { py.globals.delete('__pta_source'); } catch {}
+  }
+
+  let checked = null;
+  if (typeof payload === 'string' && payload !== '') {
+    try {
+      checked = JSON.parse(payload);
+    } catch {
+      checked = null;
+    }
+    if (!checked) {
+      postMessage({ id, type: 'done', result: {
+        stage: 'engine-error',
+        message: 'Python 检查结果无法解析',
+        elapsedMs: Date.now() - started,
+      } });
+      return;
+    }
+  }
+
+  postMessage({ id, type: 'done', result: {
+    stage: checked ? 'compile-error' : 'ok',
+    stdout: '',
+    stderr: '',
+    // 与 C/C++ 的 clang 诊断同一种形状：宿主复用 parseClangDiagnostics
+    compileOutput: checked ? `<pta>:${checked.line}:${checked.column}: error: ${checked.message}\n` : '',
+    exitCode: checked ? 1 : 0,
+    trap: null,
+    message: '',
+    elapsedMs: Date.now() - started,
+  } });
+}
+
 /* ---------- C ---------- */
 
 async function handle(ev) {
   const { id, code, stdin, lang, check } = ev.data ?? {};
   if (typeof id !== 'number' || typeof code !== 'string') return;
+
+  // Python 实时检查：只 compile 不执行，必须排在下面的运行分支前面
+  if (lang === 'python' && check === true) {
+    await checkPython({ id, code });
+    return;
+  }
 
   if (lang === 'python') {
     await runPython({ id, code, stdin: typeof stdin === 'string' ? stdin : '' });
