@@ -8,6 +8,7 @@ import {
   CLOSE_DIALOGS_SCRIPT,
   INPUT_METHOD_SCRIPT,
   LANGUAGE_SCRIPT,
+  LIST_PROBLEMS_SCRIPT,
   NEXT_PROBLEM_SCRIPT,
   READ_EDITOR_SCRIPT,
   READ_JUDGE_SCRIPT,
@@ -351,6 +352,28 @@ const fence3 = String.fromCharCode(96).repeat(3);
 check('样例小节按 data-lang 配出输入与输出', pairedProblem.includes('样例 1 输入：' + fence3 + '\n5\n' + fence3) && pairedProblem.includes('样例 1 输出：' + fence3 + '\n1\n1 1\n' + fence3), pairedProblem);
 check('输出样例框也按 [输出样例] 进了题面', statementOf(pairedProblem).includes('[输出样例]'));
 
+// 题面里的「函数接口定义 / 裁判测试程序样例」也是 data-code，只是没有 data-lang；
+// 它们不能被当成样例外给模型（真机 6-1 阶乘计算升级版复现过）
+pairedPage.document.querySelector('.rendered-markdown').insertAdjacentHTML(
+  'beforeend',
+  `<h4>函数接口定义</h4>
+   <div data-code="">
+     <div class="cm-content" contenteditable="false" aria-readonly="true">
+       <div class="cm-line">void Print_Factorial(const int N);</div>
+     </div>
+   </div>`,
+);
+const filteredProblem = await runScript(pairedPage, READ_PROBLEM_SCRIPT, {});
+const samplesSection = filteredProblem.slice(
+  filteredProblem.indexOf('样例（共'),
+  filteredProblem.indexOf('题面（来源'),
+);
+check(
+  '没有 data-lang 的代码块不会混进样例',
+  samplesSection.includes('5') && !samplesSection.includes('Print_Factorial'),
+  samplesSection,
+);
+
 /* ---------- 切到下一题（/fuck 赶题模式） ---------- */
 
 // 复刻 PTA 考试页的侧栏：顶部是题型分组（带「已答/总数」），下面是当前题型的题目网格。
@@ -360,9 +383,14 @@ function createProblemListPage(ids, options = {}) {
   const quiet = new VirtualConsole();
   quiet.on('jsdomError', () => {});
   const submitted = new Set(options.submitted ?? []);
+  const accepted = new Set(options.accepted ?? []);
+  const noAnswer = new Set(options.noAnswer ?? []);
   const links = ids
     .map((id, index) => {
-      const mark = submitted.has(id) ? '<div class="problemStatusRect_xx PROBLEM_SUBMITTED_xx"></div>' : '';
+      let mark = '';
+      if (submitted.has(id)) mark = '<div class="problemStatusRect_xx PROBLEM_SUBMITTED_xx"></div>';
+      else if (accepted.has(id)) mark = '<div class="problemStatusRect_xx PROBLEM_ACCEPTED_xx"></div>';
+      else if (noAnswer.has(id)) mark = '<div class="problemStatusRect_xx PROBLEM_NO_ANSWER_xx"></div>';
       return `<a class="inline-flex justify-center items-center relative h" href="/problem-sets/2092326321452294144/exam/problems/type/7?problemSetProblemId=${id}"><span>${index + 1}</span>${mark}</a>`;
     })
     .join('');
@@ -423,6 +451,28 @@ check(
   submittedResult,
 );
 
+// 真实考试页画的是 PROBLEM_ACCEPTED / PROBLEM_NO_ANSWER，不是 PROBLEM_SUBMITTED；
+// 认不出 ACCEPTED 就会把已经 AC 的题再点一遍，提交时被 PTA 拒绝
+const acceptedPage = createProblemListPage(
+  ['2092326321552957459', '2092326321552957460', '2092326321552957461'],
+  { accepted: ['2092326321552957460'], noAnswer: ['2092326321552957461'] },
+);
+acceptedPage.document.querySelectorAll('a')[2].addEventListener('click', (event) => {
+  event.preventDefault();
+  acceptedPage.history.pushState({}, '', '/problem-sets/2092326321452294144/exam/problems/type/7?problemSetProblemId=2092326321552957461');
+});
+const acceptedResult = await runScript(acceptedPage, NEXT_PROBLEM_SCRIPT, { timeoutMs: 3000, pollMs: 20 });
+check(
+  '真实页面的 PROBLEM_ACCEPTED 标记也会被跳过，只点 NO_ANSWER 的题',
+  acceptedResult.ok === true && String(acceptedResult.url).includes('problemSetProblemId=2092326321552957461'),
+  acceptedResult,
+);
+
+// 题目列表总览：同时给出题型分组与网格里的已提交状态
+const listOut = await runScript(submittedPage, LIST_PROBLEMS_SCRIPT, {});
+check('list_problems 列出当前题型的题目网格', listOut.includes('题目网格') && listOut.includes('已提交'));
+check('list_problems 标出哪道是当前题', listOut.includes('← 当前'));
+
 // skipCurrent=true：这道题不再回来
 const skipPage = createProblemListPage(['2092326321552957459', '2092326321552957460']);
 skipPage.document.querySelectorAll('a')[1].addEventListener('click', (event) => {
@@ -448,17 +498,20 @@ const groupLink = typeSwitchPage.document.querySelector('a[href*="/problems/type
 groupLink.addEventListener('click', (event) => {
   event.preventDefault();
   typeSwitchPage.history.pushState({}, '', '/problem-sets/2092326321452294144/exam/problems/type/6');
-  // 切完题型，侧栏的网格会换成新题型的；这里模拟一下
-  typeSwitchPage.document.body.insertAdjacentHTML(
-    'beforeend',
-    '<a id="newTypeQuestion" href="/problem-sets/2092326321452294144/exam/problems/type/6?problemSetProblemId=2115063246452375554">6-1</a>',
-  );
-  // 新题型里的第一道题：点了之后地址才真的换掉
-  typeSwitchPage.document.getElementById('newTypeQuestion').addEventListener('click', (event) => {
-    event.preventDefault();
-    typeSwitchPage.history.pushState({}, '', '/problem-sets/2092326321452294144/exam/problems/type/6?problemSetProblemId=2115063246452375554');
-    typeSwitchPage.document.title = '6-1 代码填空';
-  });
+  // 真实页面上侧栏不是同一帧换好的：延后 120ms 再换网格，
+  // 插件必须等网格真的出现新题型的链接再点，不能点到旧题型的链接上
+  setTimeout(() => {
+    typeSwitchPage.document.body.insertAdjacentHTML(
+      'beforeend',
+      '<a id="newTypeQuestion" href="/problem-sets/2092326321452294144/exam/problems/type/6?problemSetProblemId=2115063246452375554">6-1</a>',
+    );
+    // 新题型里的第一道题：点了之后地址才真的换掉
+    typeSwitchPage.document.getElementById('newTypeQuestion').addEventListener('click', (event) => {
+      event.preventDefault();
+      typeSwitchPage.history.pushState({}, '', '/problem-sets/2092326321452294144/exam/problems/type/6?problemSetProblemId=2115063246452375554');
+      typeSwitchPage.document.title = '6-1 代码填空';
+    });
+  }, 120);
 });
 const typeSwitchResult = await runScript(typeSwitchPage, NEXT_PROBLEM_SCRIPT, { timeoutMs: 3000, pollMs: 20 });
 check(
@@ -495,6 +548,93 @@ const domRead = await runScript(noViewPage, READ_EDITOR_SCRIPT, {});
 check('拿不到实例时退回 DOM 读，并说明只读到渲染出来的行', domRead.includes('int a;') && domRead.includes('没拿到编辑器实例'));
 
 check('页面上没有作答区时如实告知', (await runScript(createPage({ withView: false }), READ_EDITOR_SCRIPT, {})).includes('没找到作答区'));
+
+// 多文件题：两个可写编辑器，按序号读 / 写
+const multiPage = createPage();
+const secondEditor = multiPage.document.createElement('div');
+secondEditor.id = 'pta-answer-editor-2';
+const secondContent = multiPage.document.createElement('div');
+secondContent.className = 'cm-content';
+secondContent.setAttribute('contenteditable', 'true');
+secondEditor.appendChild(secondContent);
+multiPage.document.body.appendChild(secondEditor);
+let secondDoc = 'int helper(void) { return 1; }';
+secondEditor.cmTile = {
+  view: {
+    state: {
+      get doc() {
+        return {
+          toString: () => secondDoc,
+          length: secondDoc.length,
+          lines: secondDoc.split('\n').length,
+        };
+      },
+      readOnly: false,
+      replaceSelection: (replacement) => ({ changes: { from: 0, to: secondDoc.length, insert: replacement } }),
+    },
+    focus: () => {},
+    dispatch: (transaction) => {
+      if (transaction.changes && typeof transaction.changes.from === 'number') {
+        const from = transaction.changes.from;
+        const to = typeof transaction.changes.to === 'number' ? transaction.changes.to : from;
+        secondDoc = secondDoc.slice(0, from) + (transaction.changes.insert ?? '') + secondDoc.slice(to);
+      }
+    },
+    on: () => {},
+  },
+};
+const allEditors = await runScript(multiPage, READ_EDITOR_SCRIPT, { all: true });
+check(
+  'read_editor_code all=true 列出两个可写编辑器与序号',
+  allEditors.includes('编辑器 0') && allEditors.includes('编辑器 1') && allEditors.includes('int helper'),
+  allEditors,
+);
+const writeSecond = await runScript(multiPage, INPUT_METHOD_SCRIPT, {
+  method: 'dispatch',
+  text: 'int second(void) { return 2; }',
+  json: true,
+  editorIndex: 1,
+});
+check(
+  'editorIndex=1 只改第二个编辑器',
+  writeSecond.ok === true && secondDoc.includes('return 2') && multiPage.__doc().includes('int main'),
+  writeSecond,
+);
+const readSecond = await runScript(multiPage, READ_EDITOR_SCRIPT, { editorIndex: 1 });
+check('按序号读回第二个编辑器', readSecond.includes('return 2') && !readSecond.includes('int main'));
+
+// 代码填空题：题面里直接带上作答区模板，模型不用再猜「要补哪段」
+const completionPage = createPage();
+completionPage.history.replaceState({}, '', '/problem-sets/1/exam/problems/type/6?problemSetProblemId=111');
+const completionOut = await runScript(completionPage, READ_PROBLEM_SCRIPT, { maxChars: 500 });
+check(
+  '代码填空题把作答区模板带进题面',
+  completionOut.includes('作答区模板') && completionOut.includes('#include <stdio.h>'),
+  completionOut,
+);
+
+// 新版多文件题：页面是上传 zip，没有可写编辑器，read_problem 要明确说明
+const zipPage = new JSDOM(
+  '<!doctype html><html><head><title>实验13-1 文件排序</title></head><body>'
+  + '<div class="rendered-markdown"><p>请上传 zip 包，包含 src/ 下的若干文件。</p></div>'
+  + '<div class="cm-content" contenteditable="false" aria-readonly="true"><div class="cm-line">in.txt</div></div>'
+  + '<div>Problem Folder<br>src/<br>(Submit Folder)<br>a.py<br>main.sh<br>(Entry File)<br>in.txt<br>Please upload a zip file</div>'
+  + '<button>Upload Answer Zip</button></body></html>',
+  { url: 'https://pintia.cn/problem-sets/1/exam/problems/type/9?problemSetProblemId=222', runScripts: 'outside-only' },
+).window;
+installInnerText(zipPage);
+const zipOut = await runScript(zipPage, READ_PROBLEM_SCRIPT, {});
+check(
+  '上传 zip 的多文件题会明确说明没有编辑器',
+  zipOut.includes('上传 zip') && zipOut.includes('没有可写代码编辑器') && !zipOut.includes('作答区模板'),
+  zipOut,
+);
+check(
+  '上传 zip 题会列出 Problem Folder 里的文件清单',
+  zipOut.includes('文件清单') && zipOut.includes('a.py') && zipOut.includes('main.sh') && zipOut.includes('in.txt'),
+  zipOut,
+);
+check('上传 zip 题会提醒样例不是 stdin', zipOut.includes('不是标准输入'), zipOut);
 
 /* ---------- 多种输入方法（设置页一个方法一个按钮，只保留实测可用的 4 种） ---------- */
 
@@ -977,6 +1117,18 @@ const englishNoStdin = createEnglishRunPage();
 const englishNoStdinOut = await runScript(englishNoStdin, SIMULATE_PTA_RUN_SCRIPT, { waitSeconds: 5, pollMs: 10 });
 check('不给数据集时不会去写测试输入框', !englishNoStdinOut.includes('已把数据集写进测试输入框'));
 
+// 真机 7-2：测试区里本来就列着几组「输入 / 期望输出」只读框，不能当运行结果
+const staleCasesPage = createSampleBoxPage();
+staleCasesPage.document.body.insertAdjacentHTML('beforeend', `
+  <button id="tc">Test Case</button>
+  <div id="cases">
+    <button id="run">Run Test Case</button>
+    <div class="cm-editor"><div class="cm-content" contenteditable="false" aria-readonly="true"><div class="cm-line">1988 4</div></div></div>
+    <div class="cm-editor"><div class="cm-content" contenteditable="false" aria-readonly="true"><div class="cm-line">25 2013</div></div></div>
+  </div>`);
+const staleCasesOut = await runScript(staleCasesPage, SIMULATE_PTA_RUN_SCRIPT, { waitSeconds: 1, pollMs: 10 });
+check('测试区自带的用例表不会被当成运行结果', !staleCasesOut.includes('1988 4') && !staleCasesOut.includes('25 2013'), staleCasesOut);
+
 /* ---------- 新版 PTA：结果区是页签，容器在标题上方第 5 层 ---------- */
 
 // 复刻真实页面（2026-11 实测）：
@@ -1092,12 +1244,20 @@ check('认得出页面上选的是 Python 2', py2Info.language === 'python2', py
 const cPage = createLanguagePage('C (gcc 9.2)', ['C (gcc 9.2)']);
 check('认得出页面上选的是 C', (await runScript(cPage, LANGUAGE_SCRIPT, {})).language === 'c');
 
+// C++ 也必须排在 C 前面判：'C++ (g++)' 会被 /^c\b/ 命中成 C
+const cppPage = createLanguagePage('C++ (g++ 9.2)', ['C++ (g++ 9.2)', 'C (gcc 9.2)']);
+check('C++ 不会被误认成 C', (await runScript(cppPage, LANGUAGE_SCRIPT, {})).language === 'cpp');
+
 // 切语言：Python 2 的题切成 Python 3
 const switchPage = createLanguagePage('Python (python2)', ['Python (python2)', 'Python (python3)']);
 const switched = await runScript(switchPage, LANGUAGE_SCRIPT, { target: 'python3' });
 check('能把作答语言切到 Python 3', switched.ok === true, switched);
 check('切完之后页面上的语言变成 Python 3', switched.language === 'python3', switched);
 check('切换的说明写进了返回值', String(switched.detail || '').includes('Python (python3)'), switched);
+
+// set_language 工具传的是 language，不是 target
+const switchedByAlias = await runScript(switchPage, LANGUAGE_SCRIPT, { language: 'python3' });
+check('LANGUAGE_SCRIPT 也接受 language 参数（工具名）', switchedByAlias.language === 'python3', switchedByAlias);
 
 // 题组不允许切的时候要如实说明，不能假装成功
 const noPython3Page = createLanguagePage('Python (python2)', ['Python (python2)']);

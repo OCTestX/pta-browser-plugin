@@ -14,6 +14,25 @@
  * 这里按报错关键词给一句能照着改的中文提示。
  */
 
+/**
+ * 代码填空片段（type/6）只截取了裁判程序的一部分，题面/隐藏裁判提供的类型、
+ * 常量、宏不会出现在作答区里。独立编译时 clang 必然报「unknown type name」
+ * 「use of undeclared identifier」这类错，但这不是学生代码的错。
+ *
+ * 只过滤这一类**依赖外部上下文**的语义错误；语法错误（少分号、括号不配对等）
+ * 仍然照常上报，不能因为片段模式就放过真正的语法问题。
+ */
+export function isFragmentContextDiagnostic(message: string): boolean {
+  const text = String(message ?? '').toLowerCase();
+  return (
+    text.startsWith('unknown type name ') ||
+    text.startsWith('use of undeclared identifier ') ||
+    text.startsWith('unknown namespace ') ||
+    text.startsWith('no type named ') ||
+    text.startsWith('no member named ')
+  );
+}
+
 /** 一条编译诊断 */
 export interface CodeDiagnostic {
   /** 行号，从 1 开始（跟 clang 一致） */

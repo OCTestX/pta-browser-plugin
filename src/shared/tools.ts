@@ -4,6 +4,7 @@ export type ToolName =
   | 'read_editor_code'
   | 'write_editor_code'
   | 'compile_and_run_c'
+  | 'compile_and_run_cpp'
   | 'compile_and_run_python'
   | 'compile_and_run_js'
   | 'submit_answer'
@@ -16,17 +17,21 @@ export type ToolName =
   | 'date'
   | 'url'
   | 'write_document'
+  | 'write_zip'
   | 'simulate_keyboard_input'
   | 'ask'
   | 'diff'
   | 'write_explanation_page'
-  | 'next_problem';
+  | 'next_problem'
+  | 'list_problems'
+  | 'set_language';
 
 export const TOOL_NAMES: ToolName[] = [
   'read_problem',
   'read_editor_code',
   'write_editor_code',
   'compile_and_run_c',
+  'compile_and_run_cpp',
   'compile_and_run_python',
   'compile_and_run_js',
   'submit_answer',
@@ -39,11 +44,14 @@ export const TOOL_NAMES: ToolName[] = [
   'date',
   'url',
   'write_document',
+  'write_zip',
   'simulate_keyboard_input',
   'ask',
   'diff',
   'write_explanation_page',
   'next_problem',
+  'list_problems',
+  'set_language',
 ];
 
 /** 一次对话最多跑几轮工具，防止模型来回刷 */
@@ -51,6 +59,16 @@ export const MAX_TOOL_ROUNDS = 80;
 
 /** 单条工具结果最多回灌多少字符，避免把上下文撑爆 */
 export const MAX_TOOL_RESULT = 4000;
+
+/**
+ * 少数工具天然会返回长文本（题面、多文件代码、题目列表），
+ * 用 4000 会从中间截断、把关键内容切掉；给它们单独放宽。
+ */
+export const TOOL_RESULT_LIMITS: Partial<Record<ToolName, number>> = {
+  read_problem: 12000,
+  read_editor_code: 12000,
+  list_problems: 8000,
+};
 
 export const SYSTEM_PROMPT = [
   '你是「PTA 助手」，帮学生解决 PTA（拼题A）上的编程题和作业。',
@@ -65,6 +83,7 @@ export const SYSTEM_PROMPT = [
   '在 PTA 页面上做这些事，都有专用工具，优先用它们：',
   '- read_problem：拿到当前这道题的题面（含样例、公式）。要解题、要写代码之前，先调它。',
   '- read_editor_code：读出作答区里用户现在的代码。',
+  '  多文件题（type/9）新版是上传 zip（没有可写编辑器）；只有页面确实存在多个代码编辑器时，才传 all=true 列出序号并用 write_editor_code 的 editorIndex 逐个写。',
   '- write_editor_code：把代码写进作答区（默认整段覆写）。写完会自动回读比对、拿题面第一组样例编译比对输出、并看提交按钮能不能点——这三项结论都在返回值里；有「不一致/按钮禁用」就先按结论修，别急着交付。',
   '  注意：自动检查里的编译比对**按页面上选定的语言**走（Python 题就用 Python 运行器）。',
   '  万一它报「编译失败」而题目其实是 Python/别的语言，那是自动检查选错了语言，**以你自己用 compile_and_run_python 跑出来的结果为准**，不要照着它去改算法。',
@@ -72,13 +91,17 @@ export const SYSTEM_PROMPT = [
   '  那时本地自测（Python 3）和 PTA 实际编译（Python 2）结果可能不一致，代码要按 Python 2 的写法来（比如用 print 函数、别用 f-string）。',
   '',
   '- compile_and_run_c：用内置编译器（本地 Clang，不联网）把 C 代码编译并运行，可以给标准输入。',
+  '- compile_and_run_cpp：用内置编译器（本地 Clang + libc++，不联网）把 **C++** 代码编译并运行，可以给标准输入；默认 -std=c++17。',
+  '  C++ 题优先用它本地验样例，不要再把 C++ 代码交给 compile_and_run_c（那是 C 前端，会报一堆看不懂的错）。',
   '- compile_and_run_python：用内置 Python 运行器（本地 Pyodide，不联网）把 Python 代码跑一遍，可以给标准输入。',
   '- compile_and_run_js：用内置 JS 运行器（本地，不联网）把 JavaScript 代码跑一遍，可以给标准输入。',
-  '  **用户开了「运行环境 = PTA」时，这三个 compile_and_run_* 会被改成用 PTA 自己的编译器与机器跑**（代码写进作答区后点「运行测试」），',
+  '  **用户开了「运行环境 = PTA」时，这些 compile_and_run_* 会被改成用 PTA 自己的编译器与机器跑**（代码写进作答区后点「运行测试」），',
   '  返回值开头会写明「已按设置改用 PTA 自己的编译器与运行环境」——这时不要以为是插件内置编译器跑出来的。',
   '- simulate_pta_run：在 PTA 页面上跑一次测试（自动点开测试面板 → 填数据集 → 点「运行测试」→ 读回结果）。',
-  '  **题目是 Java、C++ 或任何插件没有内置编译器的语言时，就靠它借用 PTA 自己的运行环境**：',
-  '  插件不内置 JRE，Java 这类语言本地跑不了，只能借 PTA 的编译器。返回值就是运行结果，不用再调 read_pta_compile_result。',
+  '  **可以直接传 code（可选 language）**：插件先把代码写进作答区，再在 PTA 上运行，一条调用完成。',
+  '  **题目是 Java、Go、C#、Rust 或任何插件没有内置编译器的语言时，就靠它借用 PTA 自己的运行环境**：',
+  '  插件不内置 JRE / Go 工具链，这些语言本地跑不了，只能借 PTA 的编译器。返回值就是运行结果，不用再调 read_pta_compile_result。',
+  '- set_language：切换作答区右上角的编程语言（如果题组允许）。页面选的语言和你要写的代码对不上时用它；不传 language 只读当前语言。',
   '- read_pta_compile_result：读 PTA 页面上的「编译器输出」（运行输出、异常堆栈、编译错误）。',
   '  题目语言本地跑不了时，用它看 PTA 自己编译的结果，再据此改代码；不要因为本地跑不了就以为代码是对的。',
   '- submit_answer：把当前代码提交到 PTA 并等判题结论；read_judge_result 等判题结论（会一直等到出结论，默认 60 秒），拿到结论后自动关弹窗。',
@@ -99,9 +122,13 @@ export const SYSTEM_PROMPT = [
   '- url：拿到用户当前所在页面的地址。',
   '- date：拿到当前日期。',
   '- write_document：把整理好的内容写成文件下载到用户电脑。需要交付文档/题解时用它，不要在回答里贴整篇长文档。',
+  '  多文件题（type/9，上传 zip）传 files 对象：键是 zip 内路径、值是文件文本，插件会打包成 zip 下载，用户再点「Upload Answer Zip」上传。',
+  '- write_zip：专门给上传 zip 的多文件题用：传 filename 和 files（键为 zip 内路径、值为文件文本），插件生成 zip 并下载。',
   '- write_explanation_page：交出一份自包含的单文件 HTML 讲解页（用户用 /what 时用）。交完插件会给用户一张「打开讲解页」的邀请卡片。',
   '- next_problem：切到题目列表里的下一道题（只有用户点「/fuck」赶题模式时才用）。做完一题提交后调它接着做下一道，',
   '  它会告诉你这是第几题、还剩几题；说「没有下一题了」就停下来汇总。',
+  '- list_problems：读题目列表总览——各题型分组的「已答/总数」、当前题型的每道题是否已提交、哪道是当前题。',
+  '  用户问「还有哪些题没做」「这题单是什么结构」时用它，不要用 js_inject 去猜侧栏。',
   '',
   '工具使用规则（重要）：',
   '1. 读题面用 read_problem，读代码用 read_editor_code，改代码用 write_editor_code。',
@@ -165,8 +192,18 @@ export const TOOL_SCHEMAS: ToolSchema[] = [
     function: {
       name: 'read_editor_code',
       description:
-        '读出作答区里用户当前写的代码。优先通过编辑器实例读完整文档，拿不到实例才退回 DOM。',
-      parameters: { type: 'object', properties: {}, required: [] },
+        '读出作答区里用户当前写的代码。优先通过编辑器实例读完整文档，拿不到实例才退回 DOM。'
+        + '多文件题（type/9）新版多为上传 zip；只有页面存在多个代码编辑器时传 all=true 才有用，会列出全部可写编辑器及序号，配合 write_editor_code 的 editorIndex 使用。',
+      parameters: {
+        type: 'object',
+        properties: {
+          all: {
+            type: 'boolean',
+            description: '多文件题：列出所有可写编辑器（带序号），默认 false 只读一个',
+          },
+        },
+        required: [],
+      },
     },
   },
   {
@@ -188,6 +225,10 @@ export const TOOL_SCHEMAS: ToolSchema[] = [
             type: 'boolean',
             description: '写入后是否自动做检查（样例编译比对 + 提交按钮状态），默认 true',
           },
+          editorIndex: {
+            type: 'number',
+            description: '页面存在多个代码编辑器时，写到第几个可写编辑器，从 0 开始；不填就写内容最长的那个。上传 zip 的多文件题没有编辑器，不要传它。先用 read_editor_code 的 all=true 看编号',
+          },
         },
         required: ['code'],
       },
@@ -203,6 +244,22 @@ export const TOOL_SCHEMAS: ToolSchema[] = [
         type: 'object',
         properties: {
           code: { type: 'string', description: '完整的 C 源代码' },
+          stdin: { type: 'string', description: '标准输入内容，按题目的样例输入原样填，没有就留空' },
+        },
+        required: ['code'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'compile_and_run_cpp',
+      description:
+        '用插件内置的编译器（本地 Clang + libc++ 编译成 WebAssembly 运行，不联网、代码不出本机）把一段 C++ 代码编译并运行，指定标准输入后拿回运行输出与编译错误。按 -std=c++17 编译，支持 iostream / vector / string / algorithm / map 等标准库。写完代码应该先用它跑一遍题目给的样例输入，确认输出对得上再交给用户。首次调用要加载编译器（几秒），之后每次一两秒。',
+      parameters: {
+        type: 'object',
+        properties: {
+          code: { type: 'string', description: '完整的 C++ 源代码' },
           stdin: { type: 'string', description: '标准输入内容，按题目的样例输入原样填，没有就留空' },
         },
         required: ['code'],
@@ -304,14 +361,41 @@ export const TOOL_SCHEMAS: ToolSchema[] = [
     function: {
       name: 'write_document',
       description:
-        '把内容写成文件并触发浏览器下载，用于交付题解、笔记这类文档。不要在回答里重复输出同一份内容。',
+        '把内容写成文件并触发浏览器下载，用于交付题解、笔记这类文档。不要在回答里重复输出同一份内容。'
+        + '多文件题（type/9，上传 zip）传 files 对象：键是 zip 内路径（如 "src/a.py"），值是文件文本；'
+        + '插件会打包成 zip 下载，用户可直接用「Upload Answer Zip」上传。',
       parameters: {
         type: 'object',
         properties: {
-          filename: { type: 'string', description: '文件名，带扩展名，例如 "题解-1.md"' },
-          content: { type: 'string', description: '文件内容（markdown 或纯文本）' },
+          filename: { type: 'string', description: '文件名，带扩展名，例如 "题解-1.md"；传 files 时给 .zip 名' },
+          content: { type: 'string', description: '文件内容（markdown 或纯文本）；传 files 时可省略' },
+          files: {
+            type: 'object',
+            description: '多文件题：{ "src/a.py": "文件内容", ... }，会打成 zip 下载',
+          },
         },
-        required: ['filename', 'content'],
+        required: ['filename'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'write_zip',
+      description:
+        '给「上传 zip」的多文件题（type/9）生成答案压缩包并下载。files 的键是 zip 内路径（例如 "src/a.py"、'
+        + '"main.sh"），值是文件文本；插件会生成标准 zip，用户下载后点页面上的「Upload Answer Zip」上传。'
+        + '含 ".." 的路径会被丢弃。',
+      parameters: {
+        type: 'object',
+        properties: {
+          filename: { type: 'string', description: '下载的 zip 文件名，例如 "实验13-1.zip"' },
+          files: {
+            type: 'object',
+            description: '{ "src/a.py": "文件内容", "main.sh": "文件内容" }',
+          },
+        },
+        required: ['filename', 'files'],
       },
     },
   },
@@ -349,6 +433,35 @@ export const TOOL_SCHEMAS: ToolSchema[] = [
           skipCurrent: {
             type: 'boolean',
             description: '当前这道题做不出来（提交不了/两次都不对）时传 true，这道题就不再回来了',
+          },
+        },
+        required: [],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'list_problems',
+      description:
+        '读当前 PTA 题目列表的总览：每个题型分组的「已答/总数」、当前题型的每道题是否已提交、哪一道是当前题。'
+        + '用户问「还有哪些题没做」「这题单是什么结构」时用它；赶题模式也可以先用它规划路线。',
+      parameters: { type: 'object', properties: {}, required: [] },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'set_language',
+      description:
+        '切换 PTA 作答区右上角的编程语言（如果题组允许）。用于页面选的语言和你要写的代码对不上时——'
+        + '例如选了 C 但要写 C++、或者要切到 Java / Python3。不传 language 就只读当前语言。',
+      parameters: {
+        type: 'object',
+        properties: {
+          language: {
+            type: 'string',
+            description: '目标语言，例如 "c++" / "cpp" / "java" / "python3"；不填只返回当前语言',
           },
         },
         required: [],
@@ -441,13 +554,23 @@ export const TOOL_SCHEMAS: ToolSchema[] = [
     function: {
       name: 'simulate_pta_run',
       description:
-        '在 PTA 页面上跑一次测试：自动点开测试面板（Test Case / 测试用例），把数据集填进测试输入框，点「运行测试 / Run Test Case」，等结果出来并把内容读回来。可以传 stdin 把它当标准输入填进去（不传就用面板里已有的输入）。用于借用 PTA 自己的运行环境（插件内置编译器覆盖不到的语言时）。返回的就是运行结果，直接用，不必再调 read_pta_compile_result。',
+        '在 PTA 页面上跑一次测试：自动点开测试面板（Test Case / 测试用例），把数据集填进测试输入框，点「运行测试 / Run Test Case」，等结果出来并把内容读回来。可以传 stdin 把它当标准输入填进去（不传就用面板里已有的输入）。'
+        + '传 code 时先把代码写进作答区再跑——Java / Go / C# / Rust 这类没有本地编译器的语言，用一次调用就能「写代码 + 在 PTA 上真跑」；language 可选，填了会先把作答语言切过去（例如 "c++"、"java"）。'
+        + '返回的就是运行结果，直接用，不必再调 read_pta_compile_result。',
       parameters: {
         type: 'object',
         properties: {
           stdin: {
             type: 'string',
             description: '要填进测试输入框的数据集（标准输入）。不填就沿用面板里原有的输入。',
+          },
+          code: {
+            type: 'string',
+            description: '可选：要运行的完整代码。传了就先写进作答区，再在 PTA 上运行',
+          },
+          language: {
+            type: 'string',
+            description: '可选：作答语言，例如 "c++" / "java" / "python3"；只和 code 一起用',
           },
           waitSeconds: { type: 'number', description: '最多等多少秒，默认 60，上限 120' },
         },

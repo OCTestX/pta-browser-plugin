@@ -149,7 +149,7 @@ function getFirefoxWorker(): Worker {
   return firefoxWorker;
 }
 
-async function sendToEngine(data: { id: number; code: string; stdin: string; lang?: string; check?: boolean }): Promise<void> {
+async function sendToEngine(data: { id: number; code: string; stdin: string; lang?: string; check?: boolean; prelude?: boolean }): Promise<void> {
   if (canOffscreen) {
     await ensureOffscreenDocument();
     await ext.runtime.sendMessage({ type: 'engine-request', data });
@@ -173,11 +173,15 @@ function keepAliveWhile(id: number): () => void {
   return () => clearInterval(interval);
 }
 
+export type EngineLanguage = 'c' | 'cpp' | 'python';
+
 interface EnginePayload {
   code: string;
   stdin: string;
-  lang?: 'c' | 'python';
+  lang?: EngineLanguage;
   check?: boolean;
+  /** 代码填空题：强制带上 C/C++ 常用头再做语法检查 */
+  prelude?: boolean;
 }
 
 /** 排队送进引擎：引擎单线程，两路请求（编译运行 / 只检查）必须共用一条队列 */
@@ -239,7 +243,7 @@ export function runInEngine(
   code: string,
   stdin: string,
   signal?: AbortSignal,
-  lang?: 'c' | 'python',
+  lang?: EngineLanguage,
 ): Promise<EngineRunResult> {
   return enqueueEngine({ code, stdin, lang }, signal);
 }
@@ -248,6 +252,11 @@ export function runInEngine(
  * 只做语法检查（不运行）：作答区实时检查用。
  * 超时按「编译」阶段算（60 秒），但一次检查本身只要几十毫秒。
  */
-export function checkInEngine(code: string, signal?: AbortSignal): Promise<EngineRunResult> {
-  return enqueueEngine({ code, stdin: '', lang: 'c', check: true }, signal);
+export function checkInEngine(
+  code: string,
+  signal?: AbortSignal,
+  lang: EngineLanguage = 'c',
+  prelude = false,
+): Promise<EngineRunResult> {
+  return enqueueEngine({ code, stdin: '', lang, check: true, prelude }, signal);
 }

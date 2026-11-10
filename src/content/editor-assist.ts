@@ -73,7 +73,7 @@ async function handle(token: string, message: AgentEvent): Promise<void> {
       // 括号层数是纯文本问题，在这里算完再交给页面去上色
       const marks = bracketDepths(message.text);
       post(token, { kind: 'rainbow', text: message.text, marks });
-      if (message.check) await runCheck(token, message.text, message.language);
+      if (message.check) await runCheck(token, message.text, message.language, message.fragment === true);
       return;
     }
     case 'format-request': {
@@ -100,13 +100,14 @@ async function handle(token: string, message: AgentEvent): Promise<void> {
  * 结果带原文一起回给页面脚本：页面脚本只认「文本还对得上」的那一份，
  * 用户又改了字就直接丢掉，波浪线永远比正文慢一拍也不会画错位置。
  */
-async function runCheck(token: string, text: string, language: string): Promise<void> {
+async function runCheck(token: string, text: string, language: string, fragment = false): Promise<void> {
   let response: EditorCheckResponse | undefined;
   try {
     response = (await ext.runtime.sendMessage({
       type: 'editor/check',
       code: text,
       language,
+      fragment,
     })) as EditorCheckResponse;
   } catch {
     return; // 后台没醒 / 重载中：这一轮不画，下一次改动会再来

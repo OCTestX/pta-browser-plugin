@@ -144,6 +144,9 @@ export const EDITOR_AGENT_SOURCE = String.raw`return (() => {
     return best;
   };
 
+  // 代码填空 / 多文件题的作答区是题面裁判程序的一部分，实时检查要带常用头
+  const isFragmentProblem = () => /\/problems\/type\/(6|9)(?:\/|$|\?)/.test(location.pathname);
+
   // 作答区的语言下拉框。认不出就当 C（PTA 的结构题、填空题基本只有 C）
   const readLanguage = () => {
     const form = state.el ? state.el.closest('[class*="CodingProblemAnswerForm"]') : null;
@@ -153,10 +156,16 @@ export const EDITOR_AGENT_SOURCE = String.raw`return (() => {
       const text = (control.innerText || control.textContent || '').replace(/\s+/g, ' ').trim().toLowerCase();
       if (!text) continue;
       if (text.indexOf('javascript') >= 0 || text.indexOf('node') >= 0) return 'javascript';
-      if (text.indexOf('c++') >= 0 || text.indexOf('cpp') >= 0) return 'cpp';
+      if (text.indexOf('c++') >= 0 || text.indexOf('cpp') >= 0 || text.indexOf('cxx') >= 0) return 'cpp';
       if (text.indexOf('python') >= 0) return 'python';
+      if (text.indexOf('c#') >= 0 || text.indexOf('csharp') >= 0) return 'csharp';
       if (text.indexOf('java') >= 0) return 'java';
-      if (text.indexOf('go') >= 0) return 'go';
+      if (text.indexOf('golang') >= 0 || text.indexOf('go语言') >= 0) return 'go';
+      if (text.indexOf('rust') >= 0) return 'rust';
+      if (text.indexOf('kotlin') >= 0) return 'kotlin';
+      if (text.indexOf('swift') >= 0) return 'swift';
+      if (text.indexOf('php') >= 0) return 'php';
+      if (text.indexOf('ruby') >= 0) return 'ruby';
       if (text.indexOf('c') >= 0) return 'c';
     }
     return 'c';
@@ -639,7 +648,7 @@ export const EDITOR_AGENT_SOURCE = String.raw`return (() => {
     state.docTimer = setTimeout(() => {
       state.docTimer = 0;
       if (!state.view) return;
-      post({ kind: 'doc', text: state.text, language: readLanguage(), check: !!FEATURES.check });
+      post({ kind: 'doc', text: state.text, language: readLanguage(), check: !!FEATURES.check, fragment: isFragmentProblem() });
     }, 350);
   };
 

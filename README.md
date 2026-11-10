@@ -15,8 +15,8 @@ PTA 助手是一个运行在浏览器里的 PTA（拼题A）解题助手：自�
 | 能力 | 说明 |
 |---|---|
 | 对话 agent loop | 请求模型 → 执行工具 → 回灌结果 → 再来一轮，最多 80 轮 |
-| 本地编译器 | **C**（Clang 22 wasm）、Python（Pyodide 0.26）、JavaScript 全部在本机运行，代码不出本机 |
-| 借用 PTA 的运行环境 | Java、C++ 等没有内置编译器的语言，用 `simulate_pta_run` 在 PTA 上真跑一遍并读回结果 |
+| 本地编译器 | **C / C++**（Clang 22 wasm + libc++）、Python（Pyodide 0.26）、JavaScript 全部在本机运行，代码不出本机 |
+| 借用 PTA 的运行环境 | Java、Go、C#、Rust 等没有内置编译器的语言，用 `simulate_pta_run` 在 PTA 上真跑一遍并读回结果 |
 | 强制用 PTA 跑（可选） | 设置里可以强制把内置编译器的调用改走 PTA 自己的编译器与机器，编译错误也从 PTA 的「编译器输出」里读 |
 | 读取 PTA 的编译错误 | `read_pta_compile_result` 读页面上的「编译器输出」（输出、异常堆栈、编译错误） |
 | 禁粘贴也能贴 | 接管 `Ctrl+V` / `⌘V`，读剪贴板后走插件自己的写入链路；抢不过页面时用 `Ctrl+M`；右键粘贴同样接管 |
@@ -39,8 +39,8 @@ PTA 助手是一个运行在浏览器里的 PTA（拼题A）解题助手：自�
 | Tab 补全 | 输入 `/` 后可以用 Tab 补全选中的指令 |
 | 整理代码 | 作答区底部状态栏（「Test Case」右边）一个按钮：按语言重排缩进、在运算符两侧补空格（`7*2` → `7 * 2`）、无花括号的 `if`/`for`/`while` 体缩进一层；字符串和注释里的内容不动 |
 | 彩虹括号 | 作答区里的括号按嵌套层级上色并加粗，配对的左右括号同色 |
-| 实时语法检查 | 停手 0.35 秒后用内置 clang 只编译不运行，出错处画红色波浪线、上方显示错误数量，鼠标停在波浪线上给出中文修改建议（只支持 C） |
-| 标准库中文注释 | 鼠标停在 `printf` / `malloc` / `sqrt` 这类 C 标准库函数名上，显示原型、作用与常见坑 |
+| 实时语法检查 | 停手 0.35 秒后用内置 clang 只编译不运行，出错处画红色波浪线、上方显示错误数量，鼠标停在波浪线上给出中文修改建议（C / C++） |
+| 标准库中文注释 | 鼠标停在 `printf` / `malloc` / `sqrt` 这类 C 标准库函数名，或 `vector` / `sort` / `push_back` 这类 C++ STL 名字上，显示原型、作用与常见坑 |
 | 上下文进度 | 顶栏一个小圆环显示上下文填充比例，token 明细停在圆环的提示里；窗口大小用模型真实值（接口或 models.dev 数据集查得），查不到才按模型名估算 |
 
 ## 安装
@@ -133,7 +133,7 @@ PTA 助手是一个运行在浏览器里的 PTA（拼题A）解题助手：自�
 
 `/fuck` 是给「限时突击」用的：模型不再问你任何问题（连 `ask` 都会被自动答掉），写完直接提交，拿到判题结论就调 `next_problem` 切到题目列表里的下一题接着做，直到列表走完或者你按面板上的「停止」。一道题最多自己改两次，还不过就跳过继续下一题。
 
-> ⚠️ **这个模式还在调**：同一题型内连着做已经跑通了；还没验通的是——跨题型切换（判断 → 选择 → 代码填空 → 编程）、代码填空题的作答（要在作答区那段代码上补空缺）、跳过已提交的题、做不出来的题怎么跳过。完整欠账见 `todo.txt`。
+> **v6.0.0 已在真机跑通整条链路**：同一题型内切题、跨题型切换（代码填空 8/8 → 编程 14/23）、代码填空题（读作答区模板后补全）、跳过已提交的题（认真实考试页的 `PROBLEM_ACCEPTED` / `PROBLEM_NO_ANSWER` 状态）、走到题单末尾附本轮统计。剩下的欠账只有「还没有独立的总览面板 UI」和「代码填空题的样例提取会被裁判测试程序样例干扰」，见 `todo.txt`。
 
 赶题模式会在题目之间来回跳，所以做了三件事保证它不中断：
 
@@ -143,12 +143,12 @@ PTA 助手是一个运行在浏览器里的 PTA（拼题A）解题助手：自�
 
 ### 运行环境：内置编译器 vs PTA
 
-插件自带 C / Python / JavaScript 三种运行环境（不联网、代码不出本机），但有些题目 PTA 的编译器版本和你本机的不同，或者题目语言压根没有内置编译器（Java、C++ 等）。设置里的「运行环境」可以二选一：
+插件自带 C / C++ / Python / JavaScript 四种运行环境（不联网、代码不出本机），但有些题目 PTA 的编译器版本和你本机的不同，或者题目语言压根没有内置编译器（Java、Go、C# 等）。设置里的「运行环境」可以二选一：
 
 | 模式 | 行为 |
 |---|---|
-| 内置（默认） | `compile_and_run_c` / `_python` / `_js` 用插件内置的编译器与运行器，在本机跑 |
-| PTA | 这三个工具**改用 PTA 自己的编译器与机器**：插件把代码写进作答区，点 PTA 的「运行测试」，再把结果读回来；编译错误也从 PTA 的「编译器输出」里读 |
+| 内置（默认） | `compile_and_run_c` / `_cpp` / `_python` / `_js` 用插件内置的编译器与运行器，在本机跑 |
+| PTA | 这四个工具**改用 PTA 自己的编译器与机器**：插件把代码写进作答区，点 PTA 的「运行测试」，再把结果读回来；编译错误也从 PTA 的「编译器输出」里读 |
 
 走 PTA 模式时，工具返回值开头会写明「已按设置改用 PTA 自己的编译器与运行环境」，免得 AI 把结果当成内置编译器跑出来的。
 
@@ -206,7 +206,7 @@ PTA 会拦截普通粘贴。插件**只在焦点位于 PTA 的可写作答区时
 
 三条边界，别被它误导：
 
-- **实时检查只覆盖 C**：内置编译器的驱动配置硬编码 `-x c`（见 `public/engine/shared.js`），C++ 的 libc++ 头在 sysroot 里不可用。选 C++ / Python / Java 时，上面只显示一句「内置编译器只支持 C，其他语言不做实时检查」，不画波浪线。
+- **实时检查覆盖 C 与 C++**：引擎分别走 `-x c` 与 `-x c++ -std=c++17`，C++ 头文件来自 sysroot 里的 libc++，链接库是 `libc++ / libc++abi / libc`（见 `public/engine/shared.js`）。选 Python / Java 时，上面只显示一句「内置编译器只支持 C / C++，其他语言不做实时检查」，不画波浪线。
 - **只做语法检查，不运行代码**：`-fsyntax-only` 不产出目标文件、不链接，你的代码不会被执行，所以它比「编译并运行」快一半，也敢在每次停手后都跑一遍。
 - **整理代码绝不覆盖新改动**：整理请求带着发起时的原文，回到页面前会比对一次；这期间你又敲了字，这次整理直接取消（提示「代码刚变过，这次整理取消了」）。
 
@@ -232,21 +232,24 @@ diff 卡片表头有「全屏查看」：新标签页打开完整 diff，不折�
 
 ## AI 可用的工具
 
-一共 21 个工具：
+一共 25 个工具：
 
 | 工具 | 功能 |
 |---|---|
-| `read_problem` | 读取当前题面（样例、公式转 LaTeX） |
-| `read_editor_code` | 读取作答区代码 |
-| `write_editor_code` | 写入作答区（自动回读比对、样例编译、检查提交按钮） |
+| `read_problem` | 读取当前题面（样例、公式转 LaTeX；代码填空题带作答区模板） |
+| `read_editor_code` | 读取作答区代码；多文件题传 `all=true` 列出全部编辑器 |
+| `write_editor_code` | 写入作答区（自动回读比对、样例编译、检查提交按钮；多文件题用 `editorIndex`） |
 | `compile_and_run_c` | 本地编译运行 C（Clang wasm） |
+| `compile_and_run_cpp` | 本地编译运行 C++（Clang wasm + libc++，`-std=c++17`，支持 `bits/stdc++.h`） |
 | `compile_and_run_python` | 本地运行 Python（Pyodide） |
-| `compile_and_run_js` | 本地运行 JavaScript |
+| `compile_and_run_js` | 本地运行 JavaScript（Node 风格 `require('readline')` / `process.stdin`） |
 | `read_pta_compile_result` | 读取 PTA 最近一次编译/运行结果（含编译错误） |
-| `simulate_pta_run` | 在 PTA 页面点「运行测试」并读回结果 |
+| `simulate_pta_run` | 在 PTA 页面点「运行测试」并读回结果；可带 `code` 直接写完再跑 |
 | `submit_answer` | 提交作答区代码并等判题结论 |
 | `read_judge_result` | 读取判题结论（AC/WA/PC/TLE 等） |
 | `next_problem` | 切到题目列表里的下一题（`/fuck` 赶题模式用） |
+| `list_problems` | 读题目列表总览：题型分组、每题是否已提交、哪道是当前题 |
+| `set_language` | 切换作答语言（C / C++ / Java / Python3 等，题组允许时） |
 | `close_dialogs` | 关闭挡在页面上的弹窗 |
 | `refresh_page` | 刷新当前页面 |
 | `js_inject` | 在页面主世界执行 JavaScript |
@@ -254,28 +257,41 @@ diff 卡片表头有「全屏查看」：新标签页打开完整 diff，不折�
 | `ask` | 向用户提选择题（阻塞等待点选） |
 | `diff` | 左右对照展示改动 |
 | `write_document` | 写文件并下载到本机 |
+| `write_zip` | 给上传 zip 的多文件题生成答案压缩包并下载 |
 | `write_explanation_page` | 交一份自包含的 HTML 讲解页，面板给「打开讲解页」的邀请卡片 |
 | `date` / `url` | 获取当前时间 / 当前页面地址 |
 
 ### 工具细节
 
-**`read_problem`**：读取标题、题目 ID、描述、输入输出格式和样例；公式还原成 LaTeX（`$...$`），图片公式会附上说明与链接。
+**`read_problem`**：读取标题、题目 ID、题目集 ID、描述、输入输出格式和样例；公式还原成 LaTeX（`$...$`），图片公式会附上说明与链接。
 返回值第一行会写明**题目类型**（编程题 / 选择题 / 判断题 / 代码填空 / 多文件）。是选择题或判断题时，作答区是一堆单选框而不是代码框，这时它会把**这一页上所有小题**连同各自的选项一起列出来。
+是代码填空题时，会把**作答区模板**放在题面之前（长题面可能被工具结果预算截断，放最后会被挤掉），模型在原模板上补全，不会整段重写。
+新版多文件题（type/9）通常是**上传 zip**，页面里没有可写编辑器，插件的编辑器工具用不上；老版多文件题若确实有多个代码框，才按下述 `all` / `editorIndex` 处理。
 
 **`read_editor_code`**：读取作答区里当前代码（优先编辑器实例，DOM 只能读到渲染出来的行）。
+只有页面存在多个代码编辑器时，`all=true` 才会列出全部可写编辑器及序号（从 0 开始），配合 `write_editor_code` 的 `editorIndex` 使用。
 
-**`write_editor_code`**：写入后自动做三件事——回读逐行比对、用第一组样例编译比对输出（按页面上选定的语言挑运行器）、检查提交按钮是否可用。有「不一致 / 按钮禁用」先把结论修掉。
+**`write_editor_code`**：写入后自动做三件事——回读逐行比对、用题面前几组样例编译比对输出（按页面上选定的语言挑运行器，最多跑 3 组，输入输出各不超过 4000 字）、检查提交按钮是否可用。有「不一致 / 按钮禁用」先把结论修掉。
 题目是**选择题或判断题**时走的是另一条路：内容按空格拆开，第一个答案对第一题、第二个对第二题，以此类推（可以写选项字母 `A B C D`，也可以写选项原文），逐个勾到对应的单选框上。
+页面有多个代码框时用 `editorIndex` 指定写第几个；`read_editor_code all=true` 给出的序号就是它。上传 zip 的多文件题没有编辑器，不要调用它写文件。
+代码填空题（type/6）不按「一份完整程序」跑样例，改用带 `-include` 预置头的语法检查；多文件题若走编辑器写入，则明确提示用 `simulate_pta_run` 在 PTA 上验证，
+避免把裁判程序片段 / 缺文件链接报成假编译失败。
 
-**`compile_and_run_c`**：用内置的 Clang 22（wasm）编译并运行 **C** 代码，可以给标准输入。引擎按 `.c` 编译，**不含 C++ 模式**。
+**`compile_and_run_c`**：用内置的 Clang 22（wasm）编译并运行 **C** 代码，可以给标准输入。引擎按 `.c` 编译。
+
+**`compile_and_run_cpp`**：同一套 Clang 22 + wasm-ld + libc++ 静态库，按 `.cpp`、`-std=c++17` 编译运行 **C++**，支持 `iostream` / `vector` / `string` / `algorithm` / `map` 等标准库，可以给标准输入。C++ 题优先用它本地验样例，不要拿 C 前端去编 C++。
 
 **`compile_and_run_python`** / **`compile_and_run_js`**：本地运行 Python（Pyodide）与 JavaScript，可以给标准输入。
 
 **`simulate_pta_run`**：在 PTA 页面上真跑一次测试——自动点开测试面板（Test Case / 测试用例）→ 把 `stdin` 填进测试输入框（不传就沿用面板里原有的输入）→ 点「运行测试 / Run Test Case」→ 轮询读回结果。英文页还会带回 Expected Result；跑完没有输出时回退去读 `Compiler's Log` 页签。
+运行前会快照测试区里所有只读编辑器：用例表、上次遗留的结果都不算本次输出；只认新增结果框、已有输出容器里新写入的段落、或结果页签由隐藏变可见。
+传 `code`（可配 `language`）时，插件先把代码写进作答区再运行：Java / Go / C# / Rust 这类没有本地编译器的语言，一次调用就能「写代码 + 在 PTA 上真跑」。
+
+**`set_language`**：切换作答区右上角的编程语言（题组允许时）。页面选 C 但要写 C++、或要切到 Java / Python3 时用它；不传 `language` 只读当前语言。
 
 **`read_pta_compile_result`**：读 PTA 页面上的「编译器输出」区域：最近一次运行的输出、异常堆栈、编译错误。
 
-> **没有内置编译器的语言（Java、C++、Go、C# 等）走这两个工具。** 插件**不内置 JRE**，Java 这类语言本地跑不了，只能借 PTA 自己的编译器：先 `simulate_pta_run` 跑一遍拿结果，需要看编译错误再 `read_pta_compile_result`。不要因为本地跑不了就以为代码是对的。
+> **没有内置编译器的语言（Java、Go、C#、Rust 等）走这两个工具。** 插件**不内置 JRE / Go 工具链**，Java 这类语言本地跑不了，只能借 PTA 自己的编译器：先 `simulate_pta_run` 跑一遍拿结果，需要看编译错误再 `read_pta_compile_result`。不要因为本地跑不了就以为代码是对的。
 
 **`submit_answer` / `read_judge_result`**：提交后等判题结论。PTA 结果页不会自己刷新，等待循环里**每 5 秒点一次**页面上的「刷新 / Reload」按钮。提交前先确认上一次的「提交结果 dialog」已经关掉（`close_dialogs`），否则它会挡住提交按钮。
 
@@ -291,6 +307,10 @@ diff 卡片表头有「全屏查看」：新标签页打开完整 diff，不折�
 | `MLE` | 内存超限 |
 | `CE` | 编译错误 |
 
+**`list_problems`**：读考试页侧栏的总览——每个题型分组的「已答/总数」、当前题型的每道题是否已提交（认 `PROBLEM_ACCEPTED` / `PROBLEM_SUBMITTED` 等状态类，`PROBLEM_NO_ANSWER` 算未提交）、哪一道是当前题。用户问「还有哪些题没做」或赶题模式规划路线时用它。
+
+**`next_problem`**：切到下一道还没提交的题。先在同一题型里往后找，找不到再回头找；当前题型做完后点题型分组链接切到下一个题型，等侧栏网格真的换好再点第一道未提交的题（不会点到旧题型的链接上）。全部做完时返回「没有下一题了」，并附上本轮统计（做过几题、AC 几题、未过哪几题）。
+
 **`js_inject`**：在页面主世界执行 JavaScript，支持顶层 `await`，15 秒超时；主世界不可用时退回隔离世界。
 
 **`simulate_keyboard_input`**：向作答区或指定元素模拟输入。支持 `selector`、`text`、`clear`、`press`、`focusOnly`、`readOnly`。真实按键走 `chrome.debugger` 发 CDP 事件（trusted），用不了时自动退回模拟事件并在结果里说明。
@@ -300,6 +320,9 @@ diff 卡片表头有「全屏查看」：新标签页打开完整 diff，不折�
 **`diff`**：左右两列 + 中间一条道，行号夹在两边，改动块头尾画 `»` / `«`。`write_editor_code` 成功后插件会**自动展示**这次改动，模型不用再调；卡片可全屏。
 
 **`write_document`**：把整理好的内容写成文件下载到本机；超过面板能力的长文档用它，不要在回答里贴整篇。
+多文件题（type/9，上传 zip）传 `files`（键为 zip 内路径、值为文件文本），插件用浏览器原生代码打包成 zip 下载，用户再点「Upload Answer Zip」上传。
+
+**`write_zip`**：专门给上传 zip 的多文件题用；只接受 `filename` + `files`，生成标准 zip 并触发下载。含 `..` 的路径会被丢弃。
 
 ### 提示词里的硬规矩
 
@@ -321,8 +344,9 @@ diff 卡片表头有「全屏查看」：新标签页打开完整 diff，不折�
 | 工具 | 运行时 |
 |---|---|
 | `compile_and_run_c` | Clang 22.1.8 + wasm-ld + wasi-sdk 33 sysroot（约 91MB） |
+| `compile_and_run_cpp` | 同一套 Clang + wasm-ld，加 sysroot 里的 libc++ / libc++abi 静态库，`-std=c++17` |
 | `compile_and_run_python` | Pyodide 0.26.4（约 15MB） |
-| `compile_and_run_js` | 插件内置 JS Worker |
+| `compile_and_run_js` | 插件内置 JS Worker（提供 Node 风格 `require('readline')`、`process.stdin/stdout`、顶层 `await`） |
 
 AI 会自动调用它们验证样例。例如：
 
@@ -334,7 +358,7 @@ AI 会自动调用它们验证样例。例如：
 
 AI 会写代码并调 `compile_and_run_python`，把样例输入 `5\n` 喂进去，确认输出 `15`。
 
-对于**没有内置编译器**的语言（Java、C++、Go、C# 等），走 PTA 自己的运行入口：
+对于**没有内置编译器**的语言（Java、Go、C#、Rust 等），走 PTA 自己的运行入口：
 
 - **`simulate_pta_run`**：展开测试面板 → 把 `stdin` 填进测试输入框（不传就沿用原有输入）→ 点「运行测试 / Run Test Case」→ 读回结果（英文页还会带回 Expected Result）
 - **`read_pta_compile_result`**：读取最近一次编译/运行输出
@@ -361,7 +385,7 @@ PTA 的题型是固定的几个，题目集合地址里带着（`/problems/type/
 | 2 | 选择题（Multiple Choice） | 单选框（每题一组，选项是 A/B/C/D…） |
 | 6 | 代码填空（Code Completion） | 代码编辑器 |
 | 7 | 编程题（Programming） | 代码编辑器 |
-| 9 | 多文件（Multiple Files） | 多个代码编辑器 |
+| 9 | 多文件（Multiple Files） | **上传 zip**（含多个源文件；教材题集实测），部分旧题可能有代码编辑器 |
 
 - 选择题/判断题的一页上排着**好几小题**，没有「一个题面容器」这回事，所以按单选框的 `name` 分组抠：题号、题干、每个选项的字母与文字分别取出来
 - 选项的 `id` 形如 `input-radio-option-<题号>-A`，按这个就能把「A」对上具体那个单选框
@@ -404,6 +428,7 @@ src/
     compiler-host.ts     承载 wasm 引擎的 Worker（Chrome 走 offscreen 文档）
     clipboard.ts         读剪贴板的后台兜底
     explain-pages.ts     讲解页的存与取（/what 生成的那份 HTML）
+    batch-progress.ts    /fuck 本轮统计（做过几题、AC 几题、未过哪几题）
     settings.ts          设置读写、检查更新（GitHub / Gitee release 标签）
     model-context.ts     查模型真实的上下文长度（接口 /models 优先，再查 models.dev）
   content/
@@ -424,6 +449,9 @@ src/
     settings.ts          设置类型、默认值、视觉模式判定
     model-context.ts     上下文字段的纯逻辑（从模型列表 / models.dev 里挑值，不依赖 chrome）
     guardrails.ts        写入与提交护栏、ask 选项解析
+    c-library-docs.ts    C 标准库函数的中文注释表
+    cpp-library-docs.ts  C++ STL 常用名字的中文注释表
+    context-window.ts    长对话压缩（赶题模式防止上下文撑爆）
     abort.ts             统一的 AbortSignal 工具
     types.ts             通用类型
     diff.ts / diff.css   diff 引擎与样式
@@ -431,7 +459,7 @@ src/
     commands.ts          斜杠指令清单与解析
 scripts/                 下载资源、打包、测试
 docs/                    PTA 页面适配的实测笔记
-public/engine/           内置 C 编译器（wasm + sysroot + WASI shim，见该目录 README）
+public/engine/           内置 C / C++ 编译器（wasm + sysroot + WASI shim，见该目录 README）
 public/engine/pyodide/   内置 Python 运行时（约 15MB）
 ```
 
@@ -470,14 +498,14 @@ npm run icons              # 重新生成图标（python3 + Pillow）
 
 ## 设计说明
 
-### 内置 C 编译器
+### 内置 C / C++ 编译器
 
 把 Clang 22.1.8 + wasm-ld（LLD）+ wasi-sdk 33 的 sysroot 编成 WebAssembly 放进插件，编译、链接、运行全在 Web Worker 里完成。
 
 | 环节 | 做法 |
 |---|---|
-| 编译 | `clang -cc1 -emit-obj`，头文件来自 sysroot |
-| 链接 | `wasm-ld` 链接 `crt1.o` + `libc.a` + `libclang_rt.builtins.a` |
+| 编译 | `clang -cc1 -emit-obj`；C 用 `-x c`，C++ 用 `-x c++ -std=c++17` 并把 libc++ 头放在 C 头之前；memfs 里补了 `bits/stdc++.h` 万能头 |
+| 链接 | `wasm-ld` 链接 `crt1.o` + C++ 时 `libc++.a` / `libc++abi.a` / `libc.a` + `libclang_rt.builtins.a` |
 | 运行 | JS 实现的 WASI shim：stdin 预喂样例输入，stdout / stderr 分开收集 |
 
 - 编译 + 链接 60 秒、运行 10 秒的阶段化硬超时；超时直接杀掉 Worker 重建（死循环没有协作式检查点）
@@ -537,13 +565,20 @@ npm run icons              # 重新生成图标（python3 + Pillow）
 | 全屏 diff 提示已过期 | 只保留最近 8 份，回面板重新点一次 |
 | API Key 无效 | 设置页重填，或检查接口地址 |
 | 编译器加载失败 | 确认扩展允许 WASM；或用 PTA 的「运行测试」（`simulate_pta_run`） |
-| Java / C++ 这类语言跑不了 | 本来就不内置 JRE：让 AI 用 `simulate_pta_run` 借 PTA 的环境跑 |
+| Java / Go / C# 这类语言跑不了 | C / C++ 有内置编译器；JRE / Go 工具链不内置：让 AI 用 `simulate_pta_run` 借 PTA 的环境跑 |
 | 判题一直卡住 | 插件每 5 秒自动点一次「刷新」；超时后可让 AI 调 `refresh_page` |
 
 ## 更新记录
 
 | 版本 | 主要内容 |
 |---|---|
+| v6.6.0 | 上传 zip 的多文件题（type/9）现在能真正交付答案：新增独立工具 `write_zip`（只接受 `filename` + `files`，键为 zip 内路径、值为文件文本），用浏览器原生 Blob 生成标准 zip 并触发下载，用户再点「Upload Answer Zip」上传；`write_document` 也支持 `files` 兼容旧调用。不引外部库、路径穿越 `../` 会被拒绝。`read_problem` 会从 Problem Folder 抠出文件清单、提醒样例不是 stdin，并明确让模型用 `write_zip` 打包；README / 提示词 / 工具 schema 同步；jsdom 冒烟覆盖 zip 打包，Node 侧用 Python `zipfile` 验证生成的 zip 字节、文件名与内容。修复内置 Python 运行器 stdin 耗尽后返回空串、导致 `sys.stdin.read()` 死循环的问题：改为返回 `null` 表示 EOF，并新增回归测试 |
+| v6.5.0 | 真机打开「101计划 Python 版数据结构」的 type/9 多文件题，发现新版多文件题**根本没有代码编辑器**：作答区是「上传 zip」+ 文件清单，`read_editor_code all=true` / `write_editor_code editorIndex` 用不上。现在 `read_problem` 检测不到可写编辑器时明确说明这是上传 zip 题、让模型按文件清单交付内容，不再假装有「作答区模板」；README、提示词、工具 schema 同步区分「上传 zip 的多文件题」与「确实有多个代码框的老题」。真机 `read_problem` 已验证给出正确作答方式 |
+| v6.4.0 | 真机 7-2 复测发现 `simulate_pta_run` 仍会把可见的用例表当结果：新考试页把本次结论放在状态条（Last Tested At / Non-zero Exit Code）而不是结果框里。改成先认状态条变化 / 结果框由隐藏变可见 / 输出容器新写入文本，再扣掉运行前就存在的只读框；单测覆盖「用例表本来就可见」「结果页签预先渲染」「老页面 #out 写入」三种路径。真机最终不再返回 4 段假样例，而是如实提示「没读到输出」或给出状态条结论 |
+| v6.3.0 | `next_problem` 切题后等题目标题渲染完再返回（赶题统计不再记成「Programming - Problem List」），跨题型切换返回新题型里的真实序号而不是固定 0；/fuck 模式每次成功换题往面板推一条进度横幅（已做 / AC / 还剩几题） |
+| v6.2.0 | 修掉 `simulate_pta_run` 把测试区自带的用例表当成运行结果（真机 7-2 读回 4 段用例而不是程序输出）：运行前快照所有只读编辑器，只认新增结果框 / 新写入的文本 / 结果页签由隐藏变可见；修掉隐藏测试面板抢走 stdin 写入（按祖先 display:none 判定可见性，jsdom 也能跑）；`write_editor_code` 对代码填空 / 多文件题不再按完整程序跑样例（前者改为带 prelude 的语法检查、后者明确提示用 PTA 验证），避免假「编译失败」；长文本工具结果按工具放宽截断（`read_problem` / `read_editor_code` 12000、`list_problems` 8000），`read_editor_code all=true` 每个编辑器单独限长并提示用 `editorIndex` 读全文 |
+| v6.1.0 | 本地 C++ 补 `bits/stdc++.h` 万能头（PTA 竞赛代码最常见的写法）；修掉 `read_problem` 把题面里的「函数接口定义 / 裁判测试程序样例」当成样例喂给模型（真机 6-1 第二组假样例）；代码填空题的实时检查改用 `-include` 预置常用 C/C++ 头（`printf` / `std::vector` 不再被报成未声明，真机 6-1 的 3 个假错误清零）；测试输入框优先选有布局的可见实例（页面上残留的隐藏测试面板不再抢走写入）；内置 JS 运行器补 Node 风格垫片：`require('readline')`、`process.stdin/stdout`、顶层 `await`；`simulate_pta_run` 支持直接传 `code`（可选 `language`），Java / Go / C# / Rust 一次调用完成「写代码 + 在 PTA 上真跑」；新增 `set_language` 工具切换作答语言；长对话自动压缩（系统提示全保留、按预算留最近消息、不拆 assistant/tool 对），赶题模式跑几十题不会把上下文撑爆 |
+| v6.0.0 | 内置编译器支持 **C++**：同一套 Clang 22 + wasm-ld，按 `.cpp -std=c++17` 编译、链接 sysroot 里的 libc++ / libc++abi / libc，新工具 `compile_and_run_cpp`；实时语法检查与 STL 悬停注释一起覆盖 C++（`checkLanguage` 先判 C++ 再判 C，`C++ (g++)` 不再被当成 C）；修掉题面语言检测把 C++ 认成 C、以及 Java/Go 被当成 C 编译并报假错的 bug；代码填空题 `read_problem` 直接带作答区模板（放在题面前面，避免被 4000 字截断吃掉）；多文件题 `read_editor_code all=true` 列出全部编辑器、`write_editor_code editorIndex` 按序号写；新增 `list_problems` 工具（题型分组 + 每题已提交状态 + 当前题）；`next_problem` 跨题型切换改为等侧栏网格真的换好再点，并认真实考试页的 `PROBLEM_ACCEPTED` / `PROBLEM_NO_ANSWER` 状态标记（原来只认 `PROBLEM_SUBMITTED`，会把已经 AC 的题再点一遍）；赶题模式走到题单末尾附上本轮统计（做过/AC/未过），且题目 ID 改从 `problemSetProblemId` 取（原来取成题目集 ID，整份题单被记成同一道题）；`write_editor_code` 自动样例检查最多跑前 3 组 |
 | v5.1.0 | 作答区增强按反馈修正：彩虹括号改成**逐行定位**（每行只查一次 `posAtDOM`，不再逐括号做布局查询、也不是只数 span——行内的裸标点会让下标整体偏移），并**加粗**；CM6 重画行会清掉内联样式，所以改成监听编辑器 DOM 变动、同一帧内补色，滚动/移动光标不再掉色；工具栏与状态栏用 `ResizeObserver` 跟随，展开/收起「Test Case」不再滞后；clang 把「这一行少了分号」指在行尾时，波浪线不再因为跨行被丢掉（原来底部报错、代码里一条线都没有）；**只有 error 画波浪线**（warning 只计数）；「整理代码」重写：运算符两侧补空格（`7*2` → `7 * 2`）、`int *p`/`*p`/`-1` 不当二元运算符、无花括号的 `if`/`for`/`while` 体缩进一层、预处理指令顶格、保持幂等；Python 只规范运算符空格不动缩进 |
 | v5.0.0 | 内置编译器实时检查：停手 0.35 秒后把作答区代码送进本地 clang 做 `-fsyntax-only`（只编译、不链接、不运行，一次 30–45ms），出错的字符下画红色波浪线、代码框底部状态栏显示「N 个错误」，鼠标停在波浪线上给出 clang 原文与中文修改建议；C 标准库 / `string.h` / `math.h` 常用函数的中文注释（悬停函数名即显示原型、作用与常见坑）；检查不计入引擎重建计数，日志超 1MB 自行回收 |
 | v4.2.0 | 作答区增强：代码框底部状态栏上的「整理代码」按钮（按花括号重排缩进、清理行尾空白与多余空行，字符串和注释不动，改动过期就不应用）；彩虹括号（按嵌套层级给括号上色，配对的左右括号同色，字符串/注释里的括号不算）；页面脚本走 MAIN world 注入，与隔离世界用 `window.postMessage` + 每次安装随机 token 通信 |

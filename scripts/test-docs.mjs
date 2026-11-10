@@ -77,13 +77,14 @@ check('README 写的是 1 小时内缓存一次', readme.includes('1 小时内�
 
 /* ---------- 语言支持：不能吹嘘没实现的能力 ---------- */
 
-check('引擎只编 C（代码）', read('public/engine/engine-core.js').includes('const input = `${name}.c`'));
-check('README 不再声称内置 C/C++ 编译器', !readme.includes('C/C++（Clang wasm）'));
+check('引擎按 lang 选择 C / C++ 前端（代码）', read('public/engine/engine-core.js').includes("const input = `${name}.${cpp ? 'cpp' : 'c'}`"));
+check('README 声明确实内置 C/C++ 编译器', readme.includes('**C / C++**（Clang 22 wasm + libc++）'));
 check('README 说明没有内置编译器的语言走 PTA', readme.includes('没有内置编译器的语言'));
 check('README 说明不内置 JRE', readme.includes('不内置 JRE'));
-check('engine README 写明只编 C', engineReadme.includes('## 语言范围：只编 C'));
+check('engine README 写明支持 C 与 C++', engineReadme.includes('## 语言范围：C 与 C++'));
 check('提示词告诉 AI 用 simulate_pta_run 借 PTA 的环境', tools.includes('simulate_pta_run') && tools.includes('不内置 JRE'));
 check('提示词提到 read_pta_compile_result', tools.includes('read_pta_compile_result'));
+check('提示词提到本地 C++ 工具', tools.includes('compile_and_run_cpp'));
 
 /* ---------- 交互与模式 ---------- */
 
@@ -154,13 +155,14 @@ check('README 写清了 service worker 缓存这个坑', readme.includes('Servic
 check('赶题模式会免问放行（代码）', read('src/shared/commands.ts').includes('commandForcesWrite'));
 check('赶题模式在 agent 里被认出来（代码）', read('src/background/agent.ts').includes("command?.id === 'fuck'"));
 check('赶题模式会替用户回答提问（代码）', read('src/background/agent.ts').includes('pickAutoAnswer'));
-check('赶题模式会跳过已提交的题（代码）', ptaScripts.includes('PROBLEM_SUBMITTED'));
+check('赶题模式会跳过已提交的题（代码）', ptaScripts.includes('PROBLEM_SUBMITTED') && ptaScripts.includes('PROBLEM_NO_ANSWER'));
 check('赶题模式会切换题型（代码）', ptaScripts.includes('typeGroups'));
 check('赶题模式的欠账记在 todo.txt 里', read('todo.txt').includes('/fuck 赶题模式：进度与欠账'));
-check('README 写明赶题模式还在调', readme.includes('这个模式还在调'));
+check('README 写明赶题模式 v6 已在真机跑通', readme.includes('v6.0.0 已在真机跑通整条链路'));
 check('README 写明赶题模式的欠账在哪', readme.includes('todo.txt'));
 check('赶题模式放开了工具轮数（代码）', read('src/background/agent.ts').includes('FUCK_MAX_TOOL_ROUNDS'));
 check('有 next_problem 这个工具（代码）', tools.includes('next_problem'));
+check('有 list_problems 这个工具（代码）', tools.includes('list_problems'));
 check('README 写了赶题模式会切下一题', readme.includes('next_problem'));
 
 /* ---------- 指令菜单：Tab 补全与底部提示 ---------- */
@@ -188,7 +190,7 @@ check('适配笔记写了样例框的坑', read('docs/pta-page-notes.md').includ
 /* ---------- 清单与版本 ---------- */
 
 check('清单版本与 README 更新记录一致', readme.includes(`| v${manifest.version} |`), { manifest: manifest.version });
-check('README 声明了本地编译器的三种语言', readme.includes('`compile_and_run_c`') && readme.includes('`compile_and_run_python`') && readme.includes('`compile_and_run_js`'));
+check('README 声明了本地编译器的四种语言', readme.includes('`compile_and_run_c`') && readme.includes('`compile_and_run_cpp`') && readme.includes('`compile_and_run_python`') && readme.includes('`compile_and_run_js`'));
 check('README 提到多标签页隔离', readme.includes('多个标签页同时用'));
 check('README 提到 API Key 防密码管理器', readme.includes('data-lpignore'));
 
@@ -262,7 +264,7 @@ check('README 记录了无花括号控制体缩进', readme.includes('无花括�
 check('适配笔记记录了展开 Test Case 后的第二个编辑器', notes.includes('测试输入框'));
 check('适配笔记记录了逐行定位的染色性能问题', notes.includes('posAtDOM') && notes.includes('一动就掉色'));
 check('引擎提供只检查的编译路径（代码）', engineShared.includes("'-fsyntax-only'"));
-check('只检查不链接不运行（代码）', checkOnEngineBody.includes("input: 'check.c'") && !checkOnEngineBody.includes('api.link('));
+check('只检查不链接不运行（代码）', checkOnEngineBody.includes('checkInput') && checkOnEngineBody.includes('compileOnly') && !checkOnEngineBody.includes('api.link('));
 check('语法检查不计入引擎重建计数（代码）', !checkOnEngineBody.includes('runs += 1'));
 check('适配笔记记录了 MAIN world 与 postMessage', notes.includes('postMessage') && notes.includes('cmTile.view'));
 check('适配笔记记录了 clang 列号按字节算', notes.includes('UTF-8 字节'));

@@ -1,14 +1,14 @@
-# 内置 C 编译器（engine/）
+# 内置 C / C++ 编译器（engine/）
 
-`compile_and_run_c` 工具用的本地编译环境：**Clang 22.1.8 + wasm-ld（LLD）+ wasi-sdk 33 的 sysroot**，
+`compile_and_run_c` / `compile_and_run_cpp` 工具用的本地编译环境：**Clang 22.1.8 + wasm-ld（LLD）+ wasi-sdk 33 的 sysroot**，
 全部编译成 WebAssembly 在插件内部运行——代码不出本机、不依赖任何在线编译服务。
 
 ## 文件清单
 
 | 文件 | 体积 | 来源 | 进 git |
 | --- | --- | --- | --- |
-| `shared.js` | ~31KB | 改编自 cppstudio-io/wasm-clang-runtime 的 shared.js（C 模式、stderr 分流、ESM 导出） | 是 |
-| `engine-core.js` | ~6KB | 改编自其 compiler-bridge.js（C 专用配置 + 结构化结果） | 是 |
+| `shared.js` | ~31KB | 改编自 cppstudio-io/wasm-clang-runtime 的 shared.js（C/C++ 双前端、stderr 分流、ESM 导出） | 是 |
+| `engine-core.js` | ~6KB | 改编自其 compiler-bridge.js（C/C++ 配置 + 结构化结果） | 是 |
 | `compile-worker.js` | ~4KB | 自写：Worker 侧协议与引擎单例 | 是 |
 | `compiler-host.js` / `.html` | ~3KB | 自写：Chrome offscreen 页承载 Worker | 是 |
 | `memfs` | ~95KB | 用 wasi-sdk 33 按上游 build.sh 从 memfs.c 编出的 wasm 内存文件系统 | 是 |
@@ -20,13 +20,18 @@
 [cppstudio-io/wasm-clang-runtime v0.1.0](https://github.com/cppstudio-io/wasm-clang-runtime/releases/tag/v0.1.0)
 下载，带 sha256 校验；只在缺失时下载，装好后就完全离线。
 
-## 语言范围：只编 C
+## 语言范围：C 与 C++
 
-引擎把待编译的代码写成 `${name}.c` 交给 clang，**没有 `-x c++` 之类的模式切换**，
-所以这套环境只服务 `compile_and_run_c`（C 代码）。
+引擎按请求里的 `lang` 选前端：
 
-sysroot 里确实带了 C++ 头文件，但插件没有为 C++ 准备编译入口；C++、Java、Go 等语言一律走
-PTA 自己的运行环境（`simulate_pta_run` / `read_pta_compile_result`），插件不内置 JRE。
+| lang | 输入文件 | clang 参数 | 链接库 |
+| --- | --- | --- | --- |
+| `c`（默认） | `${name}.c` | `-x c` | `-lc -lclang_rt.builtins` |
+| `cpp` / `c++` / `cxx` | `${name}.cpp` | `-x c++ -std=c++17`，头文件路径先放 libc++ 的 `include/wasm32-wasip1/noeh/c++/v1` | `-lc++ -lc++abi -lc -lclang_rt.builtins` |
+
+C++ 的包装 C 头（`stddef.h` / `cstdlib` …）必须排在 sysroot 的 C 头之前，否则 libc++ 会报
+「找不到自己的头文件」。Java、Go、C# 等语言仍然走 PTA 自己的运行环境
+（`simulate_pta_run` / `read_pta_compile_result`），插件不内置 JRE / Go 工具链。
 
 ## 为什么用「noeh」版本
 

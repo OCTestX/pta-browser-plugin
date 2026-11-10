@@ -23,6 +23,7 @@ import { injectScript } from './js-inject';
 import { EDITOR_AGENT_SOURCE } from './editor-agent';
 import { EDITOR_ASSIST_VERSION, type EditorAssistInstallArgs } from '../shared/editor-assist-protocol';
 import { C_LIBRARY_DOCS } from '../shared/c-library-docs';
+import { CPP_LIBRARY_DOCS } from '../shared/cpp-library-docs';
 import { checkCode } from './compile';
 import { checkForUpdates, loadSettings, saveSettings, toSettingsView } from './settings';
 
@@ -164,7 +165,7 @@ ext.runtime.onMessage.addListener((message: unknown, sender, sendResponse) => {
         const args: EditorAssistInstallArgs = {
           token,
           version: EDITOR_ASSIST_VERSION,
-          docs: C_LIBRARY_DOCS,
+          docs: { ...C_LIBRARY_DOCS, ...CPP_LIBRARY_DOCS },
           // 四个增强全开：整理代码、彩虹括号、实时语法检查、标准库函数注释
           features: { format: true, rainbow: true, check: true, hover: true },
         };
@@ -186,7 +187,7 @@ ext.runtime.onMessage.addListener((message: unknown, sender, sendResponse) => {
         return;
       }
       case 'editor/check': {
-        sendResponse(await checkCode(message.code, message.language));
+        sendResponse(await checkCode(message.code, message.language, undefined, message.fragment === true));
         return;
       }
       case 'settings/get': {

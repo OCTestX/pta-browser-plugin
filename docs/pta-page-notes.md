@@ -62,10 +62,22 @@
 <a href="/problem-sets/<setId>/exam/problems/type/<type>?problemSetProblemId=<pid>">题号</a>
 ```
 
+- **代码块的 `data-lang` 是语言名，不是样例方向**：真机 6-1 里「函数接口定义 / 裁判测试程序样例」的
+  `data-code` 块写的是 `data-lang="c++"`，只有真正的样例才是 `in` / `out`。抠样例时只能把
+  `in` / `out` 的块当样例；没有标签的块是题面代码，配对进来会变成假样例。
 - 同一份列表里可能混着**多个题型**（type/1 判断、type/2 选择、type/6 代码填空、type/7 编程…），按 DOM 顺序排列 → 找「下一题」要按 **DOM 顺序**，不能按 id 排序。
 - 当前题的 id 从 `location.href` 的 `problemSetProblemId=` 取。
 - **点它是前端路由跳转，不会整页刷新**：实测跳转前设的 `window.__marker` 还在，标题变了，插件悬浮窗的宿主元素也还在。所以同一段页面脚本里点完链接可以继续等页面换好，插件的对话上下文也不会断。
 - 题型在地址里：`/problems/type/N`，1=判断、2=选择、6=代码填空、7=编程、9=多文件。
+- **题目状态画在链接里的一个小方块上**（真实考试页，2026-11 实测）：
+  `problemStatusRect_xxx PROBLEM_ACCEPTED_yyy` / `PROBLEM_NO_ANSWER_yyy`；
+  老假设里的 `PROBLEM_SUBMITTED` 不一定会出现。`PROBLEM_NO_ANSWER` 是没做，其余 `PROBLEM_*` 都算已作答。
+  判断时只看这个链接自己的子树、以及祖先**自己身上**的类——网格容器包含所有题，
+  扫它的子树会把别的题的 `PROBLEM_ACCEPTED` 算到每一道题头上。
+- **题目 ID 在 `problemSetProblemId` 查询参数里**，路径里 `/problem-sets/<setId>/` 那个长数字是题目集 ID；
+  按「路径里第一个长数字」取会把整份题单记成同一道题。
+- 同一题型做完后要切题型：点带「已答/总数」的分组链接会先落到该题型的列表页（地址里没有 `problemSetProblemId`），
+  侧栏网格随后才换成新题型的。**地址变了不等于网格换好了**，要等网格里出现新题型的题目链接再点第一道未提交的题。
 
 ## 2. 定位作答区（编辑器）
 
@@ -181,12 +193,18 @@ const isEditableElement = (node) => {
 
 ## 5. 借 PTA 的编译器
 
-插件**只内置 C、Python、JavaScript** 三种运行环境（见 `public/engine/README.md`）。Java、C++、Go 这类语言本地跑不了，一律借 PTA 自己的环境：
+插件**内置 C、C++、Python、JavaScript** 四种运行环境（见 `public/engine/README.md`）。Java、Go、C# 这类语言本地跑不了，一律借 PTA 自己的环境：
 
 - `SIMULATE_PTA_RUN_SCRIPT`：展开测试面板（`Test Case / 测试用例`）→ 把 `stdin` 填进测试输入框（不传就沿用面板里原有的输入）→ 点「运行测试 / Run Test Case」→ 轮询读回结果。英文页还会带回 Expected Result；结果为空时回退去读 `Compiler's Log` 页签。
 - `READ_PTA_COMPILE_RESULT_SCRIPT`：读页面上的「编译器输出」（运行输出、异常堆栈、编译错误）。
 
 **新版测试区是页签**：`Test Case` / `Running Result` / `Compiler's Log`，结果容器可能在第 5 层祖先里，而且跑完不一定自动切页签。所以两个脚本都会**主动点开目标页签**再读；读结果时按编辑器内容读（`.cm-content` 的 `textContent`），不要按 `innerText`（会带上行号槽）。
+
+**别把用例表当结果**：新版考试页在测试区里直接列出若干组「输入 / 期望输出」，它们本来就是
+只读 CodeMirror。早期脚本只判断「运行前后文本不同」，结果把整张用例表读回来交给模型
+（真机 7-2 出生年读到 1988 4 / 25 2013 / 1 2 / 0 0001 四段）。现在点运行前先快照所有只读
+编辑器（包括隐藏的结果页签），只认新增结果框 / 新写入的文本 / 结果页签由隐藏变可见；
+`stdin` 也要写进**可见**的那个测试输入框，隐藏的旧测试面板不能抢。
 
 ## 6. 粘贴
 

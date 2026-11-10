@@ -112,7 +112,7 @@ export type ContentRequest =
   /** 编辑器增强：让后台把 MAIN world 的 agent 装进页面（PTA 作答区只有主世界能拿到编辑器实例） */
   | { type: 'editor/assist/install' }
   /** 编辑器增强：把作答区当前代码送进内置编译器做一次「只编译不运行」的检查 */
-  | { type: 'editor/check'; code: string; language: string }
+  | { type: 'editor/check'; code: string; language: string; fragment?: boolean }
   | { type: 'settings/get' }
   | { type: 'settings/save'; patch: Partial<Settings> }
   /** 设置页的「模拟输入测试」：按指定方法往作答区写一次文本 */

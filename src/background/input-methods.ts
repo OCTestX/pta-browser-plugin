@@ -14,8 +14,9 @@ async function writeOnce(
   method: string,
   code: string,
   signal?: AbortSignal,
+  editorIndex?: number,
 ): Promise<{ ok: boolean; detail: string }> {
-  const result = await injectScript(tabId, INPUT_METHOD_SCRIPT, { method, text: code, json: true }, undefined, signal);
+  const result = await injectScript(tabId, INPUT_METHOD_SCRIPT, { method, text: code, json: true, editorIndex }, undefined, signal);
   // injectScript 会把对象 JSON 化，这里解析回来
   try {
     const parsed = JSON.parse(result.output) as { ok: boolean; detail: string };
@@ -26,9 +27,13 @@ async function writeOnce(
 }
 
 /** 读取编辑器里的原始代码（不做行号/描述包装），给自动 diff 用 */
-export async function readEditorCode(tabId: number, signal?: AbortSignal): Promise<string | null> {
+export async function readEditorCode(
+  tabId: number,
+  signal?: AbortSignal,
+  editorIndex?: number,
+): Promise<string | null> {
   try {
-    const result = await injectScript(tabId, INPUT_METHOD_SCRIPT, { method: 'readDoc', text: '' }, undefined, signal);
+    const result = await injectScript(tabId, INPUT_METHOD_SCRIPT, { method: 'readDoc', text: '', editorIndex }, undefined, signal);
     if (!result.ok || !result.output) return null;
     if (/^(页面上没有|没找到|没有|无法)/.test(result.output)) return null;
     return result.output;
@@ -72,8 +77,8 @@ export async function pasteIntoEditor(options: {
 }
 
 /** 清空作答区：换备用实现之前先把内容全部删掉 */
-async function clearEditor(tabId: number, signal?: AbortSignal): Promise<void> {
-  const result = await injectScript(tabId, INPUT_METHOD_SCRIPT, { method: 'clear', text: '' }, undefined, signal);
+async function clearEditor(tabId: number, signal?: AbortSignal, editorIndex?: number): Promise<void> {
+  const result = await injectScript(tabId, INPUT_METHOD_SCRIPT, { method: 'clear', text: '', editorIndex }, undefined, signal);
   if (!result.ok || !result.output.includes('已清空')) {
     throw new Error(result.output);
   }
@@ -95,16 +100,18 @@ export async function writeEditorCode(options: {
   code: string;
   /** 传了就能被面板的「停止」打断：每种写入方法前后都看一眼标记 */
   signal?: AbortSignal;
+  /** 多文件题：写到第几个可写编辑器（从 0 开始），默认取内容最长的那个 */
+  editorIndex?: number;
 }): Promise<ToolOutcome> {
   const attempts: string[] = [];
-  const { signal } = options;
+  const { signal, editorIndex } = options;
 
   for (const method of WRITE_FALLBACK_CHAIN) {
     try {
       // 换下一种实现之前先确认没被停掉，否则会把作答区清空却什么都没写进去
       throwIfAborted(signal);
-      await clearEditor(options.tabId, signal);
-      const result = await writeOnce(options.tabId, method, options.code, signal);
+      await clearEditor(options.tabId, signal, editorIndex);
+      const result = await writeOnce(options.tabId, method, options.code, signal, editorIndex);
       if (result.ok) {
         const parts = [`写入成功（${findInputMethod(method).label}）`, result.detail];
         if (attempts.length > 0) parts.push(`之前失败的尝试：${attempts.join('；')}`);

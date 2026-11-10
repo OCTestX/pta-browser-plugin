@@ -155,6 +155,7 @@ const HELPERS = `
       found.push({
         view: value,
         path,
+        element: element,
         readOnly: value.state.readOnly === true || (element ? !isEditableElement(element) : false),
         length: String(value.state.doc).length,
       });
@@ -187,12 +188,25 @@ const HELPERS = `
     return found;
   };
 
-  // 作答区＝可写的那一个；实在有多个就取内容最长的，都空就取最后一个
-  const pickEditorView = () => {
+  // 可写编辑器按 DOM 顺序排列：多文件题的「第 N 个编辑器」要跟页面上看到的文件顺序一致
+  const pickWritableViews = () => {
+    const writable = collectEditorViews().filter((item) => !item.readOnly);
+    return writable.slice().sort((a, b) => {
+      if (!a.element || !b.element || a.element === b.element) return 0;
+      // DOCUMENT_POSITION_FOLLOWING = 4：b 在 a 后面时 a 排前面
+      return a.element.compareDocumentPosition(b.element) & 4 ? -1 : 1;
+    });
+  };
+
+  // 作答区＝可写的那一个；传了序号就按序号取（多文件题），否则取内容最长的
+  const pickEditorView = (index) => {
     const views = collectEditorViews();
-    const writable = views.filter((item) => !item.readOnly);
+    const writable = pickWritableViews();
     if (writable.length === 0) return { best: null, readOnlyCount: views.length, writableCount: 0 };
-    const best = writable.reduce((a, b) => (b.length > a.length ? b : a));
+    const wanted = Number(index);
+    const best = Number.isInteger(wanted) && wanted >= 0 && wanted < writable.length
+      ? writable[wanted]
+      : writable.reduce((a, b) => (b.length > a.length ? b : a));
     return { best, readOnlyCount: views.length - writable.length, writableCount: writable.length };
   };
 
@@ -201,6 +215,93 @@ const HELPERS = `
     const lines = Array.from(element.querySelectorAll('.cm-line')).map((n) => n.textContent || '');
     return lines.length > 0 ? lines.join('\\n') : (element.textContent || '');
   };
+
+  // 做过/已提交的标记可能落在链接自己、祖先或子节点上。
+  // 真实考试页把状态画成链接里的一个小方块：problemStatusRect_xxx PROBLEM_ACCEPTED_yyy /
+  // PROBLEM_NO_ANSWER_yyy，只看 PROBLEM_SUBMITTED 会把它当成「全都没做」。
+  const isAnsweredStatus = (mark) => /PROBLEM_[A-Z_]+/.test(mark)
+    && !/PROBLEM_(NO_ANSWER|UNANSWERED|NOT_STARTED|UNSUBMITTED)/.test(mark);
+  const hasSubmittedMark = (node) => {
+    if (!node) return false;
+    const marksOf = (element) => {
+      const values = [];
+      if (!element) return values;
+      const own = String(element.getAttribute ? element.getAttribute('class') : '') || '';
+      values.push(...(own.match(/PROBLEM_[A-Z_]+/g) || []));
+      if (element.querySelectorAll) {
+        for (const child of element.querySelectorAll('[class*=PROBLEM_]')) {
+          const cls = String(child.getAttribute('class') || '');
+          values.push(...(cls.match(/PROBLEM_[A-Z_]+/g) || []));
+        }
+      }
+      return values;
+    };
+    if (marksOf(node).some(isAnsweredStatus)) return true;
+    const label = node.getAttribute ? String(node.getAttribute('aria-label') || '') : '';
+    if (/(已提交|已作答|Submitted|Accepted)/i.test(label)) return true;
+    // 祖先只认「自己身上」的状态类：网格容器里包含所有题，扫它的子树会把
+    // 别的题的 PROBLEM_ACCEPTED 也算到这道题头上（实测：23 道全被当成已提交）
+    let parent = node.parentElement;
+    for (let depth = 0; parent && depth < 3; depth += 1, parent = parent.parentElement) {
+      const own = String(parent.getAttribute ? parent.getAttribute('class') : '') || '';
+      const ownMarks = own.match(/PROBLEM_[A-Z_]+/g) || [];
+      if (ownMarks.some(isAnsweredStatus)) return true;
+    }
+    return false;
+  };
+
+  // 题目列表网格：只认站内 problemSetProblemId 链接，同一道题只算一次。
+  // （页面上的「意见反馈」是 mailto: 链接，正文里也带着 problemSetProblemId）
+  const readProblemGrid = () => {
+    const items = [];
+    const seen = new Set();
+    for (const anchor of document.querySelectorAll('a[href*="problemSetProblemId="]')) {
+      const href = String(anchor.getAttribute('href') || '');
+      if (!href.startsWith('/')) continue;
+      const match = href.match(/problemSetProblemId=([^&#]+)/);
+      if (!match) continue;
+      let id = match[1];
+      try { id = decodeURIComponent(id); } catch (e) { /* 编码坏了就按原样比 */ }
+      if (seen.has(id)) continue;
+      seen.add(id);
+      items.push({
+        id: id,
+        anchor: anchor,
+        submitted: hasSubmittedMark(anchor),
+        title: String(anchor.getAttribute('title') || textOf(anchor)).replace(/\\s+/g, ' ').trim(),
+        type: (href.match(/\\/problems\\/type\\/(\\d+)/) || [])[1] || '',
+      });
+    }
+    return items;
+  };
+
+  // 侧栏顶部的题型分组：带「已答/总数」的那一行才是分组入口（折叠起来的那份没有计数）
+  const readProblemTypeGroups = () => {
+    const groups = [];
+    const seen = new Set();
+    for (const node of document.querySelectorAll('a[href*="/problems/type/"]')) {
+      const href = String(node.getAttribute('href') || '');
+      if (href.includes('problemSetProblemId=')) continue;
+      if (!href.startsWith('/')) continue;   // 排除 mailto: 之类的链接
+      const type = (href.match(/\\/problems\\/type\\/(\\d+)/) || [])[1] || '';
+      if (!type || seen.has(type)) continue;
+      const text = textOf(node).replace(/\\s+/g, ' ').trim();
+      const count = text.match(/(\\d+)\\s*\\/\\s*(\\d+)/);
+      if (!count) continue;   // 没有计数的不是分组入口
+      seen.add(type);
+      groups.push({ type: type, href: href, answered: Number(count[1]), total: Number(count[2]), node: node });
+    }
+    return groups;
+  };
+
+  // 当前题的 id 从地址里取
+  const currentProblemId = () => {
+    const match = String(location.href || '').match(/problemSetProblemId=([^&#]+)/);
+    if (!match) return '';
+    try { return decodeURIComponent(match[1]); } catch (e) { return match[1]; }
+  };
+
+  const currentProblemType = () => (String(location.pathname || '').match(/\\/problems\\/type\\/(\\d+)/) || [])[1] || '';
 
   // 页面弹的提示（比如「禁止粘贴」）：让测试结果能看出是不是被页面拦了
   const findPageNotice = () => {
@@ -640,11 +741,18 @@ const HELPERS = `
         if (version) return version[1] === '2' ? 'python2' : 'python3';
         return 'python';
       }
-      if (/^c\\b|\\bc\\s*\\(|c语言|gcc/.test(text)) return 'c';
+      // C++ 必须排在 C 前面：'c++' 也会被 /^c\\b/ 命中（c 与 + 之间是词边界）
+      if (/c\\+\\+|cpp|cxx|c语言\\+\\+/.test(text)) return 'cpp';
       if (/javascript|js语言|node/.test(text)) return 'js';
-      if (/c\\+\\+|cpp/.test(text)) return 'cpp';
-      if (/java/.test(text)) return 'java';
-      if (/golang|go语言/.test(text)) return 'go';
+      if (/java(?!script)/.test(text)) return 'java';
+      if (/golang|go语言|^go\\b/.test(text)) return 'go';
+      if (/c#|csharp|\\.net/.test(text)) return 'csharp';
+      if (/rust/.test(text)) return 'rust';
+      if (/kotlin/.test(text)) return 'kotlin';
+      if (/swift/.test(text)) return 'swift';
+      if (/php/.test(text)) return 'php';
+      if (/ruby/.test(text)) return 'ruby';
+      if (/^c\\b|\\bc\\s*\\(|c语言|gcc|clang/.test(text)) return 'c';
     }
     return '';
   };
@@ -716,22 +824,57 @@ const HELPERS = `
   };
 
   // 测试面板里的「输入」框：它是可写编辑器，但不是作答区那个。
-  // 靠祖先里有没有 CodingProblemAnswerForm 区分（作答区在这个表单里）
+  // 靠祖先里有没有 CodingProblemAnswerForm 区分（作答区在这个表单里）。
   const findTestInputEditor = () => {
     const editors = Array.from(document.querySelectorAll('.cm-content'));
-    const writable = editors.filter((e) => (
+    // 页面里可能同时留着多份测试面板（旧面板只是隐藏），优先挑真正可见的那一个。
+    // 主要靠「祖先有没有 display:none / hidden」判断：浏览器里可见元素有布局，
+    // jsdom 里所有元素都没有布局，但隐藏元素仍能靠 style 认出来。
+    const editable = editors.filter((e) => (
       isEditableElement(e) && !e.closest('[class*=CodingProblemAnswerForm]')
     ));
+    const isHidden = (e) => {
+      let node = e;
+      for (let depth = 0; node && depth < 12; depth += 1, node = node.parentElement) {
+        if (node.hidden) return true;
+        const style = String(node.getAttribute && node.getAttribute('style') || '');
+        if (/display\s*:\s*none/i.test(style)) return true;
+      }
+      return false;
+    };
+    const shown = editable.filter((e) => !isHidden(e));
+    const laidOut = shown.filter((e) => (
+      (typeof e.getClientRects === 'function' && e.getClientRects().length > 0) || e.offsetParent !== null
+    ));
+    const writable = laidOut.length > 0 ? laidOut : shown.length > 0 ? shown : editable;
     if (writable.length === 0) return null;
     // 多个时取内容最长的那个（通常是当前测试用例的输入）
     return writable.reduce((a, b) => ((b.innerText || '').length > (a.innerText || '').length ? b : a));
   };
 
   // 把一段文本写进可写的 CodeMirror：优先用编辑器实例（能整段原子写入），
-  // 拿不到实例就退回选中原内容再插入
+  // 拿不到实例就退回选中原内容再插入。
+  // 注意：测试输入框的 view 不一定挂在 .cm-content 自己身上（真实页面挂在祖先或
+  // cmTile 包装上），所以先借 collectEditorViews 的同一套摸法找，再退回 DOM 插入。
+  const viewForElement = (element) => {
+    for (const item of collectEditorViews()) {
+      if (!item.element) continue;
+      if (item.element === element || item.element.contains(element) || element.contains(item.element)) {
+        return item.view;
+      }
+    }
+    for (let node = element; node; node = node.parentElement) {
+      for (const key of ['cmTile', 'cmView', 'editorView', 'view', '_view']) {
+        let value;
+        try { value = node[key]; } catch (e) { continue; }
+        if (looksLikeEditorView(value)) return value;
+        if (value && looksLikeEditorView(value.view)) return value.view;
+      }
+    }
+    return null;
+  };
   const writeIntoEditor = (element, text) => {
-    let view = null;
-    try { view = element.cmTile && element.cmTile.view ? element.cmTile.view : null; } catch (e) {}
+    const view = viewForElement(element);
     if (view && view.state && view.state.doc && typeof view.dispatch === 'function') {
       view.dispatch({ changes: { from: 0, to: view.state.doc.length, insert: text } });
       return '编辑器实例';
@@ -887,9 +1030,14 @@ if (hasLabels) {
   }
   const count = Math.min(inputs.length, outputs.length);
   for (let index = 0; index < count; index += 1) pairs.push({ input: inputs[index], output: outputs[index] });
-  // 没标 lang 的按出现顺序两两配对（输入、输出、输入、输出……）
-  for (let index = 0; index + 1 < unlabeled.length; index += 2) {
-    pairs.push({ input: unlabeled[index], output: unlabeled[index + 1] });
+  // **不要**再把 unlabeled 两两配对：题面里的「函数接口定义 / 裁判测试程序样例」
+  // 也是 data-code 块，只是没有 data-lang；把它们当样例会喂给模型一段假样例
+  //（真机 6-1 阶乘计算升级版：第二组“样例”其实是接口声明 + 裁判程序）。
+  // 只有在完全没有 in/out 标签时才退回顺序配对（老页面）。
+  if (count === 0 && unlabeled.length >= 2) {
+    for (let index = 0; index + 1 < unlabeled.length; index += 2) {
+      pairs.push({ input: unlabeled[index], output: unlabeled[index + 1] });
+    }
   }
 } else if (sampleValues.length >= 2) {
   // 只读编辑器在页面里的顺序就是「输入、输出、输入、输出……」
@@ -927,7 +1075,17 @@ if (hasLabels) {
 }
 
 const title = (document.title || textOf(document.querySelector('h1')) || '').trim();
-const idMatch = location.pathname.match(/\\/(\\d{6,})/);
+// 考试页的地址里有两个长数字：/problem-sets/题目集ID/…，真正的题目 ID 在
+// problemSetProblemId 查询参数里。只取路径里第一个数字会把整份题单记成同一道题
+// （赶题统计、已提交判断都会跟着错）。
+const queryProblemId = (() => {
+  const match = String(location.search || '').match(/[?&]problemSetProblemId=([^&#]+)/);
+  if (!match) return '';
+  try { return decodeURIComponent(match[1]); } catch (e) { return match[1]; }
+})();
+const pathIds = [...String(location.pathname || '').matchAll(/\\/(\\d{6,})/g)].map((item) => item[1]);
+const problemId = queryProblemId || pathIds[pathIds.length - 1] || '';
+const problemSetId = (String(location.pathname || '').match(/\\/problem-sets\\/(\\d{6,})/) || [])[1] || '';
 const language = detectLanguage();
 
 // 只取样例：给 write_editor_code 的自动检查用，返回结构化数据
@@ -936,15 +1094,58 @@ if (__args.samplesOnly === true) {
 }
 
 const out = ['题目：' + (title || '（没取到标题）'), '地址：' + location.href];
-if (idMatch) out.push('题目 ID：' + idMatch[1]);
+if (problemId) out.push('题目 ID：' + problemId);
+if (problemSetId && problemSetId !== problemId) out.push('题目集 ID：' + problemSetId);
 if (language) out.push('题目语言：' + language);
 if (pairs.length > 0) {
-  out.push('', '样例（共 ' + pairs.length + ' 组，可以直接当 compile_and_run_* 的 stdin）：');
+  const sampleHeader = problemType.id === 9
+    ? '样例（共 ' + pairs.length + ' 组，多文件题的样例通常是文件内容 / 文件清单，不是标准输入）：'
+    : '样例（共 ' + pairs.length + ' 组，可以直接当 compile_and_run_* 的 stdin）：';
+  out.push('', sampleHeader);
   pairs.slice(0, 5).forEach((pair, index) => {
     out.push('样例 ' + (index + 1) + ' 输入：' + fence + '\\n' + (pair.input || '（空）') + '\\n' + fence);
     out.push('样例 ' + (index + 1) + ' 输出：' + fence + '\\n' + (pair.output || '（空）') + '\\n' + fence);
   });
 }
+// 代码填空题：作答区里就是题目给的模板，缺的部分要在这个模板上补。
+// 放在题面**前面**：工具结果有字数预算，模板放最后会被题面挤掉。
+// 新版多文件题（type/9）是上传 zip，页面上可能一个可写编辑器都没有；
+// 这时明确说明作答方式，别让模型以为自己漏读了一份「模板」。
+const typeInfo = detectProblemType();
+if (typeInfo.id === 6 || typeInfo.id === 9) {
+  const views = collectEditorViews().filter((item) => !item.readOnly);
+  if (views.length > 0) {
+    out.push('', '作答区模板（' + typeInfo.name + '：在原代码上补全空缺/修改，**不要整段重写成另一份程序**）：');
+    views.slice(0, 3).forEach((item, index) => {
+      const sourceText = item.view.state.doc.toString();
+      const clipped = sourceText.length > 3000 ? sourceText.slice(0, 3000) + '\\n…（模板过长，已截断）' : sourceText;
+      out.push('--- 编辑器 ' + (index + 1) + '（' + item.path + '，' + item.view.state.doc.lines + ' 行）---', fence, clipped, fence);
+    });
+    if (views.length > 3) out.push('…还有 ' + (views.length - 3) + ' 个可写编辑器，用 read_editor_code 逐个读');
+  } else if (typeInfo.id === 9) {
+    // 真机 13-1：文件清单在「Problem Folder」面板里，不在题面 .rendered-markdown 里。
+    // 先按 body 文本粗略抠出来，模型才知道要生成哪些路径。
+    const bodyText = textOf(document.body);
+    const folderAt = Math.max(bodyText.indexOf('Problem Folder'), bodyText.indexOf('题目文件夹'));
+    const files = [];
+    if (folderAt >= 0) {
+      const lines = bodyText.slice(folderAt).split('\\n').map((line) => line.trim()).filter(Boolean);
+      for (let index = 1; index < lines.length; index += 1) {
+        const line = lines[index];
+        if (/^(Please upload|Upload Answer Zip|No Submit Records|Submit For This Problem)/i.test(line)) break;
+        if (/^\\(.*\\)$/.test(line)) continue;
+        if (/^[^\\s]{1,80}$/.test(line) && /[\\/.]/.test(line)) files.push(line);
+        else if (files.length > 0) break;
+      }
+    }
+    out.push('', '作答方式：这是上传 zip 的多文件题，页面上没有可写代码编辑器；'
+      + '请按文件清单生成各文件内容，用 write_zip（或 write_document 的 files 参数）打包成 zip 下载，用户再点「Upload Answer Zip」上传。'
+      + '不要用 read_editor_code / write_editor_code 去找不存在的编辑器。');
+    if (files.length > 0) out.push('文件清单（按这些路径生成）：' + files.join('、'));
+    out.push('样例说明：多文件题的样例通常是文件内容 / 文件清单，不是标准输入，不要直接当 compile_and_run_* 的 stdin。');
+  }
+}
+
 if (text.length > maxChars) text = text.slice(0, maxChars) + '\\n…（题面过长，已截断）';
 out.push('', '题面（来源：' + source + '，' + text.length + ' 字）：', text);
 return out.join('\\n');
@@ -974,13 +1175,9 @@ const waitMs = Math.min(Math.max(Number.isFinite(askedWait) ? askedWait : 12000,
 const askedPoll = Number(options.pollMs);
 const pollMs = Math.min(Math.max(Number.isFinite(askedPoll) ? askedPoll : 200, 20), 2000);
 
-// 当前题的 id 从地址里取
-const currentId = (() => {
-  const match = String(location.href || '').match(/problemSetProblemId=([^&#]+)/);
-  if (!match) return '';
-  try { return decodeURIComponent(match[1]); } catch (e) { return match[1]; }
-})();
-const currentType = (String(location.pathname || '').match(/\\/problems\\/type\\/(\\d+)/) || [])[1] || '';
+// 当前题的 id / 题型
+const currentId = currentProblemId();
+const currentType = currentProblemType();
 
 // 这一轮里被「跳过」的题（模型两次都做不出来的）。
 // 记在页面上：赶题模式全程不刷新页面，所以这份记录能一直用。
@@ -988,41 +1185,9 @@ globalThis.__ptaSkippedProblems = globalThis.__ptaSkippedProblems || {};
 const skipped = globalThis.__ptaSkippedProblems;
 if (options.skipCurrent === true && currentId) skipped[currentId] = true;
 
-// 侧栏顶部的题型分组：带「已答/总数」的那一行才是分组入口（折叠起来的那份没有计数）
-const typeGroups = [];
-const seenType = new Set();
-for (const node of document.querySelectorAll('a[href*="/problems/type/"]')) {
-  const href = String(node.getAttribute('href') || '');
-  if (href.includes('problemSetProblemId=')) continue;
-  if (!href.startsWith('/')) continue;   // 排除 mailto: 之类的链接
-  const type = (href.match(/\\/problems\\/type\\/(\\d+)/) || [])[1] || '';
-  if (!type || seenType.has(type)) continue;
-  const text = textOf(node).replace(/\s+/g, ' ').trim();
-  const count = text.match(/(\\d+)\\s*\\/\\s*(\\d+)/);
-  if (!count) continue;   // 没有计数的不是分组入口
-  seenType.add(type);
-  typeGroups.push({ type: type, href: href, answered: Number(count[1]), total: Number(count[2]), node: node });
-}
-
-// 当前题型的题目网格
-const grid = [];
-const seenId = new Set();
-for (const anchor of document.querySelectorAll('a[href*="problemSetProblemId="]')) {
-  const href = String(anchor.getAttribute('href') || '');
-  // 只认站内路径：页面上的「意见反馈」是个 mailto: 链接，正文里也带着 problemSetProblemId，
-  // 当成题目链接点下去会打开邮件客户端
-  if (!href.startsWith('/')) continue;
-  const match = href.match(/problemSetProblemId=([^&#]+)/);
-  if (!match) continue;
-  let id = match[1];
-  try { id = decodeURIComponent(id); } catch (e) { /* 编码坏了就按原样比 */ }
-  // 同一道题在页面上可能有多个入口（侧栏 + 悬浮导航），只算一道
-  if (seenId.has(id)) continue;
-  seenId.add(id);
-  // 做过的题带 PROBLEM_SUBMITTED 类名（再提交一次 PTA 会拒绝）
-  const submitted = !!anchor.querySelector('[class*=PROBLEM_SUBMITTED]');
-  grid.push({ id: id, anchor: anchor, submitted: submitted });
-}
+// 侧栏顶部的题型分组 + 当前题型的题目网格（见 HELPERS）
+const typeGroups = readProblemTypeGroups();
+const grid = readProblemGrid();
 
 // 还没做过的题：先找当前题型里当前题之后的，再回头找当前题型里前面的
 const pending = grid.filter((item) => !item.submitted && !skipped[item.id]);
@@ -1087,6 +1252,20 @@ if (nextItem) {
   }
   const switched = await waitForSwitch(beforeHref, '点了下一题的链接');
   if (!switched.ok) return switched;
+  // 地址一变路由就可能还没把题目内容渲染完：再等一小会儿让标题换成真题名，
+  // 否则赶题统计里记下的会是「Programming - Problem List」这种列表页标题。
+  // 同一题型内多道题标题本来就相同（选择题页），所以只等到「不再是列表页标题」或超时。
+  const beforeTitle = switched.title;
+  const titleDeadline = Date.now() + 1500;
+  while (Date.now() < titleDeadline) {
+    await new Promise((resolve) => setTimeout(resolve, pollMs));
+    if (aborted()) break;
+    const title = String(document.title || '').trim();
+    if (title && title !== beforeTitle && !/Problem List/i.test(title)) {
+      switched.title = title;
+      break;
+    }
+  }
   return {
     ok: true,
     title: switched.title,
@@ -1108,6 +1287,7 @@ for (let index = groupIndex + 1; index < typeGroups.length; index += 1) {
   const group = typeGroups[index];
   if (group.answered >= group.total) continue;   // 这一组全做过了
   const beforeHref = String(location.href || '');
+  const beforeGridIds = grid.map((item) => item.id).join('|');
   try {
     group.node.click();
   } catch (error) {
@@ -1116,21 +1296,29 @@ for (let index = groupIndex + 1; index < typeGroups.length; index += 1) {
   const switched = await waitForSwitch(beforeHref, '点了题型「' + group.type + '」的分组链接');
   if (!switched.ok) return switched;
 
-  // 网格已经换成新题型的了，找第一道没做过的
-  const nextGrid = [];
-  const seenNext = new Set();
-  for (const anchor of document.querySelectorAll('a[href*="problemSetProblemId="]')) {
-    const href = String(anchor.getAttribute('href') || '');
-    if (!href.startsWith('/')) continue;   // 排除 mailto: 的反馈链接
-    const match = href.match(/problemSetProblemId=([^&#]+)/);
-    if (!match) continue;
-    let id = match[1];
-    try { id = decodeURIComponent(id); } catch (e) {}
-    if (seenNext.has(id)) continue;
-    seenNext.add(id);
-    const submitted = !!anchor.querySelector('[class*=PROBLEM_SUBMITTED]');
-    nextGrid.push({ id: id, anchor: anchor, submitted: submitted });
-  }
+  // 地址变了不等于网格已经换好（前端路由先换地址、再渲染侧栏）：
+  // 等网格里出现新题型的题目链接再点，否则会点到旧题型的链接上。
+  const waitedGrid = await new Promise((resolve) => {
+    const deadline = Date.now() + Math.min(waitMs, 6000);
+    const check = () => {
+      if (aborted()) { resolve({ ok: false, reason: '已按用户要求停止' }); return; }
+      const items = readProblemGrid();
+      const fresh = items.filter((item) => item.type === group.type || !item.type);
+      const sameIds = items.map((item) => item.id).join('|') === beforeGridIds;
+      if (fresh.length > 0 && (!sameIds || Date.now() >= deadline)) {
+        resolve({ ok: true, items: fresh });
+        return;
+      }
+      if (Date.now() >= deadline) {
+        resolve({ ok: false, reason: '切到题型「' + group.type + '」后没等到新题型的题目列表' });
+        return;
+      }
+      setTimeout(check, pollMs);
+    };
+    setTimeout(check, pollMs);
+  });
+  if (!waitedGrid.ok) return waitedGrid;
+  const nextGrid = waitedGrid.items;
   const target = nextGrid.find((item) => !item.submitted && !skipped[item.id]);
   if (!target) continue;   // 这个题型也没剩的了，继续看下一个分组
 
@@ -1142,14 +1330,26 @@ for (let index = groupIndex + 1; index < typeGroups.length; index += 1) {
   }
   const moved = await waitForSwitch(beforeQuestion, '点了新题型的第一道题');
   if (!moved.ok) return moved;
+  const beforeTitle = moved.title;
+  const titleDeadline = Date.now() + 1500;
+  while (Date.now() < titleDeadline) {
+    await new Promise((resolve) => setTimeout(resolve, pollMs));
+    if (aborted()) break;
+    const title = String(document.title || '').trim();
+    if (title && title !== beforeTitle && !/Problem List/i.test(title)) {
+      moved.title = title;
+      break;
+    }
+  }
   return {
     ok: true,
     title: moved.title,
     url: moved.url,
-    index: 0,
+    index: nextGrid.indexOf(target),
     total: nextGrid.length,
     remaining: nextGrid.filter((item) => !item.submitted && !skipped[item.id]).length,
     type: group.type,
+    typeName: PROBLEM_TYPE_NAMES[group.type] || ('题型 ' + group.type),
     switchedType: true,
   };
 }
@@ -1161,6 +1361,51 @@ return {
   total: grid.length,
   done: grid.length,
 };
+`;
+
+/**
+ * 题目列表总览：题型分组 + 当前题型的题目网格（已提交/未提交/当前）。
+ *
+ * 赶题模式用它规划路线；普通对话里用户问「还有哪些题没做」也直接读它，
+ * 不要让模型自己用 js_inject 去猜侧栏结构。
+ */
+export const LIST_PROBLEMS_SCRIPT = `${HELPERS}
+const groups = readProblemTypeGroups();
+const grid = readProblemGrid();
+const currentId = currentProblemId();
+const currentType = currentProblemType();
+if (groups.length === 0 && grid.length === 0) {
+  return '当前页面不是 PTA 的题目列表页（没找到题型分组，也没找到题目链接）';
+}
+
+const lines = [];
+if (groups.length > 0) {
+  lines.push('题型分组（' + groups.length + '）：');
+  for (const group of groups) {
+    const done = group.answered >= group.total;
+    lines.push('- ' + (PROBLEM_TYPE_NAMES[group.type] || ('题型 ' + group.type))
+      + '：' + group.answered + '/' + group.total
+      + (done ? '（已完成）' : '')
+      + (group.type === currentType ? ' ← 当前题型' : ''));
+  }
+} else {
+  lines.push('没有读到题型分组（可能不是考试页，或侧栏是折叠的）。');
+}
+
+lines.push('');
+if (grid.length > 0) {
+  const submitted = grid.filter((item) => item.submitted).length;
+  lines.push('当前题型的题目网格（' + grid.length + ' 道，已提交 ' + submitted + ' 道）：');
+  grid.slice(0, 200).forEach((item, index) => {
+    const marks = [item.submitted ? '已提交' : '未提交'];
+    if (item.id === currentId) marks.push('← 当前');
+    lines.push((index + 1) + '. ' + (item.title || item.id) + ' [' + marks.join('，') + ']');
+  });
+  if (grid.length > 200) lines.push('…还有 ' + (grid.length - 200) + ' 道没列出');
+} else {
+  lines.push('没读到当前题型的题目网格（侧栏可能在折叠状态）。');
+}
+return lines.join('\\n');
 `;
 
 /**
@@ -1220,10 +1465,35 @@ return { ok: problems.length === 0, filled, problems, total: keys.length };
 
 /** 读作答区里的代码 */
 export const READ_EDITOR_SCRIPT = `${HELPERS}
-const picked = pickEditorView();
+const options = (typeof __args === 'undefined' || !__args) ? {} : __args;
+
+// 多文件题：一次列出全部可写编辑器，模型按序号对应文件
+if (options.listAll === true || options.all === true) {
+  const views = collectEditorViews();
+  const writable = pickWritableViews();
+  if (writable.length === 0) {
+    if (views.length > 0) {
+      return '页面上只找到 ' + views.length + ' 个只读编辑器（是题面的样例框，不是作答区），没找到可写的作答区';
+    }
+    return '页面上没找到作答区（既没有编辑器实例，也没有可编辑区域）';
+  }
+  const out = ['作答区共 ' + writable.length + ' 个可写编辑器（序号从 0 开始，write_editor_code 用 editorIndex 指定）：'];
+  writable.slice(0, 8).forEach((item, index) => {
+    const full = item.view.state.doc.toString();
+    const code = full.length > 1500
+      ? full.slice(0, 1500) + '\\n…（过长，已截断；用 read_editor_code editorIndex=' + index + ' 读全文）'
+      : full;
+    out.push('--- 编辑器 ' + index + '（' + item.path + '，' + item.view.state.doc.lines + ' 行，' + full.length + ' 字符）---', fence, code, fence);
+  });
+  if (writable.length > 8) out.push('…还有 ' + (writable.length - 8) + ' 个编辑器没列出');
+  return out.join('\\n');
+}
+
+const picked = pickEditorView(options.editorIndex);
 if (picked.best) {
   const code = picked.best.view.state.doc.toString();
-  return '作答区（' + picked.best.path + '）读到完整文档（' + picked.best.view.state.doc.lines + ' 行，' + code.length + ' 字符）：\\n' + fence + '\\n' + code + '\\n' + fence;
+  const which = picked.writableCount > 1 ? '，多文件题第 ' + (Number.isInteger(Number(options.editorIndex)) ? Number(options.editorIndex) : '（默认最长）') + ' 个' : '';
+  return '作答区（' + picked.best.path + which + '）读到完整文档（' + picked.best.view.state.doc.lines + ' 行，' + code.length + ' 字符）：\\n' + fence + '\\n' + code + '\\n' + fence;
 }
 if (picked.readOnlyCount > 0) {
   return '页面上只找到 ' + picked.readOnlyCount + ' 个只读编辑器（是题面的样例框，不是作答区），没找到可写的作答区';
@@ -1350,8 +1620,9 @@ return '等了 ' + waitSeconds + ' 秒还没读到能归一化成状态码的判
 /** 读作答区选定的语言，或者把它换成另一个 */
 export const LANGUAGE_SCRIPT = `${HELPERS}
 const current = detectLanguage();
-if (!__args.target) return { language: current };
-const switched = switchLanguage(__args.target);
+const target = String(__args.target || __args.language || '').trim();
+if (!target) return { language: current };
+const switched = switchLanguage(target);
 return { language: detectLanguage(), ...switched };
 `;
 
@@ -1389,8 +1660,8 @@ const text = String(__args.text === undefined ? '' : __args.text);
 const json = __args.json === true;
 if (method !== 'clear' && method !== 'readDoc' && method !== 'rect' && !text) return '没有给 text';
 
-const picked = pickEditorView();
-const element = findEditorElement();
+const picked = pickEditorView(__args.editorIndex);
+const element = picked.best && picked.best.element ? picked.best.element : findEditorElement();
 
 // 统一的收尾：报告用了什么方法、回读比对结果；json 模式返回结构化数据（给写入链路判断用）
 const finish = (how) => {
@@ -1694,6 +1965,25 @@ const readOutput = () => {
   return '';
 };
 
+// 真实考试页会在测试区列出若干「输入 / 期望输出」用例，本来就是只读编辑器；
+// 点 Run Test Case 之前先记下它们，等结果时只认「新出现或内容变了的只读编辑器」，
+// 否则会把整张用例表当成运行结果交给模型（真机 7-2 读回 4 段用例）。
+// 注意：结果页签一开始通常是 display:none 的，里面的只读编辑器也要算进「运行前」，
+// 否则页签一展开就被当成新出现的输出结果（正是英文页单测里 42 的情形）。
+const allReadonlyTexts = () => Array.from(document.querySelectorAll('.cm-content'))
+  .filter((e) => e.getAttribute('aria-readonly') === 'true' || e.getAttribute('contenteditable') === 'false')
+  .map((e) => readFromDom(e).trim())
+  .filter(Boolean);
+const testCaseTexts = () => allReadonlyTexts();
+const testCaseBefore = allReadonlyTexts();
+// 记下运行前「已经可见」的只读编辑器元素；结果判定只认新出现 / 由隐藏变可见的框，
+// 不能因为页面上本来就有可见的用例表就说跑完了。
+const visibleReadonlyElements = () => Array.from(document.querySelectorAll('.cm-content'))
+  .filter((e) => e.getAttribute('aria-readonly') === 'true' || e.getAttribute('contenteditable') === 'false')
+  .filter((e) => !e.closest('[hidden], [style*="display:none"], [style*="display: none"]'));
+const visibleReadonlyBefore = new Set(visibleReadonlyElements());
+const resultBecameVisible = () => visibleReadonlyElements().some((editor) => !visibleReadonlyBefore.has(editor));
+
 // 期望输出单独读一份，方便 AI 对比
 const readExpected = () => {
   for (const node of document.querySelectorAll('span, div, p, label, button')) {
@@ -1725,24 +2015,71 @@ const activateTab = (labels) => {
   return '';
 };
 
-const before = readOutput();
+// 运行前读一次旧结果（可能是上一轮遗留在页面上的），用来区分「新结果」。
+const beforeOutput = readOutput();
+// 结果判定不再用「readOutput() 前后文本不一样」：真实考试页的只读用例表本来就存在，
+// readOutput() 会把它们整份读回来，点运行后永远「有输出」。只认新增/变了的只读编辑器。
 runButton.click();
 await sleepOrAbort(500);
 const resultTab = activateTab(['Running Result', '运行结果', '运行输出']);
 
+// 真机 7-2：PTA 新考试页把「上次测试状态」放在页签下面的状态条里
+//（Last Tested At / Non-zero Exit Code），输出本身可能只是 Test Case 页里的用例表。
+// 判定分两步：先等状态条换成这次的结论，再读结果页签里的文本，
+// 并扣掉运行前就存在的只读框（用例表 / 上次遗留结果都不算）。
+const statusText = () => {
+  for (const node of document.querySelectorAll('span, div, p, label, button')) {
+    if (node.children.length > 0) continue;
+    const text = textOf(node);
+    if (!/Last Tested At|上次测试|Non-zero Exit Code|Compile Error|Accepted|答案正确|编译错误|运行错误/.test(text)) continue;
+    let holder = node.parentElement;
+    for (let depth = 0; holder && depth < 6; depth += 1, holder = holder.parentElement) {
+      const line = textOf(holder);
+      if (line.length > 0 && line.length < 300) return line.replace(/\\s+/g, ' ').trim();
+    }
+  }
+  return '';
+};
+const beforeStatus = statusText();
+const statusReady = () => {
+  const after = statusText();
+  return after.length > 0 && after !== beforeStatus ? after : '';
+};
+const visibleReadonlyText = () => Array.from(document.querySelectorAll('.cm-content'))
+  .filter((e) => e.getAttribute('aria-readonly') === 'true' || e.getAttribute('contenteditable') === 'false')
+  .filter((e) => !e.closest('[hidden], [style*="display:none"], [style*="display: none"]'))
+  .map((e) => readFromDom(e).trim())
+  .filter(Boolean)
+  .join('\\n---\\n');
+const freshResult = () => {
+  const status = statusReady();
+  const visibleNow = resultBecameVisible();
+  const current = visibleReadonlyText() || readOutput();
+  if (!current) return '';
+  // 老页面把结果直接写进 #out 这类容器：运行前是空的，现在有了内容就算本次结果。
+  // 但「用例表本来就可见」不算 visibleNow——只有运行前隐藏、现在显示的结果框才算。
+  const newText = current !== beforeOutput && beforeOutput.length === 0;
+  const runFinished = Boolean(status) || newText;
+  if (!runFinished && !visibleNow) return '';
+  const kept = current.split('\\n---\\n').filter((part) => testCaseBefore.indexOf(part.trim()) < 0);
+  if (kept.length > 0 && (runFinished || kept.join('\\n---\\n').trim() !== beforeOutput.trim())) {
+    return kept.join('\\n---\\n').trim();
+  }
+  return visibleNow ? current : '';
+};
+
 const deadline = Date.now() + waitSeconds * 1000;
-let latest = before;
+let latest = '';
 let changed = false;
 while (Date.now() < deadline) {
   await sleepOrAbort(pollMs);
   if (aborted()) return '已按用户要求停止等待运行结果';
-  const now = readOutput();
-  if (now && now !== before) {
+  const now = freshResult();
+  if (now) {
     latest = now;
     changed = true;
     break;
   }
-  if (now) latest = now;
 }
 
 // 运行结果为空时，编译错误/异常通常落在 Compiler's Log 页签里
@@ -1751,7 +2088,7 @@ if (!changed) {
   const logTab = activateTab(["Compiler's Log", '编译日志', '编译信息']);
   if (logTab) {
     await sleepOrAbort(300);
-    const log = readOutput();
+    const log = freshResult();
     if (log) {
       latest = log;
       changed = true;

@@ -22,6 +22,9 @@ export const ENGINE_CONFIG = Object.freeze({
   lldFlags: Object.freeze(['--export-dynamic']),
   // C 程序：libc + 编译器 builtins，不需要 C++ 那套
   lldLibs: Object.freeze(['-lc', '-lclang_rt.builtins']),
+  // C++ 程序：libc++ 依赖 libc++abi，最后才是 libc 与 builtins
+  lldLibsCpp: Object.freeze(['-lc++', '-lc++abi', '-lc', '-lclang_rt.builtins']),
+  cppIncludeDir: '/include/wasm32-wasip1/noeh/c++/v1',
 });
 
 const ANSI_RE = /\x1b\[[0-9;]*m/g;
@@ -79,18 +82,25 @@ export async function runOnEngine(engine, request) {
   const { api, log } = engine;
   engine.runs += 1;
   const name = `pta${engine.runs}`;
-  const input = `${name}.c`;
+  const lang = String(request.lang || 'c').toLowerCase();
+  const cpp = lang === 'cpp' || lang === 'c++' || lang === 'cxx';
+  const input = `${name}.${cpp ? 'cpp' : 'c'}`;
   const obj = `${name}.o`;
   const wasm = `${name}.wasm`;
   const stdin = typeof request.stdin === 'string' ? request.stdin : '';
   const started = Date.now();
-  const strip = (text) => text.replace(ANSI_RE, '');
+  const strip = (text) => text
+    .replace(ANSI_RE, '')
+    // LLVM 的 wasm 构建对某些 sysroot 条目会打「Assertion failed: IsRegularFileNode」，
+    // 但编译本身是成功的；这些行不能当成编译诊断交给模型
+    .replace(/^Assertion failed: .*$/gm, '')
+    .replace(/\n{3,}/g, '\n\n');
 
   /* ---------- 编译 ---------- */
   if (request.onStage) request.onStage('compile');
   let startLen = log.text.length;
   try {
-    await api.compile({ input, contents: request.code, obj });
+    await api.compile({ input, contents: request.code, obj, lang });
   } catch (exn) {
     // clang 报错：进程以非零码退出（ProcExit），诊断文本已写进日志
     if (typeof exn?.code === 'number' && exn.code !== 0) {
@@ -107,7 +117,7 @@ export async function runOnEngine(engine, request) {
   /* ---------- 链接 ---------- */
   startLen = log.text.length;
   try {
-    await api.link(obj, wasm);
+    await api.link(obj, wasm, { lang });
   } catch {
     const result = emptyResult('link-error', Date.now() - started);
     result.compileOutput = strip(log.text.slice(startLen)).trim();
@@ -167,7 +177,13 @@ export async function runOnEngine(engine, request) {
 export async function checkOnEngine(engine, request) {
   const { api, log } = engine;
   const started = Date.now();
-  const strip = (text) => text.replace(ANSI_RE, '');
+  const strip = (text) => text
+    .replace(ANSI_RE, '')
+    .replace(/^Assertion failed: .*$/gm, '')
+    .replace(/\n{3,}/g, '\n\n');
+  const lang = String(request.lang || 'c').toLowerCase();
+  const cpp = lang === 'cpp' || lang === 'c++' || lang === 'cxx';
+  const checkInput = cpp ? 'check.cpp' : 'check.c';
 
   // 上一次的运行把日志写满后 hostWrite 就不再追加，切片会永远是空的：
   // 检查路径自己回收，别让一次长会话把诊断饿死。
@@ -178,7 +194,7 @@ export async function checkOnEngine(engine, request) {
 
   const startLen = log.text.length;
   try {
-    await api.compileOnly({ input: 'check.c', contents: request.code });
+    await api.compileOnly({ input: checkInput, contents: request.code, lang, prelude: request.prelude === true });
   } catch (exn) {
     // clang 报错：进程非零退出，诊断文本已经写进日志
     if (typeof exn?.code === 'number' && exn.code !== 0) {

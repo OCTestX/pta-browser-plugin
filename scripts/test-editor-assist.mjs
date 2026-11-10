@@ -3,8 +3,9 @@
 // 用法：node scripts/test-editor-assist.mjs
 import { formatCode, formatSummary, stripLiteralsAndComments } from '../src/shared/code-format.ts';
 import { bracketDepths, RAINBOW_COLORS } from '../src/shared/code-brackets.ts';
-import { offsetOfPosition, parseClangDiagnostics } from '../src/shared/code-diagnostics.ts';
+import { offsetOfPosition, parseClangDiagnostics, isFragmentContextDiagnostic } from '../src/shared/code-diagnostics.ts';
 import { C_LIBRARY_DOCS, lookupCFunctionDoc } from '../src/shared/c-library-docs.ts';
+import { CPP_LIBRARY_DOCS } from '../src/shared/cpp-library-docs.ts';
 
 const check = (label, ok, detail) => {
   if (!ok) {
@@ -189,6 +190,20 @@ check(
   undeclared,
 );
 
+// 代码填空片段（type/6）依赖题面/裁判提供的类型、常量、宏；独立编译的「未声明」
+// 是假报错，不能画红波浪线。真正的语法错误仍要保留。
+check(
+  '片段模式识别缺题面上下文的语义错误',
+  isFragmentContextDiagnostic("unknown type name 'ArrNode'") &&
+    isFragmentContextDiagnostic("use of undeclared identifier 'kMaxSize'") &&
+    isFragmentContextDiagnostic("no member named 'data_' in 'ArrNode'"),
+);
+check(
+  '片段模式不放过真正的语法错误',
+  !isFragmentContextDiagnostic("expected ';' after expression") &&
+    !isFragmentContextDiagnostic('invalid operands to binary expression'),
+);
+
 // 逐字符算过字节偏移：
 //   'int a; /*' 是 9 字节（字符下标 0..8），'中' 占 3 字节 → 9..11，
 //   后面 '*' 12、'/' 13、' ' 14、'i' 15、'n' 16、't' 17、' ' 18、'b' 19。
@@ -229,6 +244,15 @@ for (const name of [
   'memcpy', 'memset', 'sqrt', 'pow', 'fabs', 'qsort',
 ]) {
   check(`标准库注释表包含 ${name}`, Boolean(C_LIBRARY_DOCS[name]), Object.keys(C_LIBRARY_DOCS).length);
+}
+
+// C++ 标准库常用名字：悬停时查的是同一张表（background 合并后一起下发）
+const incompleteCpp = Object.entries(CPP_LIBRARY_DOCS)
+  .filter(([, doc]) => !doc.signature?.trim() || !doc.summary?.trim())
+  .map(([name]) => name);
+check('C++ 注释表每一条都有非空 signature 和 summary', incompleteCpp.length === 0, incompleteCpp);
+for (const name of ['vector', 'string', 'sort', 'map', 'priority_queue', 'push_back', 'cin', 'cout']) {
+  check(`C++ 注释表包含 ${name}`, Boolean(CPP_LIBRARY_DOCS[name]), Object.keys(CPP_LIBRARY_DOCS).length);
 }
 
 console.log('\n编辑器增强的共享逻辑通过。');

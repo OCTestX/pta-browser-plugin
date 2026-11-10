@@ -13,6 +13,7 @@
 //      { id, type: 'done', result }   结构化结果（含编译错误 / 运行结果 / 引擎错误）
 
 import { createCEngine, runOnEngine, checkOnEngine, MAX_RUNS_PER_ENGINE } from './engine-core.js';
+import { makeStdinReader } from './worker-utils.js';
 
 let engine = null;
 let enginePromise = null;
@@ -73,12 +74,8 @@ async function runPython({ id, code, stdin }) {
   try {
     const py = await getPyodide();
 
-    // Pyodide 的 stdin 要按行喂：input() 一次取一行
-    const lines = (stdin || '').split('\n');
-    let lineIndex = 0;
-    py.setStdin({
-      stdin: () => (lineIndex < lines.length ? `${lines[lineIndex++]}\n` : ''),
-    });
+    // Pyodide 的 stdin 要按行喂：input() 一次取一行；耗尽后必须返回 null 表示 EOF
+    py.setStdin({ stdin: makeStdinReader(stdin) });
 
     const outChunks = [];
     const errChunks = [];
@@ -134,7 +131,7 @@ async function handle(ev) {
       } });
       return;
     }
-    const checked = await checkOnEngine(checkEngine, { code });
+    const checked = await checkOnEngine(checkEngine, { code, lang, prelude: ev.data?.prelude === true });
     if (checked.stage === 'engine-error') engine = null; // 下次重建
     postMessage({ id, type: 'done', result: checked });
     return;
@@ -153,6 +150,7 @@ async function handle(ev) {
 
   const result = await runOnEngine(current, {
     code,
+    lang,
     stdin: typeof stdin === 'string' ? stdin : '',
     onStage: (stage) => postMessage({ id, type: 'stage', stage }),
   });

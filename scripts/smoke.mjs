@@ -578,6 +578,30 @@ check('write_document 的结果里带上文件名与字数', writeResponse.resul
 check('write_document 缺 content 时返回失败', (await tools.request({ type: 'tool/run', name: 'write_document', args: { filename: 'a.md' } })).ok === false);
 check('未知工具返回失败', (await tools.request({ type: 'tool/run', name: 'nope', args: {} })).ok === false);
 
+// 多文件题（type/9）的 zip 打包：不引外部库，直接用浏览器 Blob 生成
+tools.window.HTMLAnchorElement.prototype.click = function click() { downloads.push(this.download); };
+const zipResponse = await tools.request({
+  type: 'tool/run',
+  name: 'write_document',
+  args: {
+    filename: 'answer.zip',
+    files: { 'src/a.py': 'print(1)', 'b.py': 'print(2)', '../escape.py': 'bad' },
+  },
+});
+const zipToolResponse = await tools.request({
+  type: 'tool/run',
+  name: 'write_zip',
+  args: {
+    filename: 'answer2.zip',
+    files: { 'src/a.py': 'print(1)', 'src/b.py': 'print(2)', '../escape.py': 'bad' },
+  },
+});
+tools.window.HTMLAnchorElement.prototype.click = originalClick;
+check('write_document 的 files 会打成 zip 下载', zipResponse.ok && downloads.at(-2) === 'answer.zip', zipResponse);
+check('write_zip 是独立工具，直接生成 zip', zipToolResponse.ok && downloads.at(-1) === 'answer2.zip', zipToolResponse);
+check('zip 结果里说明文件数量与上传入口', zipToolResponse.result.includes('2 个文件') && zipToolResponse.result.includes('Upload Answer Zip'), zipToolResponse);
+check('write_zip 缺 files 时返回失败', (await tools.request({ type: 'tool/run', name: 'write_zip', args: { filename: 'a.zip' } })).ok === false);
+
 /* ---------- 场景五：模拟键盘输入 ---------- */
 
 const keyboard = boot({ hasApiKey: true });

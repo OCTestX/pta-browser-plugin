@@ -71,7 +71,7 @@ export type AgentEvent =
   | { kind: 'hello'; version: number; language: string }
   | { kind: 'editor-lost' }
   /** 正文变了。content script 据此算彩虹括号 / 触发编译检查（已防抖） */
-  | { kind: 'doc'; text: string; language: string; check?: boolean }
+  | { kind: 'doc'; text: string; language: string; check?: boolean; fragment?: boolean }
   /** 用户点了「整理代码」 */
   | { kind: 'format-request'; text: string; language: string };
 

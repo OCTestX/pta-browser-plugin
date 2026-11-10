@@ -6,10 +6,11 @@ import {
   isToolName,
   parseToolArguments,
   truncate,
+  TOOL_RESULT_LIMITS,
 } from '../shared/tools';
 import { abortable, isAbortError, throwIfAborted } from '../shared/abort';
 import type { ApiMessage } from '../shared/types';
-import { compileAndRun, compareOutput, formatCompileResult, type CompileResult } from './compile';
+import { compileAndRun, compileAndRunCpp, checkCode, compareOutput, formatCompileResult, type CompileResult } from './compile';
 import { compileAndRunJs } from './compile';
 import { compileAndRunPython } from './compile';
 import { ext } from '../shared/browser';
@@ -20,6 +21,7 @@ import {
   CLOSE_DIALOGS_SCRIPT,
   LANGUAGE_SCRIPT,
   NEXT_PROBLEM_SCRIPT,
+  LIST_PROBLEMS_SCRIPT,
   READ_EDITOR_SCRIPT,
   READ_JUDGE_SCRIPT,
   READ_PROBLEM_SCRIPT,
@@ -30,6 +32,8 @@ import {
 } from './pta-scripts';
 import { describeTypist, runTypist } from './typist';
 import { storeExplanation } from './explain-pages';
+import { batchStats, batchSummary, recordVerdict, resetBatch, setCurrentProblem } from './batch-progress';
+import { compactConversation } from '../shared/context-window';
 
 const DEFAULT_PER_CHAR_DELAY_MS = 8;
 /**
@@ -181,6 +185,7 @@ export async function runAgent(options: RunAgentOptions): Promise<void> {
   }
   if (fuckMode) {
     // 面板上给个明确的横幅：这个模式会自己往下做，用户想插手就按「停止」
+    resetBatch(tabId);
     events.onNotice('赶题模式开始：直接做题、直接提交，做完自动切到下一题。按「停止」可以随时打断。');
   }
   // 一轮对话往往要多次请求模型，用量累加起来才是这一轮真实花掉的 token
@@ -201,6 +206,8 @@ export async function runAgent(options: RunAgentOptions): Promise<void> {
   for (let round = 0; round < maxRounds; round += 1) {
     // 用户随时可以按「停止」：上一轮工具刚收工还没发下一次请求时也要立刻退出
     throwIfAborted(signal);
+    // 赶题模式一跑几十题，旧工具结果会把上下文撑爆；只保留系统提示 + 最近一段
+    compactConversation(conversation);
     const { content, toolCalls, usage: roundUsage } = await streamChat({
       apiKey: settings.apiKey,
       baseURL: settings.baseURL,
@@ -286,6 +293,7 @@ export async function runAgent(options: RunAgentOptions): Promise<void> {
             signal,
             runPageTool: events.runPageTool,
             askUser: events.askUser,
+            onBatchNotice: fuckMode ? events.onNotice : undefined,
           });
         } catch (error) {
           // 工具跑到一半被停：先给面板一个收尾（卡片不会一直转），再按中止退出这一轮
@@ -351,7 +359,7 @@ export async function runAgent(options: RunAgentOptions): Promise<void> {
       conversation.push({
         role: 'tool',
         tool_call_id: call.id,
-        content: truncate(outcome.output),
+        content: truncate(outcome.output, TOOL_RESULT_LIMITS[toolName as keyof typeof TOOL_RESULT_LIMITS]),
       });
     }
   }
@@ -369,6 +377,8 @@ const PTA_SCRIPTS: Record<string, string> = {
   read_pta_compile_result: READ_PTA_COMPILE_RESULT_SCRIPT,
   simulate_pta_run: SIMULATE_PTA_RUN_SCRIPT,
   next_problem: NEXT_PROBLEM_SCRIPT,
+  list_problems: LIST_PROBLEMS_SCRIPT,
+  set_language: LANGUAGE_SCRIPT,
 };
 
 export interface ToolContext {
@@ -378,6 +388,8 @@ export interface ToolContext {
   signal: AbortSignal;
   runPageTool: (name: string, args: Record<string, unknown>) => Promise<ToolOutcome>;
   askUser: (callId: string, question: string, options: string[]) => Promise<string>;
+  /** 赶题模式里把进度推给面板（横幅） */
+  onBatchNotice?: (text: string) => void;
 }
 
 /**
@@ -392,7 +404,13 @@ async function runPtaScript(
   const { tabId, signal } = context;
   // 这两条会轮询到出结论为止，页面里的等待时间必须比页面超时留得久
   // next_problem 也要等页面换题（切题最多等 15 秒），所以同样得留够时间
-  const defaults: Record<string, number> = { submit_answer: 20, read_judge_result: 60, next_problem: 20 };
+  // simulate_pta_run 的页面脚本默认等 60 秒；注入层默认只有 15 秒，不在这里放宽会被硬砍
+  const defaults: Record<string, number> = {
+    submit_answer: 20,
+    read_judge_result: 60,
+    next_problem: 20,
+    simulate_pta_run: 60,
+  };
   const fallback = defaults[name];
   const asked = Number(args.waitSeconds);
   const waitSeconds = fallback === undefined
@@ -431,15 +449,27 @@ async function forcePtaRunEnabled(): Promise<boolean> {
  * 编译不过时结果里带的是 PTA「编译器输出」里的编译错误。
  * 区别只有一个：代码得先写进作答区（PTA 只能跑编辑器里的那份）。
  */
-async function runOnPta(code: string, stdin: string, context: ToolContext): Promise<ToolOutcome> {
+async function runOnPta(
+  code: string,
+  stdin: string,
+  context: ToolContext,
+  note = '（已按设置改用 PTA 自己的编译器与运行环境，不是插件内置的编译器）',
+  language?: string,
+): Promise<ToolOutcome> {
   const { tabId, signal } = context;
+  if (language) {
+    const switched = await injectScript(tabId, LANGUAGE_SCRIPT, { target: language }, undefined, signal);
+    if (!switched.ok) {
+      return { output: `没能把作答语言切到 ${language}：${switched.output}`, isError: true };
+    }
+  }
   const written = await abortable(writeEditorCode({ tabId, code, signal }), signal);
   if (written.isError) {
-    return { output: `（已按设置改用 PTA 的运行环境）但代码没能写进作答区：${written.output}`, isError: true };
+    return { output: `（改用 PTA 的运行环境）但代码没能写进作答区：${written.output}`, isError: true };
   }
   const outcome = await runPtaScript('simulate_pta_run', { stdin }, context);
   return {
-    output: `（已按设置改用 PTA 自己的编译器与运行环境，不是插件内置的编译器）\n${outcome.output}`,
+    output: `${note}\n${outcome.output}`,
     isError: outcome.isError,
   };
 }
@@ -484,28 +514,47 @@ async function writeChoiceAnswers(
   }
 }
 
+interface NextProblemResult {
+  ok?: boolean;
+  title?: string;
+  url?: string;
+  index?: number;
+  total?: number;
+  remaining?: number;
+  reason?: string;
+  type?: string;
+  switchedType?: boolean;
+  ready?: boolean;
+}
+
+function parseNextProblem(raw: string): NextProblemResult | null {
+  try {
+    return JSON.parse(raw) as NextProblemResult;
+  } catch {
+    return null;
+  }
+}
+
+/** 从题目地址里取题目 ID：换题、读题两条路都用同一个 key 记账 */
+function problemKeyFrom(url: string): string {
+  const match = String(url || '').match(/problemSetProblemId=([^&#]+)/);
+  if (!match) return String(url || '');
+  try {
+    return decodeURIComponent(match[1]);
+  } catch {
+    return match[1];
+  }
+}
+
 /**
  * 把 next_problem 脚本的 JSON 结果说成人话。
  *
  * 模型靠这句话决定还要不要继续做下一题，所以要把「还剩几题」讲清楚。
+ * 走到题单末尾时把本轮统计也带上，模型不用自己数做过几题。
  */
-function describeNextProblem(raw: string): string {
-  let parsed: {
-    ok?: boolean;
-    title?: string;
-    url?: string;
-    index?: number;
-    total?: number;
-    remaining?: number;
-    reason?: string;
-    type?: string;
-    switchedType?: boolean;
-  };
-  try {
-    parsed = JSON.parse(raw) as typeof parsed;
-  } catch {
-    return raw;
-  }
+function describeNextProblem(raw: string, summary = ''): string {
+  const parsed = parseNextProblem(raw);
+  if (!parsed) return raw;
   if (parsed.ok) {
     const position =
       typeof parsed.index === 'number' && typeof parsed.total === 'number'
@@ -515,7 +564,25 @@ function describeNextProblem(raw: string): string {
     const switched = parsed.switchedType ? '（已切换题型）' : '';
     return `已切到下一题${switched}：${parsed.title ?? ''}${position}${left}。地址：${parsed.url ?? ''}`;
   }
-  return `没有下一题了：${parsed.reason ?? '题目列表已经走完'}`;
+  const tail = summary ? `\n\n${summary}` : '';
+  return `没有下一题了：${parsed.reason ?? '题目列表已经走完'}${tail}`;
+}
+
+/** 读题工具的输出里带上标题/ID/地址，赶题统计靠它知道「现在在做哪道题」 */
+function rememberProblemFromRead(tabId: number, output: string): void {
+  const id = /(?:^|\n)题目 ID：(\S+)/.exec(output)?.[1];
+  const url = /(?:^|\n)地址：(\S+)/.exec(output)?.[1];
+  const title = /(?:^|\n)题目：(.+)/.exec(output)?.[1]?.trim();
+  const type = (String(url || '').match(/\/problems\/type\/(\d+)/) || [])[1] || '';
+  const key = id || problemKeyFrom(url || '') || title || '';
+  if (key) setCurrentProblem(tabId, { key, title, type });
+}
+
+/** 从判题结果里取结论；同一段输出里可能有多个，取最后一个 */
+function rememberVerdictFromJudge(tabId: number, output: string): void {
+  const matches = [...String(output).matchAll(/判题结论[：:]\s*([A-Z]{2,4})/g)];
+  const verdict = matches.at(-1)?.[1];
+  if (verdict) recordVerdict(tabId, verdict);
 }
 
 /** 单次执行一个工具（agent loop 用它，设置页的模拟输入测试也用它，保证两条路完全一致） */
@@ -591,7 +658,7 @@ export async function runTool(
     return { output: result.output, isError: !result.ok };
   }
 
-  if (name === 'compile_and_run_c' || name === 'compile_and_run_js' || name === 'compile_and_run_python') {
+  if (name === 'compile_and_run_c' || name === 'compile_and_run_cpp' || name === 'compile_and_run_js' || name === 'compile_and_run_python') {
     const code = typeof args.code === 'string' ? args.code : '';
     if (!code.trim()) return { output: '缺少 code 参数', isError: true };
     const stdin = typeof args.stdin === 'string' ? args.stdin : '';
@@ -604,9 +671,11 @@ export async function runTool(
       const result = await abortable(
         name === 'compile_and_run_c'
           ? compileAndRun({ code, stdin, signal })
-          : name === 'compile_and_run_js'
-            ? compileAndRunJs({ code, stdin, signal })
-            : compileAndRunPython({ code, stdin, signal }),
+          : name === 'compile_and_run_cpp'
+            ? compileAndRunCpp({ code, stdin, signal })
+            : name === 'compile_and_run_js'
+              ? compileAndRunJs({ code, stdin, signal })
+              : compileAndRunPython({ code, stdin, signal }),
         signal,
       );
       // 说清用的是哪个运行时：模型才知道这个结果能不能代表 PTA 上的表现
@@ -642,8 +711,12 @@ export async function runTool(
       };
     }
 
+    // 多文件题：模型用 editorIndex 指定写第几个可写编辑器；不传就按默认（最长的那个）
+    const wantedIndex = Number(args.editorIndex);
+    const editorIndex = Number.isInteger(wantedIndex) && wantedIndex >= 0 ? wantedIndex : undefined;
+
     // 先留一份写入前的原文：写入成功后用它自动合成 diff 卡片（用户一定看得到改动）
-    const beforeCode = await readEditorCode(tabId, signal);
+    const beforeCode = await readEditorCode(tabId, signal, editorIndex);
 
     // 作答区选的语言要是 Python 2，先切成 Python 3：
     // 插件内置的 Python 运行器是 Python 3，模型写的也是 Python 3 的代码，
@@ -656,6 +729,7 @@ export async function runTool(
         tabId,
         code,
         signal,
+        editorIndex,
       }),
       signal,
     );
@@ -672,7 +746,7 @@ export async function runTool(
 
     // 自动检查：回读比对已在链路里做过，这里补样例编译比对与提交按钮状态
     if (args.verify !== false) {
-      notes.push(await verifyWrittenCode(injectScript, context, code));
+      notes.push(await verifyWrittenCode(injectScript, context, code, pageType?.id ?? 0));
     }
 
     // 自动 diff：写入前后的原文都拿到了才算（读不到就不硬造一张残缺的 diff）
@@ -696,15 +770,62 @@ export async function runTool(
     };
   }
 
+  if (name === 'set_language') {
+    const outcome = await runPtaScript('set_language', args, context);
+    try {
+      const info = JSON.parse(outcome.output) as { language?: string; ok?: boolean; detail?: string };
+      const wants = typeof args.language === 'string' && args.language.trim().length > 0;
+      if (!wants) return { output: `当前作答语言：${info.language || '未知'}`, isError: false };
+      if (info.ok === true) {
+        return { output: `已把作答语言切到「${info.language || ''}」${info.detail ? `：${info.detail}` : ''}`, isError: false };
+      }
+      return {
+        output: `切换失败：${info.detail || '题组不允许切到这个语言'}（当前 ${info.language || '未知'}）`,
+        isError: true,
+      };
+    } catch {
+      return outcome;
+    }
+  }
+
+  if (name === 'simulate_pta_run' && typeof args.code === 'string' && args.code.trim()) {
+    // 语言没有本地运行器时（Java / Go / C# …）一条命令搞定：写进作答区 → 在 PTA 上跑
+    return runOnPta(
+      args.code,
+      typeof args.stdin === 'string' ? args.stdin : '',
+      context,
+      '（代码已先写进作答区，再在 PTA 自己的环境里运行）',
+      typeof args.language === 'string' && args.language.trim() ? args.language : undefined,
+    );
+  }
+
   // 赶题模式：切到题目列表里的下一题（脚本返回 JSON，这里说成人话）
   if (name === 'next_problem') {
     const outcome = await runPtaScript('next_problem', args, context);
-    return { output: describeNextProblem(outcome.output), isError: outcome.isError };
+    const parsed = parseNextProblem(outcome.output);
+    if (parsed?.ok) {
+      const key = problemKeyFrom(parsed.url ?? '') || parsed.title || '';
+      if (key) setCurrentProblem(tabId, { key, title: parsed.title, type: parsed.type });
+    }
+    const summary = parsed && parsed.ok === false ? batchSummary(tabId) : '';
+    if (parsed?.ok && context.onBatchNotice) {
+      const stats = batchStats(tabId);
+      if (stats) {
+        const left = typeof parsed.remaining === 'number' ? `，还剩 ${parsed.remaining} 题` : '';
+        context.onBatchNotice(`赶题进度：已做 ${stats.attempted} 题、AC ${stats.accepted} 题${left}`);
+      }
+    }
+    return { output: describeNextProblem(outcome.output, summary), isError: outcome.isError };
   }
 
   // PTA 相关动作都在页面主世界跑（编辑器实例、判题弹窗都是页面自己的东西）
   if (PTA_SCRIPTS[name]) {
-    return runPtaScript(name, args, context);
+    const outcome = await runPtaScript(name, args, context);
+    if (name === 'read_problem' && !outcome.isError) rememberProblemFromRead(tabId, outcome.output);
+    if ((name === 'submit_answer' || name === 'read_judge_result') && !outcome.isError) {
+      rememberVerdictFromJudge(tabId, outcome.output);
+    }
+    return outcome;
   }
 
   if (name === 'refresh_page') {
@@ -833,31 +954,97 @@ function langLabel(language: string): string {
     case 'python2':
     case 'python3': return 'Python';
     case 'js': return 'JavaScript';
+    case 'cpp':
+    case 'c++':
+    case 'cxx': return 'C++';
     case 'c': return 'C';
+    case 'java': return 'Java';
+    case 'go': return 'Go';
+    case 'rust': return 'Rust';
+    case 'csharp': return 'C#';
     default: return language || '未知语言';
   }
 }
 
 /** 页面上没认得出语言时，按代码长相猜一个（宁可不猜，也不要把 Python 当 C 报编译失败） */
 function guessLanguage(code: string): string {
+  // C++ 要先判：#include <iostream>、std::、using namespace std 都是 C 里不可能出现的
+  if (
+    /^\s*#include\s*[<"](iostream|string|vector|algorithm|map|set|queue|stack|deque|list|utility|unordered_map|unordered_set|bitset|numeric|functional|cstdio|cstring|cmath|cstdlib|memory)/m.test(code)
+    || /\bstd::|\busing\s+namespace\s+std\b|\bcout\s*<<|\bcin\s*>>/.test(code)
+  ) return 'cpp';
   if (/^\s*(#include|int\s+main\s*\()/m.test(code)) return 'c';
   if (/^\s*(def |import |print\s*\(|class |if\s+__name__)/m.test(code)) return 'python';
   if (/^\s*(function |const |let |var |console\.)/m.test(code)) return 'js';
   return 'c';
 }
 
-/** 按语言跑一遍代码，返回统一的编译结果 */
+/**
+ * 按语言跑一遍代码，返回统一的编译结果；没有内置运行器时返回 null。
+ *
+ * 这里必须把「本地跑不了」和「跑失败」分开：Java / Go 以前会被默认当成 C 去编，
+ * 于是好好的 Java 代码被报成「C 编译失败」，模型会照着假错误改坏代码。
+ */
 async function runWithLanguage(
   language: string,
   code: string,
   stdin: string,
   signal: AbortSignal,
-): Promise<CompileResult> {
-  if (language === 'python' || language === 'python2' || language === 'python3') {
+): Promise<CompileResult | null> {
+  const lang = String(language || '').toLowerCase();
+  if (lang === 'python' || lang === 'python2' || lang === 'python3') {
     return compileAndRunPython({ code, stdin, signal });
   }
-  if (language === 'js') return compileAndRunJs({ code, stdin, signal });
-  return compileAndRun({ code, stdin, signal });
+  if (lang === 'js' || lang === 'javascript' || lang === 'node') {
+    return compileAndRunJs({ code, stdin, signal });
+  }
+  if (lang === 'cpp' || lang === 'c++' || lang === 'cxx' || lang === 'clang++') {
+    return compileAndRunCpp({ code, stdin, signal });
+  }
+  if (lang === 'c' || lang === 'gcc' || lang === 'clang' || lang === 'c语言') {
+    return compileAndRun({ code, stdin, signal });
+  }
+  return null;
+}
+
+/**
+ * 用同一份代码依次跑前几组样例。
+ *
+ * 只跑第一组时，很多「首样例对、边界错」的题要等提交后才暴露；
+ * 这里最多跑三组（输入输出各自不超过 4000 字符），编译错误或第一处不一致就停。
+ */
+async function runSamplesWithLanguage(
+  language: string,
+  code: string,
+  samples: { input: string; output: string }[],
+  signal: AbortSignal,
+): Promise<string[]> {
+  const checks: string[] = [];
+  for (let index = 0; index < samples.length; index += 1) {
+    const sample = samples[index];
+    const compiled = await runWithLanguage(language, code, sample.input, signal);
+    const label = `${langLabel(language)}`;
+    if (!compiled) {
+      checks.push(`自动检查：${label}没有内置运行器，跳过本地编译比对（请用 simulate_pta_run 在 PTA 上验证样例）`);
+      return checks;
+    }
+    if (compiled.compileOutput) {
+      checks.push(`自动检查：${label}编译失败——${compiled.compileOutput.split('\n')[0]}`);
+      return checks;
+    }
+    if (!compiled.ok) {
+      checks.push(`自动检查：样例 ${index + 1} ${label}运行返回 ${compiled.statusText}`);
+      return checks;
+    }
+    const diff = compareOutput(sample.output, compiled.stdout);
+    if (diff.same) {
+      checks.push(`自动检查：样例 ${index + 1}（${label}，输入 ${JSON.stringify(sample.input.trim())}）输出一致`);
+      continue;
+    }
+    checks.push(`自动检查：样例 ${index + 1} 输出不一致——${diff.detail}`);
+    return checks;
+  }
+  return checks;
 }
 
 /**
@@ -871,10 +1058,52 @@ async function verifyWrittenCode(
   inject: typeof injectScript,
   context: ToolContext,
   code: unknown,
+  problemTypeId: number,
 ): Promise<string> {
   const { tabId, signal } = context;
   const source = typeof code === 'string' ? code : '';
   const checks: string[] = [];
+
+  // 代码填空 / 多文件题不能按「一份完整程序」去跑样例：
+  //   · type 6 的作答区只是裁判程序的一段，单独编译会把 printf 报成未声明、也没有 main；
+  //   · type 9 要所有文件一起编译，只给一份代码必然链接失败。
+  // 这里只做带 prelude 的语法检查，运行验证交给 simulate_pta_run。
+  if (problemTypeId === 6 || problemTypeId === 9) {
+    if (problemTypeId === 6) {
+      try {
+        // 语法检查要按页面选的语言走（C / C++），不能瞎猜
+        let language = '';
+        try {
+          const raw = await inject(tabId, READ_PROBLEM_SCRIPT, { samplesOnly: true }, undefined, signal);
+          // 这里是页面脚本返回的 JSON，形状由 READ_PROBLEM_SCRIPT 的 samplesOnly 分支固定
+          const parsedLanguage = JSON.parse(raw.output) as { language?: string };
+          language = parsedLanguage.language ?? '';
+        } catch {
+          language = '';
+        }
+        const checked = await abortable(checkCode(source, language, signal, true), signal);
+        checks.push(
+          checked.errorCount > 0
+            ? `自动语法检查：${checked.errorCount} 个错误——${checked.diagnostics[0]?.message ?? ''}`
+            : `自动语法检查：${checked.note || '没有语法错误'}`,
+        );
+      } catch (error) {
+        if (isAbortError(error, signal)) throw error;
+        checks.push(`自动语法检查没做成（${error instanceof Error ? error.message : String(error)}）`);
+      }
+    } else {
+      checks.push('自动检查：多文件题不本地编译比对（需要所有文件一起编译），请用 simulate_pta_run 在 PTA 上验证');
+    }
+    // 提交按钮状态仍然要查
+    try {
+      const ready = await inject(tabId, CHECK_READY_SCRIPT, undefined, undefined, signal);
+      checks.push(`页面状态：${ready.output}`);
+    } catch (error) {
+      if (isAbortError(error, signal)) throw error;
+      checks.push(`页面状态没读到（${error instanceof Error ? error.message : String(error)}）`);
+    }
+    return checks.join('；');
+  }
 
   // 1) 样例编译并比对输出（用第一组样例，避免每次都多跑一遍）
   try {
@@ -883,12 +1112,15 @@ async function verifyWrittenCode(
       samples?: { input: string; output: string }[];
       language?: string;
     };
-    const sample = parsed.samples?.[0];
+    const samples = (parsed.samples ?? []).filter(
+      (item) => item.input.length <= 4000 && item.output.length <= 4000,
+    );
+    const sample = samples[0];
     const language = parsed.language ?? '';
     if (!sample) {
       checks.push('自动检查：题面里没识别出样例，跳过编译比对');
     } else if (await forcePtaRunEnabled()) {
-      // 强制用 PTA 运行环境：样例也交给 PTA 跑（PTA 的输出是整段文字，只能做「包含」判断）
+      // 强制用 PTA 运行环境：只跑第一组（每次都要真的点一次「运行测试」，很慢）
       const outcome = await runPtaScript('simulate_pta_run', { stdin: sample.input }, context);
       const expected = sample.output.trim();
       const hit = expected.length > 0 && outcome.output.includes(expected);
@@ -900,19 +1132,11 @@ async function verifyWrittenCode(
     } else {
       // 按题目语言挑编译器；语言认不出来时按代码长相猜一下
       const lang = language || guessLanguage(source);
-      const compiled = await abortable(runWithLanguage(lang, source, sample.input, signal), signal);
-      if (compiled.compileOutput) {
-        checks.push(`自动检查：${langLabel(lang)}编译失败——${compiled.compileOutput.split('\n')[0]}`);
-      } else if (!compiled.ok) {
-        checks.push(`自动检查：${langLabel(lang)}运行返回 ${compiled.statusText}`);
-      } else {
-        const diff = compareOutput(sample.output, compiled.stdout);
-        checks.push(
-          diff.same
-            ? `自动检查：样例 1（${langLabel(lang)}，输入 ${JSON.stringify(sample.input.trim())}）输出一致`
-            : `自动检查：样例 1 输出不一致——${diff.detail}`,
-        );
-      }
+      const compiledList = await abortable(
+        runSamplesWithLanguage(lang, source, samples.slice(0, 3), signal),
+        signal,
+      );
+      checks.push(...compiledList);
     }
   } catch (error) {
     if (isAbortError(error, signal)) throw error;

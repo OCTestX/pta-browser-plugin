@@ -73,6 +73,33 @@ function msToSec(start, end) {
   return ((end - start) / 1000).toFixed(2);
 }
 
+/** 引擎只区分两种前端：C 与 C++（'cpp' / 'c++' / 'cxx' 都算 C++） */
+function isCppLanguage(lang) {
+  const value = String(lang || '').trim().toLowerCase();
+  return value === 'cpp' || value === 'c++' || value === 'cxx';
+}
+
+// GCC 的 <bits/stdc++.h> 相当于把常用标准库头一次全包进来。
+// 这里只收 libc++ 有、且不依赖线程 / 异常运行时的头；wasm 环境里 thread/future 会编不过。
+const CPP_ALL_HEADER = [
+  '#pragma once',
+  '#include <algorithm>', '#include <array>', '#include <bitset>', '#include <cassert>',
+  '#include <cctype>', '#include <cerrno>', '#include <cfloat>', '#include <cinttypes>',
+  '#include <climits>', '#include <clocale>', '#include <cmath>', '#include <complex>',
+  '#include <cstdarg>', '#include <cstddef>', '#include <cstdint>', '#include <cstdio>',
+  '#include <cstdlib>', '#include <cstring>', '#include <ctime>', '#include <cwchar>',
+  '#include <cwctype>', '#include <deque>', '#include <exception>', '#include <functional>',
+  '#include <iomanip>', '#include <ios>', '#include <iosfwd>', '#include <iostream>',
+  '#include <istream>', '#include <iterator>', '#include <limits>', '#include <list>',
+  '#include <map>', '#include <memory>', '#include <new>', '#include <numeric>',
+  '#include <ostream>', '#include <queue>', '#include <random>', '#include <regex>',
+  '#include <set>', '#include <sstream>', '#include <stack>', '#include <stdexcept>',
+  '#include <string>', '#include <string_view>', '#include <tuple>', '#include <type_traits>',
+  '#include <typeindex>', '#include <typeinfo>', '#include <unordered_map>',
+  '#include <unordered_set>', '#include <utility>', '#include <valarray>',
+  '#include <variant>', '#include <vector>',
+].join('\n') + '\n';
+
 const ESUCCESS = 0;
 
 class Memory {
@@ -798,7 +825,10 @@ class Tar {
         }
         break;
       case '5':
-        memfs.addDirectory(entry.filename);
+        // 与文件一样跳过 macOS 打包混进的 AppleDouble 目录（._ 前缀）
+        if (!entry.filename.split('/').filter(Boolean).pop().startsWith('._')) {
+          memfs.addDirectory(entry.filename);
+        }
         break;
       }
     }
@@ -816,21 +846,35 @@ class API {
     this.sysrootFilename = options.sysroot || 'sysroot.tar';
     this.showTiming = options.showTiming || false;
 
-    // C 模式：C 头文件在 sysroot 的 include/wasm32-wasip1 下，
-    // clang 自带的 intrinsics 头在 lib/clang/<版本>/include 下
+    // C 头文件在 sysroot 的 include/wasm32-wasip1 下，
+    // clang 自带的 intrinsics 头在 lib/clang/<版本>/include 下。
+    this.clangResourceInclude = options.clangResourceInclude || '/lib/clang/22/include';
+    const commonTail = [
+      '-internal-isystem', '/include/wasm32-wasip1',
+      '-internal-isystem', this.clangResourceInclude,
+      '-ferror-limit', '19',
+    ];
     this.clangCommonArgs = [
       '-disable-free',
       '-isysroot', '/',
-      '-internal-isystem', '/include/wasm32-wasip1',
+      ...commonTail,
+    ];
+    // C++ 模式：libc++ 的包装头（stddef.h / cstdlib…）必须排在 C 头文件之前，
+    // 否则 clang 会先找到 sysroot 里的 C 头，libc++ 的 includes 全部报「找不到自己的头」。
+    this.clangCommonArgsCpp = [
+      '-disable-free',
+      '-isysroot', '/',
       '-internal-isystem',
-      options.clangResourceInclude || '/lib/clang/22/include',
-      '-ferror-limit', '19',
+      options.cppIncludeDir || '/include/wasm32-wasip1/noeh/c++/v1',
+      ...commonTail,
     ];
 
     // Link-time configuration.
     this.lldFlags = options.lldFlags || ['--export-dynamic'];
     this.lldLibdir = options.lldLibdir || 'lib/wasm32-wasip1';
     this.lldLibs = options.lldLibs || ['-lc'];
+    // C++ 需要 libc++ / libc++abi / libc / builtins，顺序不能反
+    this.lldLibsCpp = options.lldLibsCpp || ['-lc++', '-lc++abi', '-lc', '-lclang_rt.builtins'];
 
     this.memfs = new MemFS({
       compileStreaming : this.compileStreaming,
@@ -838,7 +882,19 @@ class API {
       memfsFilename : options.memfs || 'memfs',
     });
     this.ready = this.memfs.ready.then(
-        () => { return this.untar(this.memfs, this.sysrootFilename); });
+        () => { return this.untar(this.memfs, this.sysrootFilename); }).then(() => {
+      // PTA 的 C++ 题大量写 #include <bits/stdc++.h>（GCC 的万能头），
+      // wasi-sdk 的 libc++ 里没有这个文件。在 memfs 里补一份等价头，
+      // 否则本地编译会报「找不到 bits/stdc++.h」，而 PTA 上其实能过。
+      this.memfs.addFile('include/wasm32-wasip1/bits/stdc++.h', CPP_ALL_HEADER);
+      // 代码填空题（type/6）的作答区只是题面裁判程序的一部分，常见函数（printf/puts…）
+      // 的头文件在裁判程序里。独立做语法检查时要强制带上这些头，否则会报一堆假「未声明」。
+      // 用 -include 而不是把代码拼在头文件后面，行号才不会整体偏移。
+      this.memfs.addFile('pta-prelude-c.h',
+        '#include <stdio.h>\n#include <stdlib.h>\n#include <string.h>\n'
+        + '#include <math.h>\n#include <ctype.h>\n#include <limits.h>\n');
+      this.memfs.addFile('pta-prelude-cpp.h', '#include <bits/stdc++.h>\n');
+    });
   }
 
   hostLog(message) {
@@ -882,13 +938,16 @@ class API {
     const input = options.input;
     const contents = options.contents;
     const obj = options.obj;
+    const cpp = isCppLanguage(options.lang);
+    const commonArgs = cpp ? this.clangCommonArgsCpp : this.clangCommonArgs;
 
     await this.ready;
     this.memfs.addFile(input, contents);
     const clang = await this.getModule(this.clangFilename);
     return await this.run(clang, 'clang', '-cc1', '-emit-obj',
-                          ...this.clangCommonArgs, '-O2', '-o', obj, '-x',
-                          'c', input);
+                          ...commonArgs, ...(cpp ? ['-std=c++17'] : []),
+                          '-O2', '-o', obj, '-x',
+                          cpp ? 'c++' : 'c', input);
   }
 
   /**
@@ -898,16 +957,21 @@ class API {
   async compileOnly(options) {
     const input = options.input;
     const contents = options.contents;
+    const cpp = isCppLanguage(options.lang);
+    const commonArgs = cpp ? this.clangCommonArgsCpp : this.clangCommonArgs;
 
     await this.ready;
     this.memfs.addFile(input, contents);
     const clang = await this.getModule(this.clangFilename);
     return await this.run(clang, 'clang', '-cc1', '-fsyntax-only',
-                          ...this.clangCommonArgs, '-x', 'c', input);
+                          ...commonArgs, ...(cpp ? ['-std=c++17'] : []),
+                          ...(options.prelude ? ['-include', cpp ? 'pta-prelude-cpp.h' : 'pta-prelude-c.h'] : []),
+                          '-x', cpp ? 'c++' : 'c', input);
   }
 
-  async link(obj, wasm) {
+  async link(obj, wasm, options) {
     const stackSize = 1024 * 1024;
+    const cpp = isCppLanguage(options && options.lang);
 
     const libdir = this.lldLibdir;
     const crt1 = `${libdir}/crt1.o`;
@@ -916,7 +980,7 @@ class API {
     return await this.run(
         lld, 'wasm-ld', ...this.lldFlags,
         '-z', `stack-size=${stackSize}`, `-L${libdir}`, crt1, obj,
-        ...this.lldLibs, '-o', wasm)
+        ...(cpp ? this.lldLibsCpp : this.lldLibs), '-o', wasm)
   }
 
   async run(module, ...args) {

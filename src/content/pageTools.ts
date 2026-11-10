@@ -4,30 +4,137 @@ import type { ToolRunResponse } from '../shared/messages';
 export function runPageTool(name: string, args: Record<string, unknown>): ToolRunResponse {
   if (name === 'url') return { ok: true, result: window.location.href };
   if (name === 'write_document') return writeDocument(args);
+  if (name === 'write_zip') return writeZip(args);
   if (name === 'simulate_keyboard_input') return simulateKeyboardInput(args);
   return { ok: false, result: `未知工具：${name}` };
 }
 
 function writeDocument(args: Record<string, unknown>): ToolRunResponse {
   const content = typeof args.content === 'string' ? args.content : '';
-  if (!content.trim()) return { ok: false, result: '缺少 content 参数' };
+  const hasFiles = args.files && typeof args.files === 'object' && !Array.isArray(args.files);
+  if (!content.trim() && !hasFiles) return { ok: false, result: '缺少 content 或 files 参数' };
 
   const filename = sanitizeFilename(
     typeof args.filename === 'string' && args.filename.trim() ? args.filename : 'PTA-助手文档.txt',
   );
+
+  // 多文件题（type/9）要上传 zip：content 是一段 JSON，形如
+  // { "src/a.py": "...", "src/b.py": "..." }，这里打成 zip 下载给用户。
+  const files = args.files;
+  if (files && typeof files === 'object' && !Array.isArray(files)) {
+    return writeZipBundle(filename, files as Record<string, unknown>);
+  }
+
   const url = URL.createObjectURL(new Blob([content], { type: 'text/plain;charset=utf-8' }));
+  download(url, filename);
+  return { ok: true, result: `已触发下载：${filename}（${content.length} 字符）` };
+}
+
+/** 独立的 write_zip 工具：只接受 files，不接受 content。 */
+function writeZip(args: Record<string, unknown>): ToolRunResponse {
+  const files = args.files;
+  if (!files || typeof files !== 'object' || Array.isArray(files)) {
+    return { ok: false, result: '缺少 files 参数（{ "src/a.py": "内容", ... }）' };
+  }
+  const filename = sanitizeFilename(
+    typeof args.filename === 'string' && args.filename.trim() ? args.filename : 'pta-answer.zip',
+  );
+  return writeZipBundle(filename.endsWith('.zip') ? filename : `${filename}.zip`, files as Record<string, unknown>);
+}
+
+function download(url: string, filename: string): void {
   const anchor = document.createElement('a');
   anchor.href = url;
   anchor.download = filename;
   anchor.style.display = 'none';
-
   // 必须挂进文档里，Firefox 才会真的触发下载
   document.documentElement.appendChild(anchor);
   anchor.click();
   anchor.remove();
   setTimeout(() => URL.revokeObjectURL(url), 60_000);
+}
 
-  return { ok: true, result: `已触发下载：${filename}（${content.length} 字符）` };
+/** 用浏览器原生 Blob 生成最小可用的 zip（store 模式，无需外部库）。 */
+function writeZipBundle(filename: string, files: Record<string, unknown>): ToolRunResponse {
+  const entries = Object.entries(files)
+    .filter((entry): entry is [string, string] => typeof entry[1] === 'string')
+    .map(([path, text]) => ({ path: sanitizeZipPath(path), bytes: new TextEncoder().encode(text) }))
+    .filter((entry) => entry.path.length > 0 && !entry.path.split('/').includes('..'));
+  if (entries.length === 0) return { ok: false, result: 'files 里没有可用的文本内容' };
+
+  const chunks: Uint8Array[] = [];
+  const central: { name: Uint8Array; offset: number; size: number; crc: number }[] = [];
+  let offset = 0;
+  const push = (bytes: Uint8Array) => { chunks.push(bytes); offset += bytes.length; };
+  const u16 = (value: number) => new Uint8Array([value & 255, (value >> 8) & 255]);
+  const u32 = (value: number) => new Uint8Array([
+    value & 255, (value >> 8) & 255, (value >> 16) & 255, (value >>> 24) & 255,
+  ]);
+
+  for (const entry of entries) {
+    const name = new TextEncoder().encode(entry.path);
+    const local = concatBytes([
+      u32(0x04034b50), u16(20), u16(0), u16(0), u16(0), u16(0),
+      u32(crc32(entry.bytes)), u32(entry.bytes.length), u32(entry.bytes.length),
+      u16(name.length), u16(0), name, entry.bytes,
+    ]);
+    central.push({ name, offset, size: entry.bytes.length, crc: crc32(entry.bytes) });
+    push(local);
+  }
+  const centralStart = offset;
+  for (const item of central) {
+    push(concatBytes([
+      u32(0x02014b50), u16(20), u16(20), u16(0), u16(0), u16(0), u16(0),
+      u32(item.crc), u32(item.size), u32(item.size),
+      u16(item.name.length), u16(0), u16(0), u16(0), u16(0), u32(0),
+      u32(item.offset), item.name,
+    ]));
+  }
+  const centralSize = offset - centralStart;
+  push(concatBytes([
+    u32(0x06054b50), u16(0), u16(0),
+    u16(central.length), u16(central.length),
+    u32(centralSize), u32(centralStart), u16(0),
+  ]));
+
+  const blob = new Blob(chunks as BlobPart[], { type: 'application/zip' });
+  const url = URL.createObjectURL(blob);
+  download(url, filename.endsWith('.zip') ? filename : `${filename}.zip`);
+  return {
+    ok: true,
+    result: `已触发下载：${filename.endsWith('.zip') ? filename : `${filename}.zip`}（${entries.length} 个文件，可用「Upload Answer Zip」上传）`,
+  };
+}
+
+function sanitizeZipPath(path: string): string {
+  const value = String(path);
+  if (value.includes('..')) return '';
+  const parts = value.split(/[\\\\/]+/).filter((part) => part && part !== '.');
+  return parts.join('/').slice(0, 200);
+}
+
+function concatBytes(parts: Uint8Array[]): Uint8Array {
+  const total = parts.reduce((sum, part) => sum + part.length, 0);
+  const out = new Uint8Array(total);
+  let at = 0;
+  for (const part of parts) { out.set(part, at); at += part.length; }
+  return out;
+}
+
+const CRC_TABLE = (() => {
+  const table = new Uint32Array(256);
+  for (let i = 0; i < 256; i += 1) {
+    let value = i;
+    for (let bit = 0; bit < 8; bit += 1) value = value & 1 ? 0xedb88320 ^ (value >>> 1) : value >>> 1;
+    table[i] = value >>> 0;
+  }
+  return table;
+})();
+
+function crc32(bytes: Uint8Array): number {
+  let crc = 0xffffffff;
+  for (const byte of bytes) crc = CRC_TABLE[(crc ^ byte) & 255] ^ (crc >>> 8);
+  return (crc ^ 0xffffffff) >>> 0;
 }
 
 /** 文件名里的路径分隔符和控制字符会让浏览器拒绝下载 */

@@ -1,6 +1,6 @@
 // 带上 .ts 后缀：这个模块会被 scripts/test-compile.mjs 直接用 Node 导入（Node 不做省略后缀解析）
 import { truncate } from '../shared/tools.ts';
-import { parseClangDiagnostics, offsetOfPosition } from '../shared/code-diagnostics.ts';
+import { parseClangDiagnostics, offsetOfPosition, isFragmentContextDiagnostic } from '../shared/code-diagnostics.ts';
 import type { DiagnosticBox } from '../shared/editor-assist-protocol.ts';
 import { runInEngine, checkInEngine, type EngineRunResult } from './compiler-host.ts';
 
@@ -22,27 +22,113 @@ export async function compileAndRunJs(options: JsCompileOptions): Promise<Compil
   const lines = (stdin || '').split('\n');
   let stdinIndex = 0;
   const readline = () => (stdinIndex < lines.length ? lines[stdinIndex++] : '');
+  const formatArg = (value: unknown): string =>
+    typeof value === 'string' ? value : (() => {
+      try { return JSON.stringify(value); } catch { return String(value); }
+    })();
   const consoleObj = {
-    log: (...a: unknown[]) => stdout.push(a.map(String).join(' ')),
-    error: (...a: unknown[]) => stderr.push(a.map(String).join(' ')),
-    warn: (...a: unknown[]) => stderr.push(a.map(String).join(' ')),
+    log: (...a: unknown[]) => stdout.push(a.map(formatArg).join(' ') + '\n'),
+    error: (...a: unknown[]) => stderr.push(a.map(formatArg).join(' ') + '\n'),
+    warn: (...a: unknown[]) => stderr.push(a.map(formatArg).join(' ') + '\n'),
+    info: (...a: unknown[]) => stdout.push(a.map(formatArg).join(' ') + '\n'),
+  };
+
+  // PTA 的 JS 题常按 Node 写：require('readline')、process.stdin。这里给一套够用的垫片，
+  // 让「本地能跑」和 PTA 上的 Node 行为尽量一致，而不是只支持 console.log/readline() 两个全局。
+  const sourceLines = lines.slice();
+  if (sourceLines.length > 0 && sourceLines[sourceLines.length - 1] === '') sourceLines.pop();
+  const processObj = {
+    argv: ['node', 'main.js'],
+    env: {} as Record<string, string>,
+    stdin: {
+      on(event: string, callback: (value?: string) => void) {
+        if (event === 'data') callback(stdin || '');
+        else if (event === 'end') callback();
+        return this;
+      },
+      once(event: string, callback: (value?: string) => void) { return this.on(event, callback); },
+      setEncoding() { return this; },
+      resume() { return this; },
+      pause() { return this; },
+    },
+    stdout: { write: (text: unknown) => { stdout.push(String(text)); return true; } },
+    stderr: { write: (text: unknown) => { stderr.push(String(text)); return true; } },
+    exit(code = 0) { throw new Error(`process.exit(${code})`); },
+    nextTick(callback: () => void) { queueMicrotask(callback); },
+  };
+  const requireShim = (name: unknown): unknown => {
+    const id = String(name).replace(/^node:/, '');
+    if (id === 'readline') {
+      return {
+        createInterface() {
+          const handlers = new Map<string, ((...args: unknown[]) => void)[]>();
+          const emit = (event: string, ...args: unknown[]) => {
+            for (const handler of handlers.get(event) ?? []) handler(...args);
+          };
+          const api = {
+            on(event: string, callback: (...args: unknown[]) => void) {
+              if (!handlers.has(event)) handlers.set(event, []);
+              handlers.get(event)?.push(callback);
+              if (event === 'line') sourceLines.forEach((line) => callback(line));
+              if (event === 'close') queueMicrotask(() => callback());
+              return api;
+            },
+            once(event: string, callback: (...args: unknown[]) => void) { return api.on(event, callback); },
+            close() { emit('close'); },
+            question(_question: string, callback: (answer: string) => void) {
+              callback(sourceLines[stdinIndex++] ?? '');
+            },
+            setPrompt() { return api; },
+            prompt() { return api; },
+          };
+          return api;
+        },
+      };
+    }
+    if (id === 'fs') {
+      return {
+        readFileSync: () => stdin,
+        readFile: (_path: unknown, callback: (error: null, data: string) => void) => callback(null, stdin),
+      };
+    }
+    if (id === 'process') return processObj;
+    throw new Error(`require('${String(name)}') 在内置 JS 运行器里不可用`);
   };
 
   if (signal?.aborted) throw new Error('已停止');
   let error: string | null = null;
+  // readline 不能当函数参数传：用户在代码里常写 `const readline = require('readline')`，
+  // 参数名会被 const 重声明直接报「Identifier 'readline' has already been declared」。
+  // 临时挂到 globalThis 上，老代码里直接调 readline() 也还能用；执行完就还原。
+  const runtimeGlobal = globalThis as unknown as Record<string, unknown>;
+  const hadReadline = Object.prototype.hasOwnProperty.call(runtimeGlobal, 'readline');
+  const previousReadline = runtimeGlobal.readline;
   try {
-    // eslint-disable-next-line no-new-func
-    const fn = new Function('console', 'readline', 'stdin', code);
-    const r = fn(consoleObj, readline, stdin || '');
-    if (r !== undefined) stdout.push(String(r));
+    runtimeGlobal.readline = readline;
+    // 用 AsyncFunction 支持顶层 await；执行完再放一帧，让 readline 的 close / nextTick 跑完
+    const AsyncFunction = Object.getPrototypeOf(async function () {}).constructor as new (
+      ...args: string[]
+    ) => (...args: unknown[]) => Promise<unknown>;
+    const fn = new AsyncFunction(
+      'console', 'stdin', 'process', 'require', 'module', 'exports', code,
+    );
+    const moduleObj = { exports: {} as unknown };
+    const r = await fn(
+      consoleObj, stdin || '', processObj, requireShim, moduleObj, moduleObj.exports,
+    );
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    if (r !== undefined) stdout.push(String(r) + '\n');
   } catch (e) {
     error = e instanceof Error ? e.message : String(e);
+  } finally {
+    if (hadReadline) runtimeGlobal.readline = previousReadline;
+    else delete runtimeGlobal.readline;
   }
 
   const time = `${((Date.now() - started) / 1000).toFixed(2)}`;
   const base = {
-    stdout: stdout.join('\n') + (stdout.length ? '\n' : ''),
-    stderr: stderr.join('\n') + (stderr.length ? '\n' : ''),
+    stdout: stdout.join(''),
+    stderr: stderr.join(''),
     compileOutput: '',
     message: error ? error : '',
     time,
@@ -182,11 +268,24 @@ export interface CompileResult {
 }
 
 export async function compileAndRun(options: CompileOptions): Promise<CompileResult> {
+  return runCWithEngine(options, 'c');
+}
+
+/**
+ * 编译并运行 C++ 代码——同一套 Clang 22 + libc++，`-x c++ -std=c++17`。
+ * 与 C 共用一个 wasm 引擎（sysroot 里已经带 libc++ 头与静态库）。
+ */
+export async function compileAndRunCpp(options: CompileOptions): Promise<CompileResult> {
+  return runCWithEngine(options, 'cpp');
+}
+
+/** C / C++ 共用的引擎调用与结果归一化 */
+async function runCWithEngine(options: CompileOptions, lang: 'c' | 'cpp'): Promise<CompileResult> {
   const { code, stdin, signal } = options;
 
   let raw: EngineRunResult;
   try {
-    raw = await runInEngine(code, stdin, signal);
+    raw = await runInEngine(code, stdin, signal, lang);
   } catch (error) {
     if (error instanceof Error && error.name === 'EngineTimeout') {
       return {
@@ -234,11 +333,19 @@ export interface CodeCheckResult {
   message: string;
 }
 
-/** 内置编译器只有 C 的驱动配置，别的语言不做实时检查，如实说明 */
+/** 内置编译器支持的前端：C 与 C++；Python / Java 等语言不做实时检查 */
+export type CheckLanguage = 'c' | 'cpp';
+
+export function checkLanguage(language: string): CheckLanguage | null {
+  const lang = String(language ?? '').trim().toLowerCase();
+  // C++ 必须先判：'c++' 也会被 /^c\b/ 命中（c 与 + 之间是词边界）
+  if (/^(c\+\+|cpp|cxx)\b/.test(lang) || /\bc\+\+/.test(lang)) return 'cpp';
+  if (/^c\b/.test(lang) || /gcc|clang/.test(lang)) return 'c';
+  return null;
+}
+
 export function isCheckableLanguage(language: string): boolean {
-  const lang = String(language ?? '').toLowerCase();
-  // 'c' / 'C (gcc)' / 'gcc' / 'clang' 算 C；'cpp' 'c++' 'python' 'java' 都不算
-  return /^c\b/.test(lang) || /gcc|clang/.test(lang);
+  return checkLanguage(language) !== null;
 }
 
 /**
@@ -265,19 +372,27 @@ export function diagnosticRange(code: string, from: number): { from: number; to:
 
 /**
  * 用内置编译器给作答区代码做一次「只编译不运行」的检查。
- * 只支持 C（引擎的 clang 驱动硬编码 -x c），别的语言返回 note 让界面如实显示。
+ * 支持 C 与 C++（引擎分别用 -x c / -x c++），别的语言返回 note 让界面如实显示。
  */
-export async function checkCode(code: string, language: string, signal?: AbortSignal): Promise<CodeCheckResult> {
+export async function checkCode(
+  code: string,
+  language: string,
+  signal?: AbortSignal,
+  fragment = false,
+): Promise<CodeCheckResult> {
   const source = String(code ?? '');
   const empty: CodeCheckResult = { ok: true, note: '', diagnostics: [], errorCount: 0, message: '' };
-  if (!isCheckableLanguage(language)) {
-    return { ...empty, note: '内置编译器只支持 C，其他语言不做实时检查' };
+  const lang = checkLanguage(language);
+  if (!lang) {
+    return { ...empty, note: '内置编译器只支持 C / C++，其他语言不做实时检查' };
   }
   if (source.trim() === '') return empty;
 
   let raw: EngineRunResult;
   try {
-    raw = await checkInEngine(source, signal);
+    // 代码填空题的作答区只是题面裁判程序的一部分：printf/puts 这些头在裁判程序里，
+    // 独立检查时强制带上常用头，避免报一屏假「未声明」。
+    raw = await checkInEngine(source, signal, lang, fragment);
   } catch (error) {
     if (error instanceof Error && error.name === 'EngineTimeout') return { ...empty, ok: false, message: error.message };
     throw error;
@@ -291,6 +406,9 @@ export async function checkCode(code: string, language: string, signal?: AbortSi
     // note 是 clang 跟在报错后面、指在同一位置的补充说明（「include 这个头文件」之类），
     // 它和那条报错算同一件事，单独算一条只会让「N 个错误」翻倍
     if (item.severity === 'note') continue;
+    // 代码填空片段依赖题面/裁判提供的类型、常量、宏：独立编译的「未声明」是假报错，
+    // 直接丢掉；真正的语法错误（少分号、括号不配对等）继续上报
+    if (fragment && item.severity === 'error' && isFragmentContextDiagnostic(item.message)) continue;
     // clang 的列号是 UTF-8 字节偏移，offsetOfPosition 负责换算成字符下标
     const offset = offsetOfPosition(source, item.line, item.column);
     if (offset < 0) continue;
