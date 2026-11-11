@@ -572,6 +572,7 @@ npm run icons              # 重新生成图标（python3 + Pillow）
 
 | 版本 | 主要内容 |
 |---|---|
+| v6.8.3 | 修斜杠指令不可用：`/why`、`/what`、`/resolve`、`/fuck` 的指令说明被作为第二条 `system` 追加到 user 消息后面，OpenAI 兼容接口直接返回 HTTP 400「System message must be at the beginning」。现在说明并入开头的 system，消息顺序保持 `system → user → assistant/tool`；新增消息顺序回归测试 |
 | v6.8.2 | 修浏览器端 Python 实时检查恒为空：worker 里的 `__pta_compile_check` 返回 Python list，宿主只解析字符串，PyProxy 被当成空数组；现在所有分支都 `json.dumps` 成 JSON 字符串，并补 worker 源码回归断言。`returnsentence`、缺冒号/缩进等现在会真正显示 |
 | v6.8.1 | 修用户真机反馈：`compile_and_run_*` 的 `stdin` 传数字时不再被静默丢成空串（`2` → `'2'`）；Python 实时检查增加 AST 未定义名字检查，`returnsentence` 这类拼写会报 `undefined name`（fragment 模式降为 warning，保留语法错误）；提交/读判题只在**判题弹窗内**点「刷新 / Reload」，删掉页面级 Reload 回退，避免整页刷新导致拿不到判题结果 |
 | v6.8.0 | 实时检查扩到 Python3：内置 Pyodide 只 `compile()` 不执行，返回行/UTF-8 字节列/中文建议；C/C++ 仍走 clang `-fsyntax-only`。Java 加入保守规则检查（括号/引号/明显缺分号/`if` 缺括号）与真正的 Java 代码整理（缩进、运算符空格、泛型尖括号保护、文本块保守跳过）。修 `/* ... */` 整理后丢失分隔符的问题；C/C++ 单行、行尾、多行块注释都保留 `/*`/`*/`。README、提示词与测试同步 |

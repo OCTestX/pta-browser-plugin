@@ -53,7 +53,7 @@ import {
   visionUserMessage,
   type VisionApiMessage,
 } from '../shared/model-capabilities';
-import { commandForcesWrite, parseSlashCommand } from '../shared/commands';
+import { buildConversation, commandForcesWrite, parseSlashCommand } from '../shared/commands';
 import { diffLines, diffStats } from '../shared/diff';
 import {
   choiceDeniesSubmit,
@@ -201,24 +201,19 @@ async function currentTabUrl(tabId: number): Promise<string | undefined> {
 export async function runAgent(options: RunAgentOptions): Promise<void> {
   const { messages, tabId, signal, events } = options;
   const settings = await loadSettings();
-  const conversation: ApiMessage[] = [
-    { role: 'system', content: SYSTEM_PROMPT },
-    ...messages,
-  ];
 
   // 斜杠指令（/resolve、/fuck、/why、/what…）：改写这一轮的行为
   const lastUserMessage = [...messages].reverse().find((message) => message.role === 'user');
   const command = parseSlashCommand(lastUserMessage?.content ?? '');
+  // 指令说明必须并进开头的 system；追加到 user/assistant 后面会被接口拒绝（HTTP 400）
+  const instruction = command ? commandInstruction(command.id, command.rest) : '';
+  const conversation: ApiMessage[] = buildConversation(SYSTEM_PROMPT, messages, instruction) as ApiMessage[];
   // /fuck：极限赶时间无人监管模式——不问、不解释、直接提交、做完自动切下一题
   const fuckMode = command?.id === 'fuck';
   // /resolve 与 /fuck：用户明说「直接答题」，这一轮不再要求先 ask
   const forced = commandForcesWrite(command?.id);
   // 赶题模式要连着做完整个题目列表，工具轮数得放开（平时 80 轮只够做一道题）
   const maxRounds = fuckMode ? FUCK_MAX_TOOL_ROUNDS : MAX_TOOL_ROUNDS;
-  if (command) {
-    const instruction = commandInstruction(command.id, command.rest);
-    if (instruction) conversation.push({ role: 'system', content: instruction });
-  }
   if (fuckMode) {
     // 面板上给个明确的横幅：这个模式会自己往下做，用户想插手就按「停止」
     resetBatch(tabId);

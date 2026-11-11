@@ -3,6 +3,8 @@
 // 放在 shared 是因为两端都要用：前端输入框拿它渲染菜单，后台靠它认出
 // 「这条消息其实是条指令」，并据此改写这一轮的行为（放行权限、改提示词）。
 
+import type { ApiMessage } from './types';
+
 export interface SlashCommand {
   /** 指令 id（不含斜杠） */
   id: string;
@@ -54,4 +56,19 @@ export function filterSlashCommands(prefix: string): SlashCommand[] {
   return SLASH_COMMANDS.filter(
     (command) => command.id.startsWith(needle) || command.name.toLowerCase().includes(needle),
   );
+}
+
+/**
+ * 把指令说明并进**开头的 system 消息**。
+ *
+ * OpenAI 兼容接口要求 system 必须排在最前面；以前把 `/why` 的说明 push 到消息末尾，
+ * 模型直接返回 HTTP 400「System message must be at the beginning」，所有斜杠指令都失效。
+ */
+export function buildConversation(
+  systemPrompt: string,
+  messages: ApiMessage[],
+  instruction = '',
+): ApiMessage[] {
+  const system = instruction ? `${systemPrompt}\n\n${instruction}` : systemPrompt;
+  return [{ role: 'system', content: system }, ...messages];
 }

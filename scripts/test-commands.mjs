@@ -2,7 +2,7 @@
 // 用法：node scripts/test-commands.mjs
 import { readFileSync } from 'node:fs';
 import { JSDOM } from 'jsdom';
-import { parseSlashCommand, filterSlashCommands, SLASH_COMMANDS, commandForcesWrite } from '../src/shared/commands.ts';
+import { parseSlashCommand, filterSlashCommands, SLASH_COMMANDS, commandForcesWrite, buildConversation } from '../src/shared/commands.ts';
 import { writeGuardReason, submitGuardReason } from '../src/shared/guardrails.ts';
 import { READ_PROBLEM_SCRIPT, WRITE_ANSWERS_SCRIPT } from '../src/background/pta-scripts.ts';
 
@@ -28,6 +28,22 @@ check('没收录的指令不当指令', parseSlashCommand('/nope') === null);
 check('前缀筛选能筛出候选', filterSlashCommands('/re').length === 1);
 check('空前缀给全部', filterSlashCommands('/').length === SLASH_COMMANDS.length);
 check('每条指令都有名字和解释', SLASH_COMMANDS.every((c) => c.name.startsWith('/') && c.summary.length > 0));
+
+// 回归：/why 等指令的说明曾作为第二条 system 追加在 user 后面，
+// OpenAI 兼容接口直接 400「System message must be at the beginning」。
+const commandConversation = buildConversation(
+  'SYSTEM',
+  [{ role: 'user', content: '/why' }],
+  '【本轮指令 /why】讲解',
+);
+check(
+  '指令说明并进开头 system，不追加到 user 后面',
+  commandConversation.length === 2 &&
+    commandConversation[0].role === 'system' &&
+    commandConversation[0].content === 'SYSTEM\n\n【本轮指令 /why】讲解' &&
+    commandConversation.filter((m) => m.role === 'system').length === 1,
+  commandConversation,
+);
 
 /* ---------- /resolve 的免问放行 ---------- */
 
