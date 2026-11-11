@@ -65,6 +65,7 @@ export const EDITOR_AGENT_SOURCE = String.raw`return (() => {
     tooltipKey: '',
     paintGeneration: 0,
     bottomBar: null,       // 代码框底部状态栏（缓存，别每轮全量找）
+    barSlot: null,         // 工具栏嵌进底部状态栏时的容器
     barLookupAt: 0,
     resizeObserver: null,
     paintObserver: null,
@@ -604,6 +605,50 @@ export const EDITOR_AGENT_SOURCE = String.raw`return (() => {
     return found;
   };
 
+  /**
+   * 把工具栏真正塞进「Test Case」所在的那条状态栏，而不是浮在它上面。
+   * 找不到 Test Case 按钮时退化为追加到栏尾；PTA 重渲染把 slot 删掉时会重建。
+   */
+  const attachBarToBottomBar = (bottomBar) => {
+    if (!state.bar) return;
+    let slot = state.barSlot;
+    if (!slot || !slot.isConnected || !bottomBar.contains(slot)) {
+      slot = make('div', 'display:flex;align-items:center;gap:6px;flex:none;margin-left:8px;pointer-events:auto;');
+      slot.id = 'pta-assist-bar-slot';
+      const testCase = Array.from(bottomBar.querySelectorAll('button'))
+        .find((node) => /^(Test Case|测试用例)$/.test((node.innerText || '').trim()));
+      if (testCase && testCase.parentElement) testCase.after(slot);
+      else bottomBar.appendChild(slot);
+      state.barSlot = slot;
+    }
+    if (state.bar.parentElement !== slot) {
+      slot.appendChild(state.bar);
+      state.bar.style.position = 'static';
+      state.bar.style.left = '';
+      state.bar.style.top = '';
+      state.bar.style.margin = '0';
+      state.bar.style.pointerEvents = 'auto';
+      state.bar.style.visibility = 'visible';
+    }
+  };
+
+  /** 底部状态栏不可用时，把工具栏还给 fixed 浮层 */
+  const detachBarToOverlay = () => {
+    if (!state.bar || !state.root) return;
+    if (state.barSlot) {
+      state.barSlot.remove();
+      state.barSlot = null;
+    }
+    if (state.bar.parentElement !== state.root) {
+      state.root.appendChild(state.bar);
+      state.bar.style.position = 'absolute';
+      state.bar.style.left = '';
+      state.bar.style.top = '';
+      state.bar.style.margin = '';
+      state.bar.style.pointerEvents = 'none';
+    }
+  };
+
   const layout = () => {
     if (!state.el || !state.bar) return;
     const editor = state.el.closest('.cm-editor') || state.el;
@@ -617,16 +662,12 @@ export const EDITOR_AGENT_SOURCE = String.raw`return (() => {
 
     const bar = ensureBottomBar();
     if (bar) {
-      const barRect = bar.getBoundingClientRect();
-      // 「Test Case」按钮右边开始摆；右边还有 PTA 自己的 ? 和折叠箭头，别压上去
-      const button = bar.querySelector('button');
-      const buttonBox = button ? button.getBoundingClientRect() : null;
-      const start = buttonBox && buttonBox.width > 0 ? buttonBox.right + 12 : barRect.left + 12;
-      const left = Math.min(start, barRect.right - width - 60);
-      place(state.bar, Math.max(barRect.left + 8, left), barRect.top + (barRect.height - height) / 2);
+      attachBarToBottomBar(bar);
+      state.bar.style.visibility = 'visible';
       return;
     }
     // 没有那条状态栏（面板收起之类）就退回代码框右下角内部
+    detachBarToOverlay();
     place(state.bar, box.right - width - 22, box.bottom - height - 10);
   };
 
@@ -881,6 +922,13 @@ export const EDITOR_AGENT_SOURCE = String.raw`return (() => {
     }
     state.layoutFrame = 0;
     state.bottomBar = null;
+    if (state.barSlot) {
+      state.barSlot.remove();
+      state.barSlot = null;
+    }
+    if (state.bar && state.bar.parentElement && state.bar.parentElement !== state.root) {
+      state.bar.remove();
+    }
     if (state.root) state.root.remove();
     state.root = null;
     state.bar = null;

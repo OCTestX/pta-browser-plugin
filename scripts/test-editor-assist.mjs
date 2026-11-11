@@ -154,6 +154,12 @@ check(
   pythonFormatted === 'def f(a, b):\n    x = a + b\n    return x',
   pythonFormatted,
 );
+const pythonReturnList = formatCode('return [sum(each) for each in lst]', 'python3');
+check(
+  'Python return 和列表字面量之间保留空格',
+  pythonReturnList === 'return [sum(each) for each in lst]',
+  pythonReturnList,
+);
 
 // Java：以前落在 brace（只重排缩进，不补运算符空格），现在有独立策略；
 // 泛型尖括号必须先被判成泛型，否则 `List<String>` 会被拆成 `List < String >`

@@ -63,7 +63,28 @@ function createEditorPage(initialText) {
   content.setAttribute('contenteditable', 'true');
   scroller.appendChild(content);
   editor.appendChild(scroller);
-  document.body.appendChild(editor);
+
+  // 真机结构：编辑器在 CodingProblemAnswerForm 里，后面紧跟「Test Case」状态栏。
+  // 工具栏应该嵌进这条栏，而不是浮在它上面。
+  const form = document.createElement('div');
+  form.className = 'CodingProblemAnswerForm';
+  form.appendChild(editor);
+  const bottomBar = document.createElement('div');
+  bottomBar.className = 'testcase-bar';
+  bottomBar.id = 'testcase-bar';
+  const testCaseButton = document.createElement('button');
+  testCaseButton.type = 'button';
+  testCaseButton.textContent = 'Test Case';
+  bottomBar.appendChild(testCaseButton);
+  document.body.append(form, bottomBar);
+
+  const rect = (width, height, top) => ({
+    width, height, top, bottom: top + height, left: 0, right: width, x: 0, y: top,
+    toJSON: () => ({}),
+  });
+  form.getBoundingClientRect = () => rect(600, 240, 0);
+  editor.getBoundingClientRect = () => rect(600, 200, 0);
+  bottomBar.getBoundingClientRect = () => rect(600, 32, 200);
 
   let doc = initialText;
   let lines = [];
@@ -153,6 +174,7 @@ function createEditorPage(initialText) {
     window,
     document,
     content,
+    bottomBar,
     text: () => doc,
     close: () => window.close(),
   };
@@ -214,10 +236,11 @@ async function runScenario(page) {
   );
 
   const layer = document.getElementById('pta-assist-editor-layer');
-  const buttons = layer ? [...layer.querySelectorAll('button')].map((node) => node.textContent.trim()) : [];
-  check('页面上铺了浮层，里面是「整理代码」按钮', !!layer && buttons.includes('整理代码'), buttons);
+  const toolbar = document.getElementById('pta-assist-bar');
+  const buttons = toolbar ? [...toolbar.querySelectorAll('button')].map((node) => node.textContent.trim()) : [];
+  check('工具栏里有「整理代码」按钮', !!layer && !!toolbar && buttons.includes('整理代码'), buttons);
 
-  const bar = layer ? [...layer.children].find((node) => node.querySelector('button')) : null;
+  const bar = toolbar;
   const badge = bar ? bar.querySelector('div') : null;
   check('工具栏上有诊断徽标', !!badge);
 
@@ -284,6 +307,16 @@ async function runScenario(page) {
     '页面上只有一层浮层（没有叠出第二层工具栏）',
     document.querySelectorAll('#pta-assist-editor-layer').length === 1,
     document.querySelectorAll('#pta-assist-editor-layer').length,
+  );
+  const attachedBar = document.getElementById('pta-assist-bar');
+  const toolbarSlot = document.getElementById('pta-assist-bar-slot');
+  check(
+    '工具栏嵌进 Test Case 父状态栏',
+    !!attachedBar && !!toolbarSlot &&
+      attachedBar.parentElement === toolbarSlot &&
+      toolbarSlot.parentElement === page.bottomBar &&
+      attachedBar.style.position === 'static',
+    attachedBar && { parent: attachedBar.parentElement?.id, position: attachedBar.style.position },
   );
 }
 

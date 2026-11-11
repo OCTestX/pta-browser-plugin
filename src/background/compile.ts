@@ -20,7 +20,17 @@ import { runInEngine, checkInEngine, type EngineRunResult, type EngineStage } fr
  */
 export function asStdin(value: unknown): string {
   if (value === undefined || value === null) return '';
-  return typeof value === 'string' ? value : String(value);
+  if (typeof value === 'string') return value;
+  if (typeof value === 'number' || typeof value === 'boolean' || typeof value === 'bigint') {
+    return String(value);
+  }
+  // 模型有时把嵌套列表直接写成 JSON 数组；String([[1,2]]) 会得到 "1,2"，
+  // 把方括号吞掉。数组/对象保留 JSON 形态，才是用户看到的 stdin。
+  try {
+    return JSON.stringify(value);
+  } catch {
+    return String(value);
+  }
 }
 
 /**

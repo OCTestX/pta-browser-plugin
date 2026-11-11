@@ -354,6 +354,14 @@ function spaceTokens(tokens: Token[], python: boolean): string {
 
     // ---- 运算符 ----
     if (text === '(' || text === '[') {
+      // Python 的 return [..] / yield (..) 需要保留一个空格；
+      // 函数调用 print(..) 仍然紧贴。
+      const before = last();
+      if (python && before && before.kind === 'word' && ['return', 'yield', 'assert', 'del'].includes(before.text)) {
+        emit(token, true);
+        declaratorChain = false;
+        continue;
+      }
       emit(token, false);
       declaratorChain = false;
       continue;

@@ -81,9 +81,10 @@ check(
     && asStdin(0) === '0'
     && asStdin(false) === 'false'
     && asStdin('7 8\n') === '7 8\n'
+    && asStdin([[1, 2], [3, 4]]) === '[[1,2],[3,4]]'
     && asStdin(undefined) === ''
     && asStdin(null) === '',
-  [asStdin(2), asStdin(0), asStdin(false), asStdin(undefined), asStdin(null)],
+  [asStdin(2), asStdin(0), asStdin(false), asStdin([[1, 2], [3, 4]]), asStdin(undefined), asStdin(null)],
 );
 
 // 真的喂进 Python 运行器：input() 必须读到归一化后的 '2'，而不是 EOF
