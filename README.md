@@ -22,7 +22,7 @@ PTA 助手是一个运行在浏览器里的 PTA（拼题A）解题助手：自�
 | 禁粘贴也能贴 | 接管 `Ctrl+V` / `⌘V`，读剪贴板后走插件自己的写入链路；抢不过页面时用 `Ctrl+M`；右键粘贴同样接管 |
 | 粘贴焦点判定 | 只有焦点在 PTA 的可写作答区里才接管，别的地方照常粘贴 |
 | 视觉模式（VLM） | 题面含图片时把图片作为 `image_url` 发给支持看图的模型；不支持时明确降级纯文本；模型下拉用 eye icon 标出视觉能力 |
-| 提交后自动刷新 | 等待判题结论时，每 5 秒点一次页面上的「刷新 / Reload」按钮 |
+| 提交后自动刷新 | 等待判题结论时，只点**判题弹窗内**的「刷新 / Reload」；弹窗里没有就不点，绝不整页刷新 |
 | 多标签页独立 | 面板开关、agent 会话、图标节流都按标签页隔离，可以同时开好几个 |
 | 检查更新 | 设置页顶部比对 GitHub / Gitee 的 release 标签，有新版本就提示 |
 | API Key 防误填 | Key 输入框关掉自动填充，密码管理器不会把 PTA 的密码套进来 |
@@ -293,7 +293,7 @@ diff 卡片表头有「全屏查看」：新标签页打开完整 diff，不折�
 
 > **没有内置编译器的语言（Java、Go、C#、Rust 等）走这两个工具。** Java 另有代码整理和规则语法提示，但**不内置 JRE**，本地跑不了；Go / C# / Rust 也没有本地工具链。运行只能借 PTA 自己的编译器：先 `simulate_pta_run` 跑一遍拿结果，需要看编译错误再 `read_pta_compile_result`。不要因为本地跑不了就以为代码是对的。
 
-**`submit_answer` / `read_judge_result`**：提交后等判题结论。PTA 结果页不会自己刷新，等待循环里**每 5 秒点一次**页面上的「刷新 / Reload」按钮。提交前先确认上一次的「提交结果 dialog」已经关掉（`close_dialogs`），否则它会挡住提交按钮。
+**`submit_answer` / `read_judge_result`**：提交后等判题结论。PTA 结果页不会自己刷新，等待循环里只点**判题弹窗内**的「刷新 / Reload」按钮；弹窗里没有就不点，避免整页刷新把这一轮打断。提交前先确认上一次的「提交结果 dialog」已经关掉（`close_dialogs`），否则它会挡住提交按钮。
 
 判题结论归一化：
 
@@ -551,7 +551,7 @@ npm run icons              # 重新生成图标（python3 + Pillow）
 - **ask 超时 15 分钟**：问用户判题结果时可能中途去查资料；走人也可以点「停止」
 - **KaTeX 字库**：只带 woff2，构建时复制到 `dist/<target>/katex-fonts/`
 - **UTF-8 校验**：Chrome 会拒绝含 Unicode 非字符的脚本，构建时统一转义成 `\uXXXX`
-- **判题等待**：PTA 结果页不会自动刷新，等待循环里每 5 秒点一次「刷新 / Reload」
+- **判题等待**：PTA 结果页不会自动刷新，等待循环里只点**判题弹窗内**的「刷新 / Reload」；弹窗里没有就干等，绝不点页面级 Reload
 - **检查更新**：设置页读取设置时顺手查一次 release 标签，1 小时内缓存一次结果
 
 ## 常见问题
@@ -566,12 +566,13 @@ npm run icons              # 重新生成图标（python3 + Pillow）
 | API Key 无效 | 设置页重填，或检查接口地址 |
 | 编译器加载失败 | 确认扩展允许 WASM；或用 PTA 的「运行测试」（`simulate_pta_run`） |
 | Java / Go / C# 这类语言跑不了 | Java 支持代码整理 + 规则语法提示，但不内置 JRE；Go / C# / Rust 也没有本地工具链。运行仍让 AI 用 `simulate_pta_run` 借 PTA 的环境 |
-| 判题一直卡住 | 插件每 5 秒自动点一次「刷新」；超时后可让 AI 调 `refresh_page` |
+| 判题一直卡住 | 插件只点判题弹窗内的「刷新」；弹窗里没有就不点，超时后让 AI 调 `refresh_page` 再 `read_judge_result` |
 
 ## 更新记录
 
 | 版本 | 主要内容 |
 |---|---|
+| v6.8.1 | 修用户真机反馈：`compile_and_run_*` 的 `stdin` 传数字时不再被静默丢成空串（`2` → `'2'`）；Python 实时检查增加 AST 未定义名字检查，`returnsentence` 这类拼写会报 `undefined name`（fragment 模式降为 warning，保留语法错误）；提交/读判题只在**判题弹窗内**点「刷新 / Reload」，删掉页面级 Reload 回退，避免整页刷新导致拿不到判题结果 |
 | v6.8.0 | 实时检查扩到 Python3：内置 Pyodide 只 `compile()` 不执行，返回行/UTF-8 字节列/中文建议；C/C++ 仍走 clang `-fsyntax-only`。Java 加入保守规则检查（括号/引号/明显缺分号/`if` 缺括号）与真正的 Java 代码整理（缩进、运算符空格、泛型尖括号保护、文本块保守跳过）。修 `/* ... */` 整理后丢失分隔符的问题；C/C++ 单行、行尾、多行块注释都保留 `/*`/`*/`。README、提示词与测试同步 |
 | v6.7.0 | 多标签改为标签页级 `sessionStorage`：草稿/对话刷新保留，同 URL 两个标签也互不串；顺手修掉 reload 后布局被重置。`set_language` 支持 react-select `mousedown` 展开与 `cpp/c++/g++` 别名，判断题选项接受 `T/TRUE/FALSE` 并剥离题干行号槽，`simulate_pta_run` 在编译错误出现时立即读回编译器日志。视觉模式真正把图片作为 `image_url` 送进模型，修正 `vlmMode=off` 语义，加入 Qwen3.8-27B 视觉能力与模型下拉 eye icon；Qwen 的 `files` 空对象用 `filesJson` 兜底。C++ 引擎按阶段超时、排队超时不再重启引擎、日志写满后仍能回收编译诊断。新增 `test-tab-store` / `test-model-capabilities`，扩充 `test-compile` 与 `test-pta-tools` |
 | v6.6.0 | 上传 zip 的多文件题（type/9）现在能真正交付答案：新增独立工具 `write_zip`（只接受 `filename` + `files`，键为 zip 内路径、值为文件文本），用浏览器原生 Blob 生成标准 zip 并触发下载，用户再点「Upload Answer Zip」上传；`write_document` 也支持 `files` 兼容旧调用。不引外部库、路径穿越 `../` 会被拒绝。`read_problem` 会从 Problem Folder 抠出文件清单、提醒样例不是 stdin，并明确让模型用 `write_zip` 打包；README / 提示词 / 工具 schema 同步；jsdom 冒烟覆盖 zip 打包，Node 侧用 Python `zipfile` 验证生成的 zip 字节、文件名与内容。修复内置 Python 运行器 stdin 耗尽后返回空串、导致 `sys.stdin.read()` 死循环的问题：改为返回 `null` 表示 EOF，并新增回归测试 |

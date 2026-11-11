@@ -56,7 +56,8 @@ const DIAGNOSTIC_LINE = /^(.+?):(\d+):(\d+):\s*(error|warning|note):\s*(.*)$/;
  * 顺序有讲究：更具体的写法排在前面，避免被宽泛的规则先命中。
  */
 const ADVICE_RULES: ReadonlyArray<{ readonly match: string; readonly advice: string }> = [
-  // ---- Python（Pyodide 的 compile() 报错）----
+  // ---- Python（Pyodide 的 compile() / AST 检查）----
+  { match: 'undefined name', advice: '这个名字没有定义：检查拼写是否正确，或者在使用前先赋值、导入它' },
   // 这些关键词只出现在 Python 的报错里，放前面不会抢走 C/C++ 的建议。
   // `expected ':'` 例外：clang 的 case 标签也会这么报，建议里把两种情况都写上。
   { match: "expected ':'", advice: '这一行末尾少了冒号：Python 的 if / for / while / def / class 语句头，或 C/C++ 的 case 标签，都要以 : 结尾' },

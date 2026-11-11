@@ -922,34 +922,25 @@ const HELPERS = `
     return { ok: true, detail: '作答语言已从「' + before + '」切到「' + (after || label) + '」' };
   };
 
-  // PTA 有个 bug：提交后判题结果不会自己更新，页面上会出现一个「刷新 / Reload」按钮，
-  // 不点它就一直停在「评测中 / Waiting」。提交后要定时点它
+  // PTA 有个 bug：提交后判题结果不会自己更新，判题弹窗里会出现一个「刷新 / Reload」按钮，
+  // 不点它就一直停在「评测中 / Waiting」。提交后要定时点它。
   //
-  // 优先点**判题弹窗里**的那个。选择题/判断题的作答区工具条上也有个 Reload
-  // （紧挨着 Save），那是答题区自己的按钮、不是判题刷新，点它没意义，
-  // 所以页面上一旦有 Save 按钮，页面级的 Reload 就不碰。
+  // 只认**判题 / 提交结果弹窗里**的那个刷新按钮。页面级、工具条上的 Reload / 刷新
+  // 一律不碰：那些按钮是整页刷新，一按就把注入脚本连同这次的等待一起杀掉，
+  // 判题结果反而永远拿不到。拿不到结论只是多一步 refresh_page，整页刷新却是不可恢复的。
+  // 选择题/判断题作答区工具条上紧挨着 Save 的 Reload 也属于这一类，自然被排除。
   const findReloadButton = () => {
     const labels = ['刷新', 'Reload', 'Refresh', '重新加载'];
-    const inDialog = (node) => {
-      const dialog = node.closest('[class*=modal], [class*=dialog], [class*=popup], .el-dialog, .ant-modal, [role=dialog]');
-      return !!dialog;
-    };
+    const dialogSelector = '[class*=modal], [class*=dialog], [class*=popup], .el-dialog, .ant-modal, [role=dialog]';
     for (const label of labels) {
       for (const node of document.querySelectorAll('button, [role=button], a')) {
-        if (buttonLabel(node) === label && inDialog(node)) return node;
+        if (buttonLabel(node) === label && node.closest(dialogSelector)) return node;
       }
     }
-    // 有 Save 按钮 = 这是选择题/判断题的作答区，页面级的 Reload 不是判题刷新
-    const hasSave = Array.from(document.querySelectorAll('button')).some((b) => buttonLabel(b) === 'Save');
-    if (hasSave) return null;
+    // 弹窗里的按钮文字带点前后缀（比如「刷新结果」）也认
     for (const label of labels) {
       for (const node of document.querySelectorAll('button, [role=button], a')) {
-        if (buttonLabel(node) === label) return node;
-      }
-    }
-    for (const label of labels) {
-      for (const node of document.querySelectorAll('button, [role=button], a')) {
-        if (buttonLabel(node).includes(label)) return node;
+        if (buttonLabel(node).includes(label) && node.closest(dialogSelector)) return node;
       }
     }
     return null;
@@ -1698,8 +1689,10 @@ while (Date.now() < deadline) {
   if (now.status && now.text && now.text !== before.text) {
     return '已点击提交（' + found.how + (closed ? '，先关掉了 ' + closed + ' 层弹窗' : '') + '）。\\n判题结论：' + now.status + '\\n原文：' + now.text.slice(0, 300);
   }
-  // PTA 的老毛病：判题结果不会自己刷新，页面上有「刷新 / Reload」按钮时必须点它，
+  // PTA 的老毛病：判题结果不会自己刷新，判题弹窗里有「刷新 / Reload」按钮时必须点它，
   // 否则永远停在「评测中 / Waiting」。每隔五秒点一次。
+  // findReloadButton 只认弹窗里的那个；弹窗里没有就不点任何东西 —— 页面级刷新是整页刷新，
+  // 会把注入脚本一起杀掉，反而永远等不到这次结论。
   const reload = findReloadButton();
   if (reload && Date.now() - lastReloadAt >= 5000) {
     lastReloadAt = Date.now();
@@ -1707,8 +1700,10 @@ while (Date.now() < deadline) {
   }
 }
 
-const reloadNote = reloadClicks > 0 ? '（期间点了 ' + reloadClicks + ' 次「刷新」按钮）' : '';
-return '已点击提交（' + found.how + '）。\\n等了 ' + waitSeconds + ' 秒还没出结论' + reloadNote + '，当前页面上看到的是：' + (latest.text || '（没读到判题文字）') + '\\n你可以调用 refresh_page 刷新页面后再调 read_judge_result 看结果（拿到结论之前不要关弹窗）。';
+const reloadNote = reloadClicks > 0
+  ? '（期间点了 ' + reloadClicks + ' 次判题弹窗里的「刷新」按钮）'
+  : '（判题弹窗里没有「刷新 / Reload」按钮，这次没有点任何按钮，避免整页刷新打断等待）';
+return '已点击提交（' + found.how + '）。\\n等了 ' + waitSeconds + ' 秒没拿到结论' + reloadNote + '，当前页面上看到的是：' + (latest.text || '（没读到判题文字）') + '\\n你可以调用 refresh_page 刷新页面后，再调 read_judge_result 看结果（拿到结论之前不要关弹窗）。';
 `;
 
 /**
@@ -1764,7 +1759,8 @@ while (Date.now() < deadline) {
       return describe(late, '（判题弹窗在等待过程中被关掉了，这是页面留下的判题记录）\\n');
     }
   }
-  // 判题结果不会自己更新：页面上有「刷新 / Reload」按钮就点它，每隔五秒点一次
+  // 判题结果不会自己更新：只有判题弹窗里的「刷新 / Reload」按钮才点，每隔五秒点一次。
+  // 弹窗里没有就干等（拿不到结论可以事后 refresh_page），绝不点页面级刷新 —— 那会整页重载。
   const reload = findReloadButton();
   if (reload && Date.now() - lastReloadAt >= 5000) {
     lastReloadAt = Date.now();

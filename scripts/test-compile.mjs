@@ -1,6 +1,6 @@
 // 内置 C 编译器：用真实引擎（clang22-noeh + lld22-noeh + sysroot22.tar）跑几段 C，
 // 顺带校验样例比对（尾部空白、末尾空行不算差异）与 Python 语法检查
-// （浏览器里走 Pyodide；Node 里用 python3 只 compile 不执行）。
+// （浏览器里走 Pyodide；Node 里用 python3 只 compile + AST，不执行）。
 // 宿主队列（阶段化超时 / 排队 / 中止）和编译错误的结构化返回用假回复验证，不需要真机。
 // 大资源缺失时（没跑过 npm run build）跳过真实编译并提示。
 // 用法：node scripts/test-compile.mjs
@@ -11,8 +11,10 @@ import {
   formatCompileResult,
   checkLanguage,
   isCheckableLanguage,
+  asStdin,
   compileAndRunJs,
   compileAndRunCpp,
+  compileAndRunPython,
   checkCode,
   checkPythonWithNode,
   engineFailureResult,
@@ -52,6 +54,28 @@ check(
 
 const noTrailingReader = makeStdinReader('1 2');
 check('Python stdin 没有末尾换行也能读到最后一行', noTrailingReader() === '1 2\n' && noTrailingReader() === null);
+
+/* ---------- stdin 类型归一化（模型常把样例输入写成数字） ---------- */
+
+// 回归：模型传 stdin: 2（JSON number）时，旧实现只认 string，静默变成空串
+check(
+  'asStdin：数字/布尔转成字符串，undefined/null 是空串，字符串原样',
+  asStdin(2) === '2'
+    && asStdin(0) === '0'
+    && asStdin(false) === 'false'
+    && asStdin('7 8\n') === '7 8\n'
+    && asStdin(undefined) === ''
+    && asStdin(null) === '',
+  [asStdin(2), asStdin(0), asStdin(false), asStdin(undefined), asStdin(null)],
+);
+
+// 真的喂进 Python 运行器：input() 必须读到归一化后的 '2'，而不是 EOF
+const pyStdinNumber = await compileAndRunPython({ code: 'print(input())\n', stdin: asStdin(2) });
+check(
+  'stdin 传数字 2 也能当 "2" 进 Python 运行器',
+  pyStdinNumber.ok === true && pyStdinNumber.stdout.trim() === '2',
+  pyStdinNumber,
+);
 
 /* ---------- 宿主队列：阶段化超时 / 排队 / 中止（不依赖真机） ---------- */
 
@@ -311,7 +335,7 @@ check(
     && /不可用/.test(offlineCheck.message),
   offlineCheck,
 );
-/* ---------- Python 语法检查（只 compile，不执行） ---------- */
+/* ---------- Python 语法检查（compile + AST，不执行） ---------- */
 
 /** 诊断盒子里的字符下标 → 「第几行第几列」（列按字符算，只用于断言定位） */
 const positionOf = (text, offset) => {
@@ -388,9 +412,79 @@ check(
   pyDiagnosticText.compileOutput,
 );
 
+// AST 未定义名字：`returnsentence` 语法完全合法，compile() 不报，但运行时必然 NameError
+const pyUndefinedSource = 'print(returnsentence)\n';
+const pyUndefined = await checkCode(pyUndefinedSource, 'Python');
+const pyUndefinedBox = pyUndefined.diagnostics[0];
+check(
+  'Python 未定义名字：报 undefined name、error，指向名字本身',
+  pyUndefined.errorCount === 1
+    && pyUndefined.diagnostics.length === 1
+    && pyUndefinedBox?.severity === 'error'
+    && /undefined name 'returnsentence'/.test(pyUndefinedBox.message)
+    && /拼写|赋值|导入/.test(pyUndefinedBox.advice)
+    && positionOf(pyUndefinedSource, pyUndefinedBox.from).line === 1
+    && pyUndefinedBox.from === pyUndefinedSource.indexOf('returnsentence'),
+  pyUndefined,
+);
+
+// 定义来源要认全：参数、import 别名、for/with 目标、comprehension 变量、函数/类名、dunder
+const pyDefinedSource = `import math as m
+from os import path
+
+def area(radius, scale=2):
+    values = [index * scale for index in range(radius)]
+    total = 0
+    for value in values:
+        total += value
+    return total * m.pi
+
+class Box:
+    pass
+
+with open(path.join('.', 'data.txt')) as handle:
+    pass
+
+print(__name__, area(3), Box)
+`;
+const pyDefined = await checkCode(pyDefinedSource, 'Python');
+check(
+  'Python 参数/导入/循环/comprehension 等定义名都认得（0 诊断）',
+  pyDefined.ok === true && pyDefined.errorCount === 0 && pyDefined.diagnostics.length === 0,
+  pyDefined,
+);
+
+// 多个未定义名字：同名只报一次，按首次出现排序
+const pyMultiSource = 'z = later + missing\nprint(missing, later)\n';
+const pyMulti = await checkCode(pyMultiSource, 'Python');
+const pyMultiNames = pyMulti.diagnostics.map((item) => /undefined name '([^']+)'/.exec(item.message)?.[1] ?? '');
+check(
+  '多个未定义名字按首次出现排序、同名只报一次',
+  pyMulti.errorCount === 2
+    && pyMultiNames.join(',') === 'later,missing'
+    && positionOf(pyMultiSource, pyMulti.diagnostics[0].from).column === 5,
+  pyMulti,
+);
+
+// from x import * 会带进未知名字：这时不该报未定义
+const pyStarImport = await checkCode('from math import *\nprint(cos(0))\n', 'Python');
+check('from x import * 时跳过未定义名字检查（不误报）', pyStarImport.diagnostics.length === 0, pyStarImport);
+
 // 代码填空片段插进裁判程序后缩进层级未知：unexpected indent 不算学生的错
 const pyFragment = await checkCode('    x = 1\n', 'Python', undefined, true);
 check('Python 代码填空片段不报缩进假错', pyFragment.errorCount === 0 && pyFragment.diagnostics.length === 0, pyFragment);
+
+// 片段里用到题面/裁判提供的名字很常见：未定义名字按 warning 报，不算错误
+const pyFragmentUndefinedSource = '    result = answer * factor\n';
+const pyFragmentUndefined = await checkCode(pyFragmentUndefinedSource, 'Python', undefined, true);
+check(
+  'Python 片段里的未定义名字按 warning 报（缩进也不误报）',
+  pyFragmentUndefined.ok === true
+    && pyFragmentUndefined.errorCount === 0
+    && pyFragmentUndefined.diagnostics.length === 2
+    && pyFragmentUndefined.diagnostics.every((item) => item.severity === 'warning'),
+  pyFragmentUndefined,
+);
 
 // Python 的常见报错都要有能照着改的中文建议（不能落到默认的「对照英文说明」）
 const pythonAdvice = [
@@ -399,6 +493,7 @@ const pythonAdvice = [
   ['unindent does not match any outer indentation level', '缩进'],
   ['unterminated string literal (detected at line 1)', '引号'],
   ['EOF while scanning triple-quoted string literal', '引号'],
+  ["undefined name 'returnsentence'", '拼写'],
 ];
 check(
   'Python 常见报错都有中文建议',

@@ -10,7 +10,7 @@ import {
 } from '../shared/tools';
 import { abortable, isAbortError, throwIfAborted } from '../shared/abort';
 import type { ApiMessage } from '../shared/types';
-import { compileAndRun, compileAndRunCpp, checkCode, compareOutput, formatCompileResult, type CompileResult } from './compile';
+import { asStdin, compileAndRun, compileAndRunCpp, checkCode, compareOutput, formatCompileResult, type CompileResult } from './compile';
 import { compileAndRunJs } from './compile';
 import { compileAndRunPython } from './compile';
 import { ext } from '../shared/browser';
@@ -529,7 +529,7 @@ async function forcePtaRunEnabled(): Promise<boolean> {
  */
 async function runOnPta(
   code: string,
-  stdin: string,
+  stdin: unknown,
   context: ToolContext,
   note = '（已按设置改用 PTA 自己的编译器与运行环境，不是插件内置的编译器）',
   language?: string,
@@ -545,7 +545,7 @@ async function runOnPta(
   if (written.isError) {
     return { output: `（改用 PTA 的运行环境）但代码没能写进作答区：${written.output}`, isError: true };
   }
-  const outcome = await runPtaScript('simulate_pta_run', { stdin }, context);
+  const outcome = await runPtaScript('simulate_pta_run', { stdin: asStdin(stdin) }, context);
   return {
     output: `${note}\n${outcome.output}`,
     isError: outcome.isError,
@@ -740,7 +740,7 @@ export async function runTool(
   if (name === 'compile_and_run_c' || name === 'compile_and_run_cpp' || name === 'compile_and_run_js' || name === 'compile_and_run_python') {
     const code = typeof args.code === 'string' ? args.code : '';
     if (!code.trim()) return { output: '缺少 code 参数', isError: true };
-    const stdin = typeof args.stdin === 'string' ? args.stdin : '';
+    const stdin = asStdin(args.stdin);
     // 开了「强制用 PTA 运行环境」：不跑本地编译器，改用 PTA 自己的编译器与机器
     if (await forcePtaRunEnabled()) {
       return runOnPta(code, stdin, context);
@@ -871,7 +871,7 @@ export async function runTool(
     // 语言没有本地运行器时（Java / Go / C# …）一条命令搞定：写进作答区 → 在 PTA 上跑
     return runOnPta(
       args.code,
-      typeof args.stdin === 'string' ? args.stdin : '',
+      args.stdin,
       context,
       '（代码已先写进作答区，再在 PTA 自己的环境里运行）',
       typeof args.language === 'string' && args.language.trim() ? args.language : undefined,
@@ -899,7 +899,9 @@ export async function runTool(
 
   // PTA 相关动作都在页面主世界跑（编辑器实例、判题弹窗都是页面自己的东西）
   if (PTA_SCRIPTS[name]) {
-    const outcome = await runPtaScript(name, args, context);
+    // 页面脚本只认字符串：模型把数据集写成数字（stdin: 2）时先归一化，别静默丢成空串
+    const scriptArgs = name === 'simulate_pta_run' ? { ...args, stdin: asStdin(args.stdin) } : args;
+    const outcome = await runPtaScript(name, scriptArgs, context);
     if (name === 'read_problem' && !outcome.isError) rememberProblemFromRead(tabId, outcome.output);
     if ((name === 'submit_answer' || name === 'read_judge_result') && !outcome.isError) {
       rememberVerdictFromJudge(tabId, outcome.output);

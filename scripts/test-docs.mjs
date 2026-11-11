@@ -53,9 +53,9 @@ for (const name of toolNames) {
 
 /* ---------- 会漂移的数字 ---------- */
 
-check('刷新按钮是每 5 秒点一次（代码）', ptaScripts.includes('lastReloadAt >= 5000'));
-check('README 写的是每 5 秒', readme.includes('每 5 秒点一次'));
-check('README 不再写「每秒点一次」', !readme.includes('每秒点一次'));
+check('刷新按钮仍在 5 秒节流（代码）', ptaScripts.includes('lastReloadAt >= 5000'));
+check('README 写的是只点判题弹窗内的刷新', readme.includes('判题弹窗内'));
+check('README 不再写页面级每 5 秒刷新', !readme.includes('每 5 秒点一次'));
 
 check('agent 最多 80 轮（代码）', tools.includes('MAX_TOOL_ROUNDS = 80'));
 check('README 写的是最多 80 轮', readme.includes('最多 80 轮'));
@@ -102,7 +102,7 @@ check('粘贴只在可写作答区接管（代码）', read('src/content/paste.t
 check('README 写明了粘贴的焦点判定', readme.includes('判断依据'));
 
 check('提交后自动刷新是 5 秒（代码）', ptaScripts.includes('lastReloadAt >= 5000'));
-check('README 写明了每 5 秒点刷新', readme.includes('每 5 秒点一次'));
+check('README 写明了提交等待只点弹窗内刷新', readme.includes('判题弹窗内'));
 
 /* ---------- 提示词里的规矩 ---------- */
 
@@ -217,7 +217,7 @@ check('适配笔记提到的文件都真实存在', [
   'src/background/debugger-input.ts',
   'src/content/paste.ts',
 ].every((rel) => notes.includes(rel)));
-check('适配笔记里的刷新间隔与代码一致', notes.includes('每 5 秒点一次') && ptaScripts.includes('lastReloadAt >= 5000'));
+check('适配笔记里的刷新策略与代码一致', notes.includes('判题弹窗内') && ptaScripts.includes('lastReloadAt >= 5000'));
 check('适配笔记里的题面容器选择器与代码一致', notes.includes('.rendered-markdown') && ptaScripts.includes("'.rendered-markdown'"));
 check('适配笔记里的判题词表顺序说明存在', notes.includes('JUDGE_WORDS') && notes.includes('顺序即优先级'));
 check('适配笔记里的编辑器选择器与代码一致', notes.includes('#pta-answer-editor') && ptaScripts.includes('#pta-answer-editor'));

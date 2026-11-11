@@ -726,7 +726,7 @@ await runScript(judgePage, SUBMIT_ANSWER_SCRIPT, { waitSeconds: 5, pollMs: 10 })
 check('提交时点的是同名按钮里精确匹配的那个（不是标签页）', judgePage.__clicks.join(',') === 'real');
 
 const stillPending = await runScript(judgePage, SUBMIT_ANSWER_SCRIPT, { waitSeconds: 5, pollMs: 10 });
-check('只有「评测中」时不算结论', stillPending.includes('还没出结论'));
+check('只有「评测中」时不算结论', stillPending.includes('没拿到结论'));
 
 judgePage.__setJudgeText('答案正确');
 const ac = await runScript(judgePage, READ_JUDGE_SCRIPT, {});
@@ -947,20 +947,55 @@ iconCloseWindow.document.querySelector('.pc-modal').addEventListener('click', ()
 check('close_dialogs 认得英文页的图标关闭按钮', (await runScript(iconCloseWindow, CLOSE_DIALOGS_SCRIPT, {})).includes('已关掉'));
 check('英文页的弹窗确实被关掉了', !iconCloseWindow.document.querySelector('.pc-modal'));
 
-// PTA 的 bug：提交后判题结果不会自己刷新，页面上有「刷新 / Reload」按钮，
-// 不点它就一直停在「评测中 / Waiting」
-const reloadWindow = createJudgePage();
-reloadWindow.document.body.insertAdjacentHTML(
+// PTA 的判题结果不会自己刷新，判题弹窗里会出现「刷新 / Reload」按钮，必须点它。
+// 但页面级的「刷新」是整页刷新：点了会把注入脚本连同这次等待一起杀掉，
+// 所以只点弹窗里的那个，页面级的一律不碰。
+const pageReloadWindow = createJudgePage();
+pageReloadWindow.document.body.insertAdjacentHTML(
   'beforeend',
   '<button id="reload">刷新</button>',
 );
-let reloadClicks = 0;
-reloadWindow.document.querySelector('#reload').addEventListener('click', () => {
-  reloadClicks += 1;
+let pageReloadClicks = 0;
+pageReloadWindow.document.querySelector('#reload').addEventListener('click', () => {
+  pageReloadClicks += 1;
 });
-const waited = await runScript(reloadWindow, SUBMIT_ANSWER_SCRIPT, { waitSeconds: 5, pollMs: 200 });
-check('提交时等待结论会点「刷新」按钮', reloadClicks > 0);
-check('等待超时会告诉模型可以刷新页面', waited.includes('refresh_page'));
+const pageReloadWaited = await runScript(pageReloadWindow, SUBMIT_ANSWER_SCRIPT, { waitSeconds: 5, pollMs: 200 });
+check('没有判题弹窗时不点页面级「刷新」（避免整页刷新）', pageReloadClicks === 0, pageReloadClicks);
+check('等待超时如实说没拿到结论', pageReloadWaited.includes('没拿到结论'));
+check('没点按钮时说明这次没有点任何按钮', pageReloadWaited.includes('没有点任何按钮'));
+check('等待超时会告诉模型可以刷新页面', pageReloadWaited.includes('refresh_page'));
+
+// read_judge_result 同样不碰页面级刷新
+const readPageReloadWindow = createJudgePage();
+readPageReloadWindow.document.body.insertAdjacentHTML(
+  'beforeend',
+  '<button id="reload">刷新</button>',
+);
+let readPageReloadClicks = 0;
+readPageReloadWindow.document.querySelector('#reload').addEventListener('click', () => {
+  readPageReloadClicks += 1;
+});
+await runScript(readPageReloadWindow, READ_JUDGE_SCRIPT, { waitSeconds: 1, pollMs: 50 });
+check('read_judge_result 也不点页面级「刷新」', readPageReloadClicks === 0, readPageReloadClicks);
+
+// 弹窗里的「刷新」才是判题刷新，仍然要能点到
+const dialogReloadWindow = new JSDOM(
+  `<!doctype html><html><body>
+     <div class="pc-modal">
+       <div class="judge-panel">评测中</div>
+       <button id="dialog-reload">刷新</button>
+     </div>
+   </body></html>`,
+  { url: 'https://pintia.cn/problem-sets/1/problems/1', runScripts: 'outside-only' },
+).window;
+installInnerText(dialogReloadWindow);
+let dialogReloadClicks = 0;
+dialogReloadWindow.document.querySelector('#dialog-reload').addEventListener('click', () => {
+  dialogReloadClicks += 1;
+});
+const dialogReloadOut = await runScript(dialogReloadWindow, READ_JUDGE_SCRIPT, { waitSeconds: 1, pollMs: 50 });
+check('判题弹窗里的「刷新」按钮仍然会点', dialogReloadClicks > 0, dialogReloadClicks);
+check('弹窗内刷新也拿不到结论时如实告知', dialogReloadOut.includes('还没读到'), dialogReloadOut);
 
 /* ---------- 模拟运行 / 编译器输出 ---------- */
 

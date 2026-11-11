@@ -11,6 +11,19 @@ import type { DiagnosticBox } from '../shared/editor-assist-protocol.ts';
 import { runInEngine, checkInEngine, type EngineRunResult, type EngineStage } from './compiler-host.ts';
 
 /**
+ * 标准输入的归一化。
+ *
+ * 模型经常把样例输入里的数字直接写成 JSON number（`stdin: 2`），而不是字符串。
+ * 以前只认 string，数字会被静默当成空串，程序在本地读到的 stdin 是空的，
+ * 模型却以为样例输入已经喂进去了——最典型的就是 Python 的 input() 直接 EOF。
+ * 这里统一成字符串：undefined/null → ''，字符串原样，其它一律 String(value)。
+ */
+export function asStdin(value: unknown): string {
+  if (value === undefined || value === null) return '';
+  return typeof value === 'string' ? value : String(value);
+}
+
+/**
  * 内置 JavaScript 运行器：在本地用浏览器/Node 的 JS 引擎跑一段代码，捕获 stdout/stderr。
  * 不联网、代码不出本机。
  */
@@ -255,48 +268,201 @@ async function runPythonWithNode(code: string, stdin: string, signal?: AbortSign
   });
 }
 
-/** Node 侧 Python 检查脚本回给 JS 的 JSON（error 为 null 表示语法没问题） */
-interface PythonCheckPayload {
-  error?: { line?: unknown; column?: unknown; message?: unknown } | null;
+/**
+ * Python 侧检查脚本：只做语法检查 + AST 未定义名字检查，绝不执行用户代码。
+ *
+ * 与 public/engine/compile-worker.js 里 ensurePythonChecker 注入的脚本是同一段逻辑：
+ * Worker 里跑 Pyodide，这里跑系统 python3，两端必须给出同一种 JSON（诊断数组）
+ * 和 `<pta>:行:列: 级别: 说明` 文本，checkCode 的解析与测试才能共用一条路。
+ * 改动时两边一起改。
+ *
+ * JSON 数组元素：{line: 1 起, column: UTF-8 字节列, severity: 'error'|'warning', message}。
+ * 语法错误优先返回（此时不再找未定义名字）；语法没问题才做 AST 检查。
+ */
+const PYTHON_CHECK_SCRIPT = String.raw`
+import ast
+import builtins
+import json as __pta_json
+import re
+import sys
+import textwrap
+
+# 片段（代码填空题）插进裁判程序后，题面/裁判提供的名字不在作答区里：
+# 这类未定义名字按 warning 报，普通代码按 error 报。
+__PTA_INDENT_ERROR = re.compile(
+    r'unexpected indent|expected an indented block|unindent does not match|inconsistent use of tabs'
+)
+# 解释器/模块系统直接提供的 dunder 不算未定义名字
+__PTA_EXTRA_NAMES = frozenset((
+    '__name__', '__file__', '__doc__', '__package__', '__spec__', '__loader__',
+    '__builtins__', '__annotations__', '__cached__', '__path__', '__all__',
+    '__version__', '__debug__', '__class__', '__dict__', '__module__',
+    '__qualname__', '__slots__', '__weakref__', '__metaclass__',
+))
+# match 语句的绑定名不是 ast.Name，得单独收集（这些节点 Python 3.10+ 才有）
+__PTA_MATCH_BINDINGS = tuple(
+    node for node in (
+        getattr(ast, 'MatchAs', None),
+        getattr(ast, 'MatchStar', None),
+        getattr(ast, 'MatchMapping', None),
+    ) if node is not None
+)
+
+
+def __pta_add_arguments(names, arguments):
+    for arg in list(getattr(arguments, 'posonlyargs', [])) + list(arguments.args) + list(arguments.kwonlyargs):
+        names.add(arg.arg)
+    if arguments.vararg:
+        names.add(arguments.vararg.arg)
+    if arguments.kwarg:
+        names.add(arguments.kwarg.arg)
+
+
+def __pta_defined_names(tree):
+    names = set(dir(builtins))
+    names.update(__PTA_EXTRA_NAMES)
+    star_import = False
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Name):
+            if isinstance(node.ctx, ast.Store):
+                names.add(node.id)
+        elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            names.add(node.name)
+            __pta_add_arguments(names, node.args)
+        elif isinstance(node, ast.Lambda):
+            __pta_add_arguments(names, node.args)
+        elif isinstance(node, ast.ClassDef):
+            names.add(node.name)
+        elif isinstance(node, ast.Import):
+            for alias in node.names:
+                names.add(alias.asname or alias.name.split('.')[0])
+        elif isinstance(node, ast.ImportFrom):
+            for alias in node.names:
+                if alias.name == '*':
+                    star_import = True
+                else:
+                    names.add(alias.asname or alias.name)
+        elif isinstance(node, ast.ExceptHandler):
+            if node.name:
+                names.add(node.name)
+        elif isinstance(node, (ast.Global, ast.Nonlocal)):
+            names.update(node.names)
+        elif __PTA_MATCH_BINDINGS and isinstance(node, __PTA_MATCH_BINDINGS):
+            for attribute in ('name', 'rest'):
+                bound = getattr(node, attribute, None)
+                if bound:
+                    names.add(bound)
+    return names, star_import
+
+
+def __pta_undefined_names(tree, fragment):
+    names, star_import = __pta_defined_names(tree)
+    # from x import * 会带进未知名字：任何「未定义」判断都可能误报，整段跳过
+    if star_import:
+        return []
+    first = {}
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Name) or not isinstance(node.ctx, ast.Load):
+            continue
+        if node.id in names:
+            continue
+        position = (node.lineno, node.col_offset)
+        if node.id not in first or position < first[node.id]:
+            first[node.id] = position
+    severity = 'warning' if fragment else 'error'
+    ordered = sorted(first.items(), key=lambda item: item[1])
+    return [
+        {
+            'line': position[0],
+            'column': position[1] + 1,
+            'severity': severity,
+            'message': "undefined name '%s'" % name,
+        }
+        for name, position in ordered
+    ]
+
+
+def __pta_compile_check(source, fragment):
+    try:
+        compile(source, '<pta>', 'exec')
+    except (SyntaxError, IndentationError, TabError) as error:
+        message = getattr(error, 'msg', '') or str(error)
+        # 片段插进裁判程序后的缩进层级未知：缩进类报错不算学生的错，去掉缩进后再找未定义名字
+        if fragment and __PTA_INDENT_ERROR.search(message):
+            try:
+                return __pta_undefined_names(ast.parse(textwrap.dedent(source)), fragment)
+            except (SyntaxError, ValueError):
+                return []
+        line = getattr(error, 'lineno', None) or 1
+        text = getattr(error, 'text', None) or ''
+        offset = getattr(error, 'offset', None) or 1
+        # 缩进错误常把位置指在行首空白里：挪到第一个非空白字符，波浪线才不会画在上一行
+        indent = len(text) - len(text.lstrip(' \t'))
+        if indent:
+            offset = max(offset, indent + 1)
+        prefix = text[:max(0, offset - 1)]
+        # 列号按 UTF-8 字节给：宿主用 offsetOfPosition 换算成字符下标，中文注释不会指偏
+        return [{
+            'line': line,
+            'column': len(prefix.encode('utf-8')) + 1,
+            'severity': 'error',
+            'message': message,
+        }]
+    except ValueError as error:
+        # 源码里有 NUL 之类，compile 自己拒绝且不给位置：指到第一行
+        return [{'line': 1, 'column': 1, 'severity': 'error', 'message': str(error)}]
+    try:
+        tree = ast.parse(source)
+    except (SyntaxError, ValueError):
+        return []
+    return __pta_undefined_names(tree, fragment)
+`;
+
+/** 脚本入口：源码从 stdin 读，片段模式用命令行参数传，结果是一行 JSON 数组 */
+const PYTHON_CHECK_ENTRY = String.raw`
+__pta_source = sys.stdin.buffer.read().decode('utf-8')
+__pta_fragment = len(sys.argv) > 1 and sys.argv[1] == '1'
+print(__pta_json.dumps(__pta_compile_check(__pta_source, __pta_fragment)))
+`;
+
+/** Python 检查结果（JSON 数组）→ 与 clang 同形状的 `<pta>:行:列: 级别: 说明` 文本 */
+function pythonCheckOutput(items: unknown[]): { compileOutput: string; hasError: boolean } {
+  const lines: string[] = [];
+  let hasError = false;
+  for (const item of items) {
+    if (!item || typeof item !== 'object') continue;
+    const record = item as { line?: unknown; column?: unknown; severity?: unknown; message?: unknown };
+    if (typeof record.message !== 'string' || !record.message) continue;
+    const severity = record.severity === 'warning' ? 'warning' : 'error';
+    if (severity === 'error') hasError = true;
+    lines.push(
+      `<pta>:${Number(record.line) || 1}:${Number(record.column) || 1}: ${severity}: ${record.message}\n`,
+    );
+  }
+  return { compileOutput: lines.join(''), hasError };
 }
 
 /**
- * Node 环境的 Python 语法检查：起 python3 只做 compile(source, '<pta>', 'exec')，不执行代码。
+ * Node 环境的 Python 检查：起 python3 跑 PYTHON_CHECK_SCRIPT（compile + AST），不执行代码。
  *
  * 浏览器里走 compile-worker.js 的 Pyodide 分支；两边给出同一种结构化输出
- * `<pta>:行:列: error: 说明`，checkCode 的解析与测试才能共用一条路。
+ * `<pta>:行:列: 级别: 说明`，checkCode 的解析与测试才能共用一条路。
+ * fragment = 代码填空题：未定义名字只报 warning（题面/裁判可能提供这些名字）。
  * 导出给 scripts/test-compile.mjs 直接验证「只编译不执行」。
  */
-export async function checkPythonWithNode(source: string, signal?: AbortSignal): Promise<EngineRunResult> {
+export async function checkPythonWithNode(
+  source: string,
+  signal?: AbortSignal,
+  fragment = false,
+): Promise<EngineRunResult> {
   const started = Date.now();
   // 平台相关模块：静态 import 会把 node:child_process 带进浏览器构建，只能运行期加载
   const modName = 'node:child_process';
   const { spawn } = await import(modName);
-  // 与 compile-worker.js 里的 __pta_compile_check 保持一致：
-  // compile 只检查语法；行号从 1 开始，列号换算成 UTF-8 字节（offsetOfPosition 按字节解释）
-  const script = [
-    'import json, sys',
-    'source = sys.stdin.buffer.read().decode("utf-8")',
-    'payload = None',
-    'try:',
-    '    compile(source, "<pta>", "exec")',
-    'except (SyntaxError, IndentationError, TabError) as error:',
-    '    message = getattr(error, "msg", "") or str(error)',
-    '    line = getattr(error, "lineno", None) or 1',
-    '    text = getattr(error, "text", None) or ""',
-    '    offset = getattr(error, "offset", None) or 1',
-    '    indent = len(text) - len(text.lstrip(" \\t"))',
-    '    if indent:',
-    '        offset = max(offset, indent + 1)',
-    '    prefix = text[:max(0, offset - 1)]',
-    '    payload = {"line": line, "column": len(prefix.encode("utf-8")) + 1, "message": message}',
-    'except ValueError as error:',
-    '    payload = {"line": 1, "column": 1, "message": str(error)}',
-    'print(json.dumps({"error": payload}))',
-  ].join('\n');
+  const script = PYTHON_CHECK_SCRIPT + PYTHON_CHECK_ENTRY;
 
   return new Promise<EngineRunResult>((resolve) => {
-    const child = spawn('python3', ['-c', script], { stdio: ['pipe', 'pipe', 'pipe'] });
+    const child = spawn('python3', ['-c', script, fragment ? '1' : '0'], { stdio: ['pipe', 'pipe', 'pipe'] });
     let stdout = '';
     let stderr = '';
     child.stdout.on('data', (d: unknown) => { stdout += String(d); });
@@ -321,28 +487,25 @@ export async function checkPythonWithNode(source: string, signal?: AbortSignal):
     child.on('close', () => {
       // 只认最后一行：解释器启动时的杂音（sitecustomize 之类）不该把结果搅坏
       const lastLine = stdout.trim().split('\n').at(-1) ?? '';
-      let parsed: PythonCheckPayload | null = null;
+      let parsed: unknown = null;
       try {
-        parsed = JSON.parse(lastLine || 'null') as PythonCheckPayload | null;
+        parsed = JSON.parse(lastLine || 'null');
       } catch {
         parsed = null;
       }
-      if (!parsed || !('error' in parsed)) {
+      if (!Array.isArray(parsed)) {
         finish({ stage: 'engine-error', message: stderr.trim() || 'python3 没有返回检查结果' });
         return;
       }
-      const detail = parsed.error;
-      if (!detail) {
+      const { compileOutput, hasError } = pythonCheckOutput(parsed);
+      if (!compileOutput) {
         finish({ stage: 'ok' });
         return;
       }
-      const line = Number(detail.line) || 1;
-      const column = Number(detail.column) || 1;
-      const message = String(detail.message ?? '语法错误');
       finish({
-        stage: 'compile-error',
-        exitCode: 1,
-        compileOutput: `<pta>:${line}:${column}: error: ${message}\n`,
+        stage: hasError ? 'compile-error' : 'ok',
+        exitCode: hasError ? 1 : 0,
+        compileOutput,
       });
     });
     if (signal) {
@@ -505,7 +668,7 @@ export interface CodeCheckResult {
 /**
  * 实时检查的语言：
  *   · C / C++ 走内置 clang（-x c / -x c++）
- *   · Python 走内置 Pyodide 的 compile()，只检查语法、不执行
+ *   · Python 走内置 Pyodide 的 compile() + AST，只做静态检查、不执行
  *   · Java 没有内置编译器，只做括号 / 分号这类规则检查
  */
 export type CheckLanguage = 'c' | 'cpp' | 'python' | 'java';
@@ -626,7 +789,7 @@ function engineCheckResult(
 /**
  * 给作答区代码做一次「只检查不运行」的实时检查。
  *
- * C / C++ 用内置 clang；Python 用内置 Pyodide 的 compile(..., 'exec')；
+ * C / C++ 用内置 clang；Python 用内置 Pyodide 的 compile(..., 'exec') + AST（语法 + 未定义名字）；
  * Java 没有内置编译器，只返回规则检查（note 里写明）。
  * 别的语言返回 note 让界面如实显示。
  */
@@ -659,10 +822,11 @@ export async function checkCode(
   let raw: EngineRunResult;
   try {
     if (lang === 'python') {
-      // 浏览器走 Pyodide（Worker 里只 compile 不执行）；Node 测试环境没有 Pyodide，退回 python3
+      // 浏览器走 Pyodide（Worker 里 compile + AST，不执行）；Node 测试环境没有 Pyodide，退回 python3。
+      // fragment 要带过去：代码填空片段里的未定义名字只算 warning（题面/裁判可能提供这些名字）
       raw = hasNodeRuntime()
-        ? await checkPythonWithNode(source, signal)
-        : await checkInEngine(source, signal, 'python');
+        ? await checkPythonWithNode(source, signal, fragment)
+        : await checkInEngine(source, signal, 'python', fragment);
     } else {
       // 代码填空题的作答区只是题面裁判程序的一部分：printf/puts 这些头在裁判程序里，
       // 独立检查时强制带上常用头，避免报一屏假「未声明」。
