@@ -557,6 +557,106 @@ function isBodylessControl(codeOnly: string): boolean {
   return false;
 }
 
+/**
+ * 把过长的 if/while/for 条件按顶层 && / || 拆行。
+ *
+ * 只在「单行超过 maxLength」且条件里确实有顶层逻辑运算符时动手：
+ *
+ *   if (condition1 && condition2 && condition3) {
+ *
+ * 变成：
+ *
+ *   if (condition1 &&
+ *       condition2 &&
+ *       condition3
+ *   ) {
+ *
+ * 括号内的嵌套条件（如 `a && (b || c)`）保持为一组，不再拆。
+ * 字符串/注释里的 && 不算；带行尾注释的行先跳过，避免把注释跟着切断。
+ */
+export function wrapLongConditions(code: string, maxLength = 100): string {
+  const lines = code.replace(/\r\n?/g, '\n').split('\n');
+  const out: string[] = [];
+  const headPattern = /^\s*(?:\}\s*)?(?:else\s+)?(?:if|while|for)\s*\(/;
+
+  for (const raw of lines) {
+    if (raw.trim().length <= maxLength || raw.includes('//') || raw.includes('/*')) {
+      out.push(raw);
+      continue;
+    }
+    const codeOnly = stripLiteralsAndComments(raw, false).code;
+    if (!headPattern.test(codeOnly)) {
+      out.push(raw);
+      continue;
+    }
+    const open = codeOnly.indexOf('(');
+    if (open < 0) {
+      out.push(raw);
+      continue;
+    }
+    let depth = 0;
+    let close = -1;
+    for (let index = open; index < codeOnly.length; index += 1) {
+      const ch = codeOnly[index];
+      if (ch === '(') depth += 1;
+      else if (ch === ')') {
+        depth -= 1;
+        if (depth === 0) {
+          close = index;
+          break;
+        }
+      }
+    }
+    if (close < 0) {
+      out.push(raw);
+      continue;
+    }
+
+    const innerCode = codeOnly.slice(open + 1, close);
+    const innerRaw = raw.slice(open + 1, close);
+    const segments: string[] = [];
+    const operators: string[] = [];
+    let start = 0;
+    depth = 0;
+    for (let index = 0; index < innerCode.length; index += 1) {
+      const ch = innerCode[index];
+      if (ch === '(' || ch === '[' || ch === '{') depth += 1;
+      else if (ch === ')' || ch === ']' || ch === '}') depth -= 1;
+      else if (depth === 0 && (innerCode.startsWith('&&', index) || innerCode.startsWith('||', index))) {
+        segments.push(innerRaw.slice(start, index));
+        operators.push(innerCode.slice(index, index + 2));
+        index += 1;
+        start = index + 1;
+      }
+    }
+    if (operators.length === 0) {
+      out.push(raw);
+      continue;
+    }
+    segments.push(innerRaw.slice(start));
+    if (segments.length !== operators.length + 1) {
+      out.push(raw);
+      continue;
+    }
+
+    const base = /^\s*/.exec(raw)?.[0] ?? '';
+    let head = raw.slice(base.length, open + 1).trimEnd();
+    // 换行后的条件头统一写成 `if (` / `while (`，和用户预期的多行格式一致；
+    // 短条件仍保留原来的 `if(` 写法，不强改全文件风格。
+    head = head.replace(/^((?:\}\s*)?(?:else\s+)?(?:if|while|for))\s*\($/, '$1 (');
+    const continuation = base + ' '.repeat(INDENT_WIDTH);
+    const suffix = raw.slice(close).trimStart();
+    out.push(`${base}${head}${segments[0].trim()} ${operators[0]}`);
+    for (let index = 1; index < segments.length; index += 1) {
+      const operator = index < operators.length ? ` ${operators[index]}` : '';
+      out.push(`${continuation}${segments[index].trim()}${operator}`);
+    }
+    out.push(`${base}${suffix}`);
+  }
+
+  return out.join('\n');
+}
+
 /** C：逐行重排空格，再重算缩进 */
 function formatC(source: string): string {
   const lines = source.replace(/\r\n?/g, '\n').split('\n');
@@ -576,7 +676,7 @@ function formatC(source: string): string {
     inBlock = inBlockComment;
     spaced.push(spaceTokens(tokens, false));
   }
-  return tidyPlain(reindentByBraces(spaced.join('\n')));
+  return tidyPlain(wrapLongConditions(reindentByBraces(spaced.join('\n'))));
 }
 
 /* ------------------------------------------------------------------ *
@@ -888,7 +988,7 @@ function formatJava(source: string): string {
     inBlock = result.inBlockComment;
     spaced.push(spaceTokensJava(result.tokens));
   }
-  return tidyPlain(reindentByBraces(spaced.join('\n'), { java: true }));
+  return tidyPlain(wrapLongConditions(reindentByBraces(spaced.join('\n'), { java: true })));
 }
 
 /* ------------------------------------------------------------------ *

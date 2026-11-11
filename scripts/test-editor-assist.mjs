@@ -1,7 +1,7 @@
 // 编辑器增强共享层的单测：格式化、彩虹括号、诊断解析、标准库注释表。
 // 都是纯函数，Node 剥类型后能直接导入 .ts，不用先构建。
 // 用法：node scripts/test-editor-assist.mjs
-import { formatCode, formatSummary, stripLiteralsAndComments } from '../src/shared/code-format.ts';
+import { formatCode, formatSummary, stripLiteralsAndComments, wrapLongConditions } from '../src/shared/code-format.ts';
 import { bracketDepths, RAINBOW_COLORS } from '../src/shared/code-brackets.ts';
 import { offsetOfPosition, parseClangDiagnostics, isFragmentContextDiagnostic } from '../src/shared/code-diagnostics.ts';
 import { C_LIBRARY_DOCS, lookupCFunctionDoc } from '../src/shared/c-library-docs.ts';
@@ -36,6 +36,41 @@ check(
   '乘号两侧补空格（7*2 → 7 * 2）',
   formatCode('7*2', 'c') === '7 * 2',
   formatCode('7*2', 'c'),
+);
+
+// 多条件过长时按顶层 && / || 拆行，`) {` 单独一行
+check(
+  '长 if 条件按 && 拆行并缩进',
+  wrapLongConditions('if (a && b && c) {', 10) ===
+    'if (a &&\n    b &&\n    c\n) {',
+  wrapLongConditions('if (a && b && c) {', 10),
+);
+check(
+  '嵌套条件组不拆开',
+  wrapLongConditions('if (a && (b || c) && d) {', 10) ===
+    'if (a &&\n    (b || c) &&\n    d\n) {',
+  wrapLongConditions('if (a && (b || c) && d) {', 10),
+);
+check('短条件保持单行', wrapLongConditions('if (a && b) {', 100) === 'if (a && b) {');
+const longCondition = formatCode(
+  'if (conditionNumberOne && conditionNumberTwo && conditionNumberThree && conditionNumberFour && conditionNumberFive) {\n    doSomething();\n}',
+  'c',
+);
+check(
+  'formatCode 对长条件使用换行格式',
+  longCondition.includes('if (conditionNumberOne &&\n') &&
+    longCondition.includes('    conditionNumberTwo &&\n') &&
+    longCondition.includes('    conditionNumberFive\n) {'),
+  longCondition,
+);
+const longJavaCondition = formatCode(
+  'if (conditionNumberOne && conditionNumberTwo && conditionNumberThree && conditionNumberFour && conditionNumberFive) {\n    doSomething();\n}',
+  'java',
+);
+check(
+  'Java 长条件同样换行',
+  longJavaCondition.includes('    conditionNumberTwo &&\n') && longJavaCondition.includes('\n) {'),
+  longJavaCondition,
 );
 
 // 声明符 / 解引用 / 自增不能被当成乘法，否则 `int *p` 会变成 `int * p`
