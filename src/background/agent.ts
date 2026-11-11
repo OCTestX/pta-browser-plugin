@@ -60,6 +60,7 @@ import {
   choiceDeniesWrite,
   parseOptionQuestion,
   submitGuardReason,
+  whyToolBlockReason,
   writeGuardReason,
 } from '../shared/guardrails';
 import type { DiffPayload, TokenUsage } from '../shared/messages';
@@ -115,7 +116,11 @@ function commandInstruction(id: string, rest: string): string {
       '【本轮指令 /why】用户要你讲清楚他现在的代码错在哪里。',
       '先 read_editor_code 读出作答区里现在的代码，再 read_problem 看题目要求，',
       '然后指出：错在哪一行、为什么会错、正确写法是什么、怎么验证。',
-      '这一轮只讲解，不要改代码、不要提交。' + extra,
+      '这一轮只讲解，不要改代码、不要提交。',
+      '不要调用 js_inject 翻页面/侧栏/判题记录，也不要调 read_judge_result；',
+      '只允许 read_editor_code、read_problem 和 compile_and_run_* 做本地验证。',
+      '如果代码能通过样例、没有明显错误，就直接说「代码没有发现错误」，',
+      '不要为了找错误去翻判题历史、侧栏状态或测试点。' + extra,
     ].join('\n');
   }
   if (id === 'fuck') {
@@ -307,12 +312,13 @@ export async function runAgent(options: RunAgentOptions): Promise<void> {
       });
       const toolName = call.function.name;
       // 硬门：没 ask 过（且用户本条没明确授权）时，直接拦下改代码/提交，逼模型先问
-      const blockedReason =
-        toolName === 'write_editor_code'
+      const commandBlocked = command?.id === 'why' ? whyToolBlockReason(toolName) : null;
+      const blockedReason = commandBlocked ??
+        (toolName === 'write_editor_code'
           ? writeGuardReason({ askUsed: askUsedThisTurn, denied: writeDenied, lastUserText, forced })
           : toolName === 'submit_answer'
             ? submitGuardReason({ askUsed: askUsedThisTurn, denied: submitDenied, lastUserText, forced })
-            : null;
+            : null);
 
       let outcome: ToolOutcome;
       if (fuckMode && toolName === 'ask') {

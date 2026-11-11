@@ -7,6 +7,7 @@ import {
   submitGuardReason,
   userAskedToSubmit,
   userAskedToWrite,
+  whyToolBlockReason,
   writeGuardReason,
 } from '../src/shared/guardrails.ts';
 
@@ -90,5 +91,16 @@ check('普通疑问句不转 ask', parseOptionQuestion('为什么这里会 WA？
 check('没有选项也没有提示词的句子不转 ask', parseOptionQuestion('通过率 60%，这题怎么做？') === null);
 check('只有列表没有提问不转 ask', parseOptionQuestion('总结：\n1. 先读题\n2. 再写代码') === null);
 check('单选项不转 ask', parseOptionQuestion('要提交吗？\n1. 提交') === null);
+
+check(
+  '/why 拦下会翻页面/判题/改代码的工具',
+  ['js_inject', 'read_judge_result', 'submit_answer', 'write_editor_code', 'next_problem']
+    .every((name) => whyToolBlockReason(name) !== null),
+);
+check(
+  '/why 放行读代码、读题与本地编译',
+  ['read_editor_code', 'read_problem', 'compile_and_run_python', 'compile_and_run_cpp']
+    .every((name) => whyToolBlockReason(name) === null),
+);
 
 console.log('\n护栏判定校验通过');

@@ -572,6 +572,7 @@ npm run icons              # 重新生成图标（python3 + Pillow）
 
 | 版本 | 主要内容 |
 |---|---|
+| v6.8.4 | 修 `/why` 陷入 `js_inject` 死循环：指令说明明确禁止翻页面/侧栏/判题记录，只允许 `read_editor_code`、`read_problem` 和 `compile_and_run_*`；新增 `/why` 工具护栏，直接拦下 `js_inject`、`read_judge_result`、`submit_answer`、`write_editor_code`、`next_problem`。代码没有明显错误时直接回答“代码没有发现错误”，不再为了找错误去翻判题历史 |
 | v6.8.3 | 修斜杠指令不可用：`/why`、`/what`、`/resolve`、`/fuck` 的指令说明被作为第二条 `system` 追加到 user 消息后面，OpenAI 兼容接口直接返回 HTTP 400「System message must be at the beginning」。现在说明并入开头的 system，消息顺序保持 `system → user → assistant/tool`；新增消息顺序回归测试 |
 | v6.8.2 | 修浏览器端 Python 实时检查恒为空：worker 里的 `__pta_compile_check` 返回 Python list，宿主只解析字符串，PyProxy 被当成空数组；现在所有分支都 `json.dumps` 成 JSON 字符串，并补 worker 源码回归断言。`returnsentence`、缺冒号/缩进等现在会真正显示 |
 | v6.8.1 | 修用户真机反馈：`compile_and_run_*` 的 `stdin` 传数字时不再被静默丢成空串（`2` → `'2'`）；Python 实时检查增加 AST 未定义名字检查，`returnsentence` 这类拼写会报 `undefined name`（fragment 模式降为 warning，保留语法错误）；提交/读判题只在**判题弹窗内**点「刷新 / Reload」，删掉页面级 Reload 回退，避免整页刷新导致拿不到判题结果 |

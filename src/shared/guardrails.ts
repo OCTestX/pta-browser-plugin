@@ -157,3 +157,20 @@ export function parseOptionQuestion(text: string): OptionQuestion | null {
 
   return { question, options: unique };
 }
+
+/** /why 只讲解：这些工具会让模型去翻页面/判题记录，越翻越偏，直接拦下 */
+const WHY_BLOCKED_TOOLS: Record<string, true> = {
+  js_inject: true,
+  read_judge_result: true,
+  submit_answer: true,
+  write_editor_code: true,
+  next_problem: true,
+};
+
+/** `/why` 本轮是否应拦下某个工具；返回 null 表示放行 */
+export function whyToolBlockReason(toolName: string): string | null {
+  if (!WHY_BLOCKED_TOOLS[toolName]) return null;
+  return '⛔ /why 只讲解：不要用 js_inject 翻页面/侧栏/判题记录，也不要提交或改代码。'
+    + '只用 read_editor_code、read_problem 和 compile_and_run_* 本地验证；'
+    + '代码没有明显错误就直接说“代码没有发现错误”，不要为了找错误去翻判题历史。';
+}
