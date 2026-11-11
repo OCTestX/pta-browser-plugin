@@ -48,6 +48,11 @@ check(
   compileWorkerSource.includes('return __pta_json.dumps(__pta_undefined_names') &&
     compileWorkerSource.includes('return __pta_json.dumps([{'),
 );
+check(
+  'Python worker 冲掉没有换行的尾段输出',
+  compileWorkerSource.includes('sys.stdout.write') &&
+    compileWorkerSource.includes("replace(/\\n$/, '')"),
+);
 
 /* ---------- Python stdin：EOF 必须是 null ---------- */
 

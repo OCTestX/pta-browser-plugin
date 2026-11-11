@@ -572,6 +572,7 @@ npm run icons              # 重新生成图标（python3 + Pillow）
 
 | 版本 | 主要内容 |
 |---|---|
+| v6.8.7 | 修 Python 内置运行器丢输出：Pyodide 的 stdout/stderr 按行批处理，`print(..., end=" ")` 这类最后没有换行的尾段不会触发回调，工具就报“程序没有产生任何输出”。现在执行完补一个换行冲缓冲区，再裁掉补的换行；`[[95,92,80],…]` 样例实测输出 `89.0 60.3 88.0`。补 worker 回归断言 |
 | v6.8.6 | 提示词新增「写简单、短行、可读的代码」规则：优先在用户原代码上最小删改；单行建议 ≤100 列；多条件 `if`/`while` 按 `&&`/`||` 分行、条件缩进、`) {` 单独一行。代码整理按钮同步支持该格式：C/C++/Java 的超长联合条件自动拆行，嵌套条件组保持完整，短条件不强制改 |
 | v6.8.5 | 修「模型下拉选择按钮消失」：`useSettings` 只在面板挂载时读一次设置，后台或其它标签保存 API Key 后，当前面板仍以为 `hasApiKey=false`，模型旁边的「选模型」按钮不出现。现在监听 `pta-assistant-settings` 的 `storage.onChanged` 并重新加载设置，模型/接口地址也随 view 同步；冒烟覆盖“后台保存 Key 后按钮刷新出现” |
 | v6.8.4 | 修 `/why` 陷入 `js_inject` 死循环：指令说明明确禁止翻页面/侧栏/判题记录，只允许 `read_editor_code`、`read_problem` 和 `compile_and_run_*`；新增 `/why` 工具护栏，直接拦下 `js_inject`、`read_judge_result`、`submit_answer`、`write_editor_code`、`next_problem`。代码没有明显错误时直接回答“代码没有发现错误”，不再为了找错误去翻判题历史 |

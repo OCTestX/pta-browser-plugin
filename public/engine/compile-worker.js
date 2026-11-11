@@ -87,8 +87,17 @@ async function runPython({ id, code, stdin }) {
 
     await py.runPythonAsync(code);
 
-    stdout = outChunks.join('');
-    stderr = errChunks.join('');
+    // Pyodide 的 stdout/stderr 是「按行批处理」的：最后一段没有换行（例如
+    // print(..., end=" ")）不会触发 batched 回调，输出会整个丢掉。写一个换行
+    // 把缓冲区冲出来，再把额外补的换行去掉。
+    try {
+      await py.runPythonAsync('import sys\nsys.stdout.write("\\n")\nsys.stderr.write("\\n")');
+    } catch {
+      // 用户代码如果把 stdout/stderr 关了，忽略这次补换行
+    }
+
+    stdout = outChunks.join('').replace(/\n$/, '');
+    stderr = errChunks.join('').replace(/\n$/, '');
   } catch (e) {
     error = e && e.message ? e.message : String(e);
     // 异常信息往往在 stderr 里，模型要看到堆栈
