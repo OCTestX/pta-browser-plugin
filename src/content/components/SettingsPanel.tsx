@@ -125,6 +125,16 @@ export function SettingsPanel({ view, onSave, onBack }: SettingsPanelProps) {
     if (view?.vlmMode) setVlmMode(view.vlmMode);
   }, [view?.vlmMode]);
 
+  // 模型/接口地址也可能在别处更新；不跟着 view 同步会显示旧模型，
+  // 并在 hasApiKey 刚变 true 时仍然看不到「选模型」按钮。
+  useEffect(() => {
+    if (view?.baseURL) setBaseURL(view.baseURL);
+  }, [view?.baseURL]);
+
+  useEffect(() => {
+    if (view?.model) setModel(view.model);
+  }, [view?.model]);
+
   useEffect(() => {
     if (typeof view?.forcePtaRun === 'boolean') setForcePtaRun(view.forcePtaRun);
   }, [view?.forcePtaRun]);

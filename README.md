@@ -572,6 +572,7 @@ npm run icons              # 重新生成图标（python3 + Pillow）
 
 | 版本 | 主要内容 |
 |---|---|
+| v6.8.5 | 修「模型下拉选择按钮消失」：`useSettings` 只在面板挂载时读一次设置，后台或其它标签保存 API Key 后，当前面板仍以为 `hasApiKey=false`，模型旁边的「选模型」按钮不出现。现在监听 `pta-assistant-settings` 的 `storage.onChanged` 并重新加载设置，模型/接口地址也随 view 同步；冒烟覆盖“后台保存 Key 后按钮刷新出现” |
 | v6.8.4 | 修 `/why` 陷入 `js_inject` 死循环：指令说明明确禁止翻页面/侧栏/判题记录，只允许 `read_editor_code`、`read_problem` 和 `compile_and_run_*`；新增 `/why` 工具护栏，直接拦下 `js_inject`、`read_judge_result`、`submit_answer`、`write_editor_code`、`next_problem`。代码没有明显错误时直接回答“代码没有发现错误”，不再为了找错误去翻判题历史 |
 | v6.8.3 | 修斜杠指令不可用：`/why`、`/what`、`/resolve`、`/fuck` 的指令说明被作为第二条 `system` 追加到 user 消息后面，OpenAI 兼容接口直接返回 HTTP 400「System message must be at the beginning」。现在说明并入开头的 system，消息顺序保持 `system → user → assistant/tool`；新增消息顺序回归测试 |
 | v6.8.2 | 修浏览器端 Python 实时检查恒为空：worker 里的 `__pta_compile_check` 返回 Python list，宿主只解析字符串，PyProxy 被当成空数组；现在所有分支都 `json.dumps` 成 JSON 字符串，并补 worker 源码回归断言。`returnsentence`、缺冒号/缩进等现在会真正显示 |

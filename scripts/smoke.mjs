@@ -437,6 +437,20 @@ noKeyPanel.setValue(noKeyPanel.find('.field__input[type="text"]'), 'api.siliconf
 await tick();
 check('接口地址不完整时还是没有下拉框', !noKeyPanel.find('.field__models'));
 
+// 后台在别处保存了 Key（例如另一个标签页/子代理）：storage.onChanged 后 view 要刷新，
+// 不能一直停在 hasApiKey=false，否则「选模型」按钮会消失。
+const lateKeyPanel = boot({ hasApiKey: false });
+await tick();
+lateKeyPanel.toggle();
+await tick();
+lateKeyPanel.find('.panel__close[title="设置"]').click();
+await tick();
+check('后台保存 Key 前没有模型下拉框', !lateKeyPanel.find('.field__models'));
+await lateKeyPanel.window.chrome.runtime.sendMessage({ type: 'settings/save', patch: { apiKey: 'sk-late' } });
+await lateKeyPanel.window.chrome.storage.local.set({ 'pta-assistant-settings': {} });
+await tick();
+check('后台 Key 变化后模型下拉框刷新出现', Boolean(lateKeyPanel.find('.field__models')));
+
 // 还没保存的 Key 也要能带着去问模型列表
 noKeyPanel.setValue(noKeyPanel.find('.field__input[type="text"]'), 'https://api.siliconflow.cn/v1');
 await tick();

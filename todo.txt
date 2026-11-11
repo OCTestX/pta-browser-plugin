@@ -279,6 +279,8 @@ v6.8 已完成：Python3 内置检查与注释整理
 - v6.8.4 修 `/why` 循环 js_inject：指令禁止翻页面/判题，护栏拦下
   `js_inject/read_judge_result/submit_answer/write_editor_code/next_problem`；
   没有明显错误时直接说“代码没有发现错误”。
+- v6.8.5 修模型下拉消失：`useSettings` 监听 `pta-assistant-settings` 变化并刷新，
+  后台/其它标签保存 Key 后当前面板也能看到「选模型」；模型/接口地址随 view 同步。
 
 
 ────────────────────────────────────────────────────────
