@@ -272,6 +272,8 @@ v6.8 已完成：Python3 内置检查与注释整理
 - v6.8.1 真机反馈修复：Python `stdin` 数字归一化；AST 未定义名字检查
   （`returnsentence` 会报 `undefined name`）；提交等待只点判题弹窗内 Reload，
   不再整页刷新丢判题结果。
+- v6.8.2 修浏览器端 Python 检查恒为空：worker 返回 Python list 未序列化，
+  宿主把 PyProxy 当空数组；所有分支改为 `json.dumps`，并加 worker 源码回归断言。
 
 
 ────────────────────────────────────────────────────────

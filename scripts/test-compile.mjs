@@ -37,6 +37,18 @@ const hasAssets = async () =>
     ASSETS.map(async (name) => (await stat(path.join(ENGINE_DIR, name)).catch(() => null))?.size ?? 0),
   )).every((size) => size > 0);
 
+/* ---------- Python worker：检查结果必须是 JSON 字符串 ---------- */
+
+// 浏览器端 checkPython 只解析字符串；如果 Python 函数直接 return list，
+// payload 是 PyProxy，宿主会当成空数组，所有 Python 诊断都会消失。Node 路径
+// 外面裹了 json.dumps，所以单测覆盖不到，这里直接盯 worker 源码。
+const compileWorkerSource = await readFile(path.join(ENGINE_DIR, 'compile-worker.js'), 'utf8');
+check(
+  'Python worker 检查器把诊断序列化成 JSON 字符串',
+  compileWorkerSource.includes('return __pta_json.dumps(__pta_undefined_names') &&
+    compileWorkerSource.includes('return __pta_json.dumps([{'),
+);
+
 /* ---------- Python stdin：EOF 必须是 null ---------- */
 
 // 回归：Pyodide 只把 null/undefined 当 EOF；返回 '' 会让 sys.stdin.read() 死循环。

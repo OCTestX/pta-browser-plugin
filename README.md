@@ -572,6 +572,7 @@ npm run icons              # 重新生成图标（python3 + Pillow）
 
 | 版本 | 主要内容 |
 |---|---|
+| v6.8.2 | 修浏览器端 Python 实时检查恒为空：worker 里的 `__pta_compile_check` 返回 Python list，宿主只解析字符串，PyProxy 被当成空数组；现在所有分支都 `json.dumps` 成 JSON 字符串，并补 worker 源码回归断言。`returnsentence`、缺冒号/缩进等现在会真正显示 |
 | v6.8.1 | 修用户真机反馈：`compile_and_run_*` 的 `stdin` 传数字时不再被静默丢成空串（`2` → `'2'`）；Python 实时检查增加 AST 未定义名字检查，`returnsentence` 这类拼写会报 `undefined name`（fragment 模式降为 warning，保留语法错误）；提交/读判题只在**判题弹窗内**点「刷新 / Reload」，删掉页面级 Reload 回退，避免整页刷新导致拿不到判题结果 |
 | v6.8.0 | 实时检查扩到 Python3：内置 Pyodide 只 `compile()` 不执行，返回行/UTF-8 字节列/中文建议；C/C++ 仍走 clang `-fsyntax-only`。Java 加入保守规则检查（括号/引号/明显缺分号/`if` 缺括号）与真正的 Java 代码整理（缩进、运算符空格、泛型尖括号保护、文本块保守跳过）。修 `/* ... */` 整理后丢失分隔符的问题；C/C++ 单行、行尾、多行块注释都保留 `/*`/`*/`。README、提示词与测试同步 |
 | v6.7.0 | 多标签改为标签页级 `sessionStorage`：草稿/对话刷新保留，同 URL 两个标签也互不串；顺手修掉 reload 后布局被重置。`set_language` 支持 react-select `mousedown` 展开与 `cpp/c++/g++` 别名，判断题选项接受 `T/TRUE/FALSE` 并剥离题干行号槽，`simulate_pta_run` 在编译错误出现时立即读回编译器日志。视觉模式真正把图片作为 `image_url` 送进模型，修正 `vlmMode=off` 语义，加入 Qwen3.8-27B 视觉能力与模型下拉 eye icon；Qwen 的 `files` 空对象用 `filesJson` 兜底。C++ 引擎按阶段超时、排队超时不再重启引擎、日志写满后仍能回收编译诊断。新增 `test-tab-store` / `test-model-capabilities`，扩充 `test-compile` 与 `test-pta-tools` |

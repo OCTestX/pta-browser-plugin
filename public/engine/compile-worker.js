@@ -237,9 +237,9 @@ def __pta_compile_check(source, fragment):
         # 片段插进裁判程序后的缩进层级未知：缩进类报错不算学生的错，去掉缩进后再找未定义名字
         if fragment and __PTA_INDENT_ERROR.search(message):
             try:
-                return __pta_undefined_names(ast.parse(textwrap.dedent(source)), fragment)
+                return __pta_json.dumps(__pta_undefined_names(ast.parse(textwrap.dedent(source)), fragment))
             except (SyntaxError, ValueError):
-                return []
+                return '[]'
         line = getattr(error, 'lineno', None) or 1
         text = getattr(error, 'text', None) or ''
         offset = getattr(error, 'offset', None) or 1
@@ -249,20 +249,20 @@ def __pta_compile_check(source, fragment):
             offset = max(offset, indent + 1)
         prefix = text[:max(0, offset - 1)]
         # 列号按 UTF-8 字节给：宿主用 offsetOfPosition 换算成字符下标，中文注释不会指偏
-        return [{
+        return __pta_json.dumps([{
             'line': line,
             'column': len(prefix.encode('utf-8')) + 1,
             'severity': 'error',
             'message': message,
-        }]
+        }])
     except ValueError as error:
         # 源码里有 NUL 之类，compile 自己拒绝且不给位置：指到第一行
-        return [{'line': 1, 'column': 1, 'severity': 'error', 'message': str(error)}]
+        return __pta_json.dumps([{'line': 1, 'column': 1, 'severity': 'error', 'message': str(error)}])
     try:
         tree = ast.parse(source)
     except (SyntaxError, ValueError):
-        return []
-    return __pta_undefined_names(tree, fragment)
+        return '[]'
+    return __pta_json.dumps(__pta_undefined_names(tree, fragment))
 `);
   pythonCheckerReady = true;
 }
