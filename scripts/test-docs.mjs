@@ -74,6 +74,18 @@ check('README 写的是最近 8 份', readme.includes('最近 8 份'));
 
 check('更新检查缓存 1 小时（代码）', backgroundSettings.includes('CACHE_TTL = 1000 * 60 * 60'));
 check('README 写的是 1 小时内缓存一次', readme.includes('1 小时内缓存一次'));
+check('版本号解析与比较放在 shared（代码）', read('src/shared/update-check.ts').includes('export function isNewerVersion'));
+check('background 不再自带一份版本号解析（代码）', !backgroundSettings.includes('parseSemver'));
+check(
+  '更新检查打的是真实仓库地址（代码）',
+  backgroundSettings.includes('OCTestX/pta-browser-plugin') &&
+    backgroundSettings.includes('octestx/pta-browser-plugin'),
+);
+check(
+  '清单放行了安装包下载域名',
+  JSON.stringify(manifest.host_permissions).includes('https://github.com/*') &&
+    JSON.stringify(manifest.host_permissions).includes('https://gitee.com/*'),
+);
 
 /* ---------- 语言支持：不能吹嘘没实现的能力 ---------- */
 

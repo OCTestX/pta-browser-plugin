@@ -1198,9 +1198,27 @@
   color: var(--pta-accent);
   background: color-mix(in srgb, var(--pta-accent) 8%, transparent);
 }
-.settings__banner a {
+.settings__banner-link {
   color: var(--pta-accent);
   text-decoration: underline;
+  background: none;
+  border: none;
+  padding: 0;
+  font: inherit;
+  cursor: pointer;
+}
+
+/* 检查更新那一行：按钮 + 一句结果提示 */
+.settings__update {
+  margin-top: 8px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.settings__update-note {
+  color: var(--pta-text-muted);
+  font-size: 13px;
 }
 
 /* ---------- 模拟输入测试：一种方法一个按钮 ---------- */

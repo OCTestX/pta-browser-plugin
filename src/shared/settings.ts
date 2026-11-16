@@ -52,10 +52,6 @@ export interface SettingsView {
    * 没有这一项说明没查到，content script 会按模型名估算并在 tooltip 里说明。
    */
   contextWindow?: number;
-  /** 是否检测到有新版本可用 */
-  updateAvailable?: boolean;
-  /** 最新发布的标签名（如 v3.4.0），用于在提示里展示 */
-  latestVersion?: string;
 }
 
 export const DEFAULT_SETTINGS: Settings = {

@@ -191,9 +191,12 @@ ext.runtime.onMessage.addListener((message: unknown, sender, sendResponse) => {
         return;
       }
       case 'settings/get': {
-        const view = toSettingsView(await loadSettings());
-        const update = await checkForUpdates();
-        sendResponse({ ...view, updateAvailable: update.available, latestVersion: update.latest });
+        sendResponse(toSettingsView(await loadSettings()));
+        return;
+      }
+      case 'update/check': {
+        // force=true 时跳过缓存重新查（设置页的「检查更新」按钮）
+        sendResponse(await checkForUpdates(message.force === true));
         return;
       }
       case 'settings/save':

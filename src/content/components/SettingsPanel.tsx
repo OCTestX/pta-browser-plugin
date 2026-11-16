@@ -12,7 +12,7 @@ import {
 import { INPUT_METHODS, INPUT_METHOD_GROUPS, inputMethodIndex } from '../../shared/input-methods';
 import { modelSupportsVision, modelVisionTitle } from '../../shared/model-capabilities';
 import { SYSTEM_PROMPT } from '../../shared/tools';
-import type { ModelsListResponse, TestInputResponse } from '../../shared/messages';
+import type { ModelsListResponse, TestInputResponse, UpdateCheckResponse } from '../../shared/messages';
 
 const METHOD_OK_KEY = 'pta-assistant-input-method-ok';
 
@@ -108,6 +108,11 @@ export function SettingsPanel({ view, onSave, onBack }: SettingsPanelProps) {
   const [models, setModels] = useState<string[]>([]);
   const [modelsLoading, setModelsLoading] = useState(false);
   const [modelsError, setModelsError] = useState<string | null>(null);
+  // 更新检查：只有打开设置页才查一次（后台缓存 1 小时），用户点「检查更新」可以强制刷新
+  const [update, setUpdate] = useState<UpdateCheckResponse | null>(null);
+  const [checking, setChecking] = useState(false);
+  // 检查完了但没有新版本时，在「检查更新」按钮旁边说一句（不占用保存设置的 status）
+  const [updateNote, setUpdateNote] = useState<string | null>(null);
 
   useEffect(() => {
     void (async () => {
@@ -225,6 +230,36 @@ export function SettingsPanel({ view, onSave, onBack }: SettingsPanelProps) {
     }
   };
 
+  // 检查更新：force=true 时后台跳过缓存重新查（用户点了「检查更新」按钮）
+  const loadUpdate = async (force = false) => {
+    setChecking(true);
+    try {
+      const response = (await ext.runtime.sendMessage({ type: 'update/check', force })) as
+        | UpdateCheckResponse
+        | undefined;
+      setUpdate(response ?? null);
+      if (!response) {
+        setUpdateNote('后台没有响应，没能查到新版本');
+      } else if (response.available) {
+        setUpdateNote(null);
+      } else if (response.latest) {
+        setUpdateNote(`已是最新（当前 ${response.current}）`);
+      } else {
+        setUpdateNote('没查到新版本（可能网络不通）');
+      }
+    } catch {
+      setUpdate(null);
+      setUpdateNote('后台没有响应，没能查到新版本');
+    } finally {
+      setChecking(false);
+    }
+  };
+
+  // 设置页一打开就查一次（后台缓存 1 小时，之后再开就很快）
+  useEffect(() => {
+    void loadUpdate();
+  }, []);
+
   return (
     <div className="settings">
       <section className="author">
@@ -243,12 +278,23 @@ export function SettingsPanel({ view, onSave, onBack }: SettingsPanelProps) {
         </div>
       </section>
 
-      {view?.updateAvailable && (
+      {update?.available && (
         <div className="settings__banner settings__banner--update">
-          发现新版本 <b>{view.latestVersion}</b>（当前 {ext.runtime.getManifest().version}），建议在
-          <a>GitHub Releases</a> 或 <a>Gitee Releases</a> 更新，以获取新功能与修复。
+          发现新版本 <b>{update.latest}</b>（当前 {update.current}）。
+          {update.packageUrl && (
+            <button type="button" className="settings__banner-link" onClick={() => void openLink(update.packageUrl)}>
+              下载新版
+            </button>
+          )}
         </div>
       )}
+
+      <div className="settings__update">
+        <button type="button" className="button button--ghost" disabled={checking} onClick={() => void loadUpdate(true)}>
+          {checking ? '检查中…' : '检查更新'}
+        </button>
+        {updateNote && <span className="settings__update-note">{updateNote}</span>}
+      </div>
 
       <label className="field">
         <span className="field__label">API Key</span>

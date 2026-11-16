@@ -29,7 +29,9 @@
   ],
   "host_permissions": [
     "https://api.github.com/*",
+    "https://github.com/*",
     "https://gitee.com/api/v5/*",
+    "https://gitee.com/*",
     "https://api.siliconflow.cn/*",
     "https://api.deepseek.com/*",
     "https://models.dev/*",

@@ -140,6 +140,14 @@ function boot({ hasApiKey, store, pageHtml }) {
           case 'settings/save':
             if (typeof message.patch.apiKey === 'string') keySet = message.patch.apiKey.length > 0;
             return view();
+          // 检查更新：设置页一打开就会问一次
+          case 'update/check':
+            return {
+              available: true,
+              latest: 'v9.9.9',
+              current: '2.0.0',
+              packageUrl: 'https://github.com/OCTestX/pta-browser-plugin/releases/download/v9.9.9/pta-assistant-v9.9.9.zip',
+            };
           case 'chat/start':
             return keySet
               ? { ok: true }
@@ -333,6 +341,42 @@ check('头像是扩展里的 avata.jpg', authorCard.querySelector('.author__avat
 check('昵称用大字显示', authorCard.querySelector('.author__name').textContent === 'OCTest');
 check('邮箱显示在昵称下面', authorCard.querySelector('.author__email').textContent === 'octestwx@qq.com');
 check('作者信息只在顶部出现一次', withKey.find('.settings').textContent.split('octestwx@qq.com').length === 2);
+
+// 检查更新：打开设置页就查一次，有新版本时顶部出现横幅与「下载新版」
+await tick();
+check(
+  '打开设置页时会问一次后台有没有新版本',
+  withKey.requests.some((r) => r.type === 'update/check' && r.force !== true),
+);
+const updateBanner = withKey.find('.settings__banner--update');
+check('有新版本时设置页顶部出现横幅', Boolean(updateBanner));
+check(
+  '横幅写明新版本号与当前版本',
+  updateBanner?.textContent.includes('v9.9.9') && updateBanner?.textContent.includes('2.0.0'),
+);
+const downloadButton = updateBanner?.querySelector('.settings__banner-link');
+check('横幅里的「下载新版」是可点的按钮', downloadButton?.textContent === '下载新版');
+downloadButton?.click();
+await tick();
+check(
+  '点「下载新版」让后台打开安装包直链',
+  withKey.requests.some(
+    (r) =>
+      r.type === 'ui/open-url' &&
+      r.url ===
+        'https://github.com/OCTestX/pta-browser-plugin/releases/download/v9.9.9/pta-assistant-v9.9.9.zip',
+  ),
+);
+const checkUpdateButton = [...withKey.shadow().querySelectorAll('.settings__update .button')].find(
+  (el) => el.textContent === '检查更新',
+);
+check('设置页里有「检查更新」按钮', Boolean(checkUpdateButton));
+checkUpdateButton?.click();
+await tick();
+check(
+  '点「检查更新」会强制后台重新查（force=true）',
+  withKey.requests.some((r) => r.type === 'update/check' && r.force === true),
+);
 
 const siteLink = authorCard.querySelector('.author__site');
 check('网站链接显示 me.octest.top', siteLink.textContent === 'me.octest.top');

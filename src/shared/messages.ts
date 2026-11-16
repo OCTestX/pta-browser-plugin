@@ -115,6 +115,11 @@ export type ContentRequest =
   | { type: 'editor/check'; code: string; language: string; fragment?: boolean }
   | { type: 'settings/get' }
   | { type: 'settings/save'; patch: Partial<Settings> }
+  /**
+   * 检查有没有新版本（比对 GitHub / Gitee 的 release 标签）。
+   * force=true 时跳过缓存重新查：设置页的「检查更新」按钮用。
+   */
+  | { type: 'update/check'; force?: boolean }
   /** 设置页的「模拟输入测试」：按指定方法往作答区写一次文本 */
   | { type: 'tool/test-input'; text: string; method?: string }
   /** 问接口「你有哪些模型」：模型下拉框用。Key 只在 background 那边用，content 传过来的是草稿值 */
@@ -141,6 +146,7 @@ export function isContentRequest(message: unknown): message is ContentRequest {
       message.type === 'editor/check' ||
       message.type === 'settings/get' ||
       message.type === 'settings/save' ||
+      message.type === 'update/check' ||
       message.type === 'tool/test-input' ||
       message.type === 'models/list' ||
       message.type === 'ui/open-url' ||
@@ -196,6 +202,18 @@ export interface ModelsListResponse {
 }
 
 export type SettingsResponse = SettingsView;
+
+/** 检查更新的结果 */
+export interface UpdateCheckResponse {
+  /** 是否有新版本 */
+  available: boolean;
+  /** 远端最新 release 标签（形如 v6.8.8）；查不到时是空串 */
+  latest: string;
+  /** 本地当前版本（清单 version） */
+  current: string;
+  /** 对应当前浏览器的安装包直链；没有时是空串 */
+  packageUrl: string;
+}
 
 /** 编辑器增强的安装结果：token 是页面脚本与隔离世界之间的暗号，空串表示没装上 */
 export interface EditorAssistInstallResponse {

@@ -29,6 +29,8 @@ const state = {
   abortFlags: 0,
   modelsCalls: [],
   modelsStatus: 200,
+  releaseCalls: [],
+  releaseGithubDown: false,
 };
 
 globalThis.chrome = {
@@ -37,6 +39,8 @@ globalThis.chrome = {
     onMessage: { addListener: (fn) => state.channels.message.push(fn) },
     // 检查更新那套逻辑在模块加载时就读一次清单版本（MANIFEST_VERSION），mock 里得给上
     getManifest: () => ({ version: '3.4.0' }),
+    // 判「跑在哪个浏览器」看的是扩展页 URL 的协议头（moz-extension:// 还是 chrome-extension://）
+    getURL: (path) => `${target === 'firefox' ? 'moz-extension' : 'chrome-extension'}://test/${path}`,
   },
   tabs: {
     create: async (options) => { state.createdTabs.push(options); return { id: 99 }; },
@@ -127,8 +131,65 @@ globalThis.chrome = {
 // fetch 桩：只回放模型的 SSE（内置编译器在 Node 里没有 Worker，走到会自己降级）
 const encoder = new TextEncoder();
 globalThis.fetch = async (url, init) => {
+  // 更新检查打的是 release 接口（GitHub / Gitee），跟模型接口不是一回事，先拦下来
+  const urlText = String(url);
+  if (urlText.includes('api.github.com') || urlText.includes('gitee.com/api/v5')) {
+    state.releaseCalls.push(urlText);
+    // GitHub 挂了就退到 Gitee：两个源答出来的标签与资产不一样
+    const isGithub = urlText.includes('api.github.com');
+    if (isGithub && state.releaseGithubDown) {
+      return new Response('{"message":"Not Found"}', { status: 404 });
+    }
+    if (isGithub) {
+      return new Response(
+        JSON.stringify({
+          tag_name: 'v9.9.9',
+          assets: [
+            {
+              name: 'pta-assistant-v9.9.9.zip',
+              browser_download_url:
+                'https://github.com/OCTestX/pta-browser-plugin/releases/download/v9.9.9/pta-assistant-v9.9.9.zip',
+            },
+            {
+              name: 'pta-assistant-v9.9.9.xpi',
+              browser_download_url:
+                'https://github.com/OCTestX/pta-browser-plugin/releases/download/v9.9.9/pta-assistant-v9.9.9.xpi',
+            },
+          ],
+        }),
+        { status: 200 },
+      );
+    }
+    // Gitee 上除了安装包还挂着源码包（v5.1.0.zip / v5.1.0.tar.gz），挑错就成 bug
+    return new Response(
+      JSON.stringify({
+        tag_name: 'v8.8.8',
+        assets: [
+          {
+            name: 'pta-assistant-v8.8.8.zip',
+            browser_download_url:
+              'https://gitee.com/octestx/pta-browser-plugin/releases/download/v8.8.8/pta-assistant-v8.8.8.zip',
+          },
+          {
+            name: 'pta-assistant-v8.8.8.xpi',
+            browser_download_url:
+              'https://gitee.com/octestx/pta-browser-plugin/releases/download/v8.8.8/pta-assistant-v8.8.8.xpi',
+          },
+          {
+            name: 'v8.8.8.zip',
+            browser_download_url: 'https://gitee.com/octestx/pta-browser-plugin/archive/refs/tags/v8.8.8.zip',
+          },
+          {
+            name: 'v8.8.8.tar.gz',
+            browser_download_url: 'https://gitee.com/octestx/pta-browser-plugin/archive/refs/tags/v8.8.8.tar.gz',
+          },
+        ],
+      }),
+      { status: 200 },
+    );
+  }
   // 模型列表接口（GET {baseURL}/models）与对话接口不是一回事，分开处理
-  if (String(url).endsWith('/models')) {
+  if (urlText.endsWith('/models')) {
     state.modelsCalls.push({ url: String(url), auth: init?.headers?.Authorization });
     if (state.modelsStatus && state.modelsStatus !== 200) {
       return new Response('{"error":"unauthorized"}', { status: state.modelsStatus });
@@ -202,6 +263,57 @@ const respond2 = (message, sender = {}) =>
 await respond2({ type: 'settings/save', patch: { apiKey: 'sk-test' } });
 const view = await respond2({ type: 'settings/get' });
 check('settings/save 落盘且视图不含 Key', state.storage['pta-assistant-settings'].apiKey === 'sk-test' && !('apiKey' in view) && view.hasApiKey === true);
+
+/* ---------- 检查更新：比对 release 标签 ---------- */
+
+state.releaseCalls.length = 0;
+const update = await respond2({ type: 'update/check' });
+check(
+  'update/check 报出远端最新标签与本地版本',
+  update.latest === 'v9.9.9' && update.current === '3.4.0' && update.available === true,
+  update,
+);
+check(
+  `update/check 给出当前浏览器能装的包（${target === 'firefox' ? 'xpi' : 'zip'}）`,
+  update.packageUrl.endsWith(target === 'firefox' ? 'pta-assistant-v9.9.9.xpi' : 'pta-assistant-v9.9.9.zip'),
+  update.packageUrl,
+);
+check('查更新打的是 GitHub / Gitee 的 release 接口', state.releaseCalls.length >= 1);
+check(
+  '先问 GitHub，拿到了就不再问 Gitee',
+  state.releaseCalls[0].includes('api.github.com') && state.releaseCalls.length === 1,
+  state.releaseCalls,
+);
+check('settings/get 不再顺带查更新（查更新是单独的 update/check）', !('updateAvailable' in view));
+
+// 缓存：再来一次不该再发请求
+const cachedCalls = state.releaseCalls.length;
+const again = await respond2({ type: 'update/check' });
+check('重复检查走缓存，不重复请求', state.releaseCalls.length === cachedCalls && again.latest === 'v9.9.9');
+
+// force：跳过缓存重新查
+await respond2({ type: 'update/check', force: true });
+check('force=true 时跳过缓存重新请求', state.releaseCalls.length === cachedCalls + 1);
+
+// GitHub 挂了就退到 Gitee：拿 Gitee 的标签，装包也拿 Gitee 的（不能把源码包当安装包）
+state.releaseGithubDown = true;
+state.releaseCalls.length = 0;
+const fallback = await respond2({ type: 'update/check', force: true });
+check(
+  'GitHub 查不到时退到 Gitee',
+  state.releaseCalls.length === 2 &&
+    state.releaseCalls[0].includes('api.github.com') &&
+    state.releaseCalls[1].includes('gitee.com/api/v5'),
+  state.releaseCalls,
+);
+check('退到 Gitee 时用的是 Gitee 的标签', fallback.latest === 'v8.8.8', fallback);
+check(
+  'Gitee 上挑的是安装包，不是同名的源码包',
+  fallback.packageUrl.includes('pta-assistant-v8.8.8') &&
+    !fallback.packageUrl.includes('/archive/'),
+  fallback.packageUrl,
+);
+state.releaseGithubDown = false;
 
 /* ---------- 默认值：硅基流动；旧版本存的调试器开关不再出现 ---------- */
 
