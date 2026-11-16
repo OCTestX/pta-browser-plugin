@@ -74,8 +74,8 @@ const check = (label, ok) => {
   console.log(`✓ ${label}`);
 };
 
-function boot({ hasApiKey, store }) {
-  const dom = new JSDOM('<!doctype html><html><body><p>题目页面</p></body></html>', {
+function boot({ hasApiKey, store, pageHtml }) {
+  const dom = new JSDOM(`<!doctype html><html><body>${pageHtml ?? '<p>题目页面</p>'}</body></html>`, {
     url: 'https://pintia.cn/problem-sets/1/problems/1',
     runScripts: 'dangerously',
     pretendToBeVisual: true,
@@ -893,7 +893,13 @@ await tick();
 shortcut.toggle();
 await tick();
 check('面板不再有「输入」按钮（改用 Ctrl+V / Ctrl+M）', shortcut.find('.composer__write') === null);
-check('输入区只剩发送按钮', shortcut.find('.composer__footer').querySelectorAll('button').length === 1);
+const footerButtons = [...shortcut.find('.composer__footer').querySelectorAll('button')];
+check('输入区只有「专注题目」开关和发送按钮', footerButtons.length === 2, footerButtons.length);
+check(
+  '专注题目开关在发送按钮左边（面板左下角 / 右下角）',
+  footerButtons[0]?.classList.contains('composer__focus') && footerButtons[1]?.classList.contains('composer__send'),
+  footerButtons.map((b) => b.className).join(' | '),
+);
 
 // 新会话：先聊一轮，再清空
 shortcut.setValue(shortcut.find('.composer__input'), '帮我看看这道题');
@@ -1336,5 +1342,90 @@ check(
 const ring = slash.shadow().querySelector('.panel__ring');
 check('顶栏有上下文进度圆环', Boolean(ring));
 check('token 明细不在顶栏直接显示', !slash.shadow().querySelector('.panel__usage'));
+
+/* ---------- 场景十三：专注题目模式（页面只留题面） ---------- */
+
+// 一个仿 PTA 考试页的页面：顶部标题栏、左侧图标栏、题目列表侧栏、题面、作答区
+const PTA_PAGE = `
+  <div id="exam-app">
+    <div class="grid">
+      <div class="top-bar">26级《程序设计基础》拓展题 第1套</div>
+      <div class="rail">Overview Problem List Submission list Rankings</div>
+      <div class="content">
+        <div class="sidebar">Problem Overview Answered / Problem Count</div>
+        <main>
+          <div class="toggle-strip">Toggle Sidebar</div>
+          <div class="split">
+            <div class="left-col">
+              <div class="tab">Problem Description</div>
+              <div class="rendered-markdown">请编写程序，输出杨辉三角形。 输入格式 行数（不超过20） 输出格式 指定行数的杨辉三角形</div>
+            </div>
+            <div class="right-col"><div class="cm-content" contenteditable="true">int main(void) { return 0; }</div></div>
+          </div>
+        </main>
+      </div>
+    </div>
+  </div>`;
+
+const focused = boot({ hasApiKey: true, pageHtml: PTA_PAGE });
+await tick();
+focused.toggle();
+await tick();
+
+const focusToggle = focused.find('.composer__focus');
+check('输入区左下角有专注题目开关', Boolean(focusToggle));
+check('开关默认是关的', focusToggle.getAttribute('aria-pressed') === 'false');
+check('发送按钮还在右下角', Boolean(focused.find('.composer__send')));
+
+const onPage = (selector) => focused.window.document.querySelector(selector);
+const hidden = (selector) => onPage(selector)?.hasAttribute('data-pta-focus-hidden') === true;
+
+focusToggle.click();
+await tick();
+check('专注模式打开后顶部的标题栏被收起来了', hidden('.top-bar'));
+check('专注模式打开后左侧图标栏被收起来了', hidden('.rail'));
+check('专注模式打开后题目列表侧栏被收起来了', hidden('.sidebar'));
+check('专注模式打开后作答区被收起来了', hidden('.right-col'));
+check('专注模式打开后「Toggle Sidebar」那条被收起来了', hidden('.toggle-strip'));
+check('题面那一列留着，还被标成居中用的那一列', onPage('.left-col')?.hasAttribute('data-pta-focus-column') === true);
+check('题面本身没被收起来', hidden('.rendered-markdown') === false);
+check('页面里挂上了专注模式的样式表', Boolean(onPage('#pta-assistant-focus-style')));
+check('专注模式记在 sessionStorage 里（刷新页面也还在）', focused.window.sessionStorage.getItem('pta-assistant-focus-mode') === '1');
+check('专注模式下聊天记录照常显示（模式只管页面）', focused.find('.messages') !== null);
+
+// 关掉：页面恢复原样
+focused.find('.composer__focus').click();
+await tick();
+check('关掉专注模式后页面恢复原样', hidden('.top-bar') === false && hidden('.rail') === false && hidden('.right-col') === false);
+check('关掉专注模式后样式表也撤了', onPage('#pta-assistant-focus-style') === null);
+check('关掉专注模式后 sessionStorage 也清了', focused.window.sessionStorage.getItem('pta-assistant-focus-mode') === null);
+
+// 页面不是题目页（找不到题面）：不该乱收东西
+const plain = boot({ hasApiKey: true });
+await tick();
+plain.toggle();
+await tick();
+plain.find('.composer__focus').click();
+await tick();
+check('页面不是题目页时不乱收元素', plain.window.document.querySelectorAll('[data-pta-focus-hidden]').length === 0);
+
+// 没有作答区的页面（选择题、判断题）：页面外壳照样收起来
+const focusNoEditor = boot({
+  hasApiKey: true,
+  pageHtml: PTA_PAGE.replace('<div class="right-col"><div class="cm-content" contenteditable="true">int main(void) { return 0; }</div></div>', ''),
+});
+await tick();
+focusNoEditor.toggle();
+await tick();
+focusNoEditor.find('.composer__focus').click();
+await tick();
+const focusNoEditorHidden = (selector) =>
+  focusNoEditor.window.document.querySelector(selector)?.hasAttribute('data-pta-focus-hidden') === true;
+check('没有作答区时页面外壳照样收起来', focusNoEditorHidden('.top-bar') && focusNoEditorHidden('.rail') && focusNoEditorHidden('.sidebar'));
+check('没有作答区时题面留着', focusNoEditorHidden('.rendered-markdown') === false);
+
+// 关掉所有 jsdom 窗口：题目面板里有个盯地址的定时器（换题是前端路由，页面不刷新），
+// 窗口不关的话 node 进程会一直等着它
+for (const w of booted) w.close();
 
 console.log(`\n${target} 冒烟测试通过`);

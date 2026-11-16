@@ -4,6 +4,7 @@
 // 所以草稿写在 sessionStorage 里（天然按标签页隔离、刷新不丢），键再按标签页 id
 // 命名，含义写明白。不再往 chrome.storage.local 写，也就没有跨标签页同步。
 // 悬浮窗开关（panelOpen）只活在内存里：刷新后默认关闭，点图标才打开。
+// 专注题目模式（focusMode）写进 sessionStorage：按标签页隔离，刷新页面也还记得。
 
 type Listener = () => void;
 
@@ -112,6 +113,49 @@ export function togglePanel(): void {
 }
 
 export function subscribePanel(listener: Listener): () => void {
+  listeners.add(listener);
+  return () => {
+    listeners.delete(listener);
+  };
+}
+
+// 专注题目模式：把页面上与题目无关的面板收起来，只留题面。
+// 存在 sessionStorage 里：按标签页隔离（跟草稿一样），刷新页面也还在——
+// 做题时中途刷一下页面，不该把「专注」这个工作状态也一起丢了。
+const FOCUS_MODE_KEY = 'pta-assistant-focus-mode';
+
+let focusMode = readFocusMode();
+
+function readFocusMode(): boolean {
+  if (!tabStorage) return false;
+  try {
+    return tabStorage.getItem(FOCUS_MODE_KEY) === '1';
+  } catch {
+    return false;
+  }
+}
+
+export function isFocusMode(): boolean {
+  return focusMode;
+}
+
+export function setFocusMode(next: boolean): void {
+  if (focusMode === next) return;
+  focusMode = next;
+  try {
+    if (next) tabStorage?.setItem(FOCUS_MODE_KEY, '1');
+    else tabStorage?.removeItem(FOCUS_MODE_KEY);
+  } catch {
+    // 存不下也不影响这次会话：内存里的状态照样生效
+  }
+  emit();
+}
+
+export function toggleFocusMode(): void {
+  setFocusMode(!focusMode);
+}
+
+export function subscribeFocusMode(listener: Listener): () => void {
   listeners.add(listener);
   return () => {
     listeners.delete(listener);

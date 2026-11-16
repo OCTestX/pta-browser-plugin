@@ -1,13 +1,14 @@
 // 把 dist/firefox 打成可安装的 xpi。
-// 用法：npm run package:firefox（会先构建），或 node scripts/package-firefox.mjs
+// 用法：npm run package:firefox（会先构建），或 node scripts/package-firefox.mjs [--allow-missing-engine]
 //
 // 为什么要自己打而不用 web-ext：
 //   1) 文件名要跟面板上显示的版本一致（Chrome 的清单版本号必须是数字，带不了 alpha/beta 后缀，
 //      所以面板徽标是 v1.0、清单还是 1.0.0，产物名取前者更不容易装错版本）；
 //   2) 不签名也能装（about:debugging → 临时载入，或丢进 profile 的 extensions 目录），
 //      产物里只有 dist/firefox 的内容，没有 web-ext 的临时文件。
-import { existsSync, mkdirSync, readFileSync, statSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, rmSync, statSync } from 'node:fs';
 import path from 'node:path';
+import { ENGINE_ASSETS } from './engine-assets.mjs';
 import { zipDirectory } from './zip.mjs';
 
 
@@ -18,6 +19,10 @@ const SOURCE_DIR = path.join('dist', 'firefox');
 const ARTIFACT_LABEL = `v${JSON.parse(readFileSync(path.join(SOURCE_DIR, 'manifest.json'), 'utf8')).version}`;
 const OUT_DIR = 'dist';
 
+// 只给自己测试用的包：内置编译器那 90MB 资源还没下下来时先出一个瘦包。
+// 名字带 -noengine，跟正式包区分开，别拿去发。
+const TEST_ONLY = process.argv.includes('--allow-missing-engine');
+
 if (!existsSync(path.join(SOURCE_DIR, 'manifest.json'))) {
   throw new Error(`✗ ${SOURCE_DIR} 里没有产物，先跑 npm run build:firefox`);
 }
@@ -25,18 +30,31 @@ if (!existsSync(path.join(SOURCE_DIR, 'manifest.json'))) {
 const manifest = JSON.parse(readFileSync(path.join(SOURCE_DIR, 'manifest.json'), 'utf8'));
 
 // 内置编译器的大资源必须真的进了包：少了它们插件就没有本地编译器（曾经打包时漏下，
-// 结果发出去的包只有 0.6MB，用户装上才发现编译不了）
-const ENGINE_ASSETS = ['engine/clang22-noeh', 'engine/lld22-noeh', 'engine/sysroot22.tar'];
-const MIN_ENGINE_SIZE = 5 * 1024 * 1024;
-for (const asset of ENGINE_ASSETS) {
-  const file = path.join(SOURCE_DIR, asset);
+// 结果发出去的包只有 0.6MB，用户装上才发现编译不了）。
+// 大小按 fetch-engine 的清单核对——下了一半的文件也算没进包。
+const missingEngine = ENGINE_ASSETS.filter((asset) => {
+  const file = path.join(SOURCE_DIR, 'engine', asset.name);
   const size = existsSync(file) ? statSync(file).size : 0;
-  if (size < MIN_ENGINE_SIZE) {
-    throw new Error(`✗ ${asset} 没进包（${(size / 1024 / 1024).toFixed(1)} MB）：先跑 npm run fetch-engine`);
+  return size !== asset.size;
+});
+if (missingEngine.length > 0) {
+  if (!TEST_ONLY) {
+    throw new Error(
+      `✗ ${missingEngine.map((a) => `engine/${a.name}`).join('、')} 没进包（大小对不上）：`
+      + '先跑 npm run fetch-engine'
+      + '（只给自己测试的话可以加 --allow-missing-engine 出一个瘦包）',
+    );
   }
+  // 半拉子的 wasm 进了包更糟：装上以后插件会加载失败。直接删掉，让插件明确说「没有本地编译器」。
+  for (const asset of missingEngine) {
+    rmSync(path.join(SOURCE_DIR, 'engine', asset.name), { force: true });
+  }
+  console.warn(`⚠ 测试包：内置编译器资源不完整（${missingEngine.map((a) => a.name).join('、')}）——这个包里没有本地 C/C++ 编译器`);
+  console.warn('  设置里的「运行环境」请选 PTA，用 PTA 自己的编译器');
 }
 
-const outFile = path.join(OUT_DIR, `pta-assistant-${ARTIFACT_LABEL}.xpi`);
+const suffix = missingEngine.length > 0 ? '-noengine' : '';
+const outFile = path.join(OUT_DIR, `pta-assistant-${ARTIFACT_LABEL}${suffix}.xpi`);
 mkdirSync(OUT_DIR, { recursive: true });
 const count = zipDirectory(SOURCE_DIR, outFile);
 

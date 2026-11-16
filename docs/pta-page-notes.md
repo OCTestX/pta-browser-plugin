@@ -79,6 +79,42 @@
 - 同一题型做完后要切题型：点带「已答/总数」的分组链接会先落到该题型的列表页（地址里没有 `problemSetProblemId`），
   侧栏网格随后才换成新题型的。**地址变了不等于网格换好了**，要等网格里出现新题型的题目链接再点第一道未提交的题。
 
+## 1.2 考试页的整块结构（专注题目模式用）
+
+2026-11 实测（`pintia.cn/problem-sets/<id>/exam/problems/type/7?problemSetProblemId=<id>`），
+从题面往上数，页面是这样套的（类名带哈希后缀的会随版本变，别写死）：
+
+```
+body
+└ div#exam-app
+  └ div.grid.grid-cols-[4rem,minmax(0,1fr)]            ← 页面主网格：左图标栏 + 右内容区
+    ├ div.row-start-1…col-span-full                     ← 顶部标题栏（考试标题 / Ended / 用户菜单）
+    ├ div.row-start-2…col-start-1…col-end-2             ← 左侧图标栏（Overview / Problem List / …）
+    └ div.row-start-2…col-start-2…col-end-3.scroll     ← 右内容区
+      └ div.group/sidebar-wrapper…
+        ├ div.group.peer.hidden.text-sidebar-foreground.md:block  ← 题目列表侧栏（题型分组 + 题号网格）
+        └ main.min-w-0.flex-1.h-full.bg-bg-base
+          ├ div.sticky.top-0.w-full.flex.px-1…z-20       ← 「Toggle Sidebar」小条
+          └ div.h-[calc(100%-2rem)].scroll.mt-1
+            └ div.flex.flex-col.overflow-auto.scroll.h-full…
+              ├ div.sticky.top-0.shrink-0.bg-bg-base.z-10   ← 主区顶部条（面包屑 / 上一题下一题）
+              └ div.flex.flex-col.overflow-auto.flex-1
+                ├ div.grow.shrink.splitArea_xxx          ← 题面与作答区的分栏区
+                │ ├ div.left_xxx                        ← 题面这一列
+                │ │ ├ div.sticky.top-0.flex.bg-bg-light…  ← 「Problem Description」标签条
+                │ │ └ div.p-4.md:px-6.space-y-4.scroll   ← 题面（含 .rendered-markdown）
+                │ └ div.flex-1.right_xxx               ← 作答区（代码编辑器）
+                └ div.sticky.bottom-0.z-10…              ← 「View last submission」浮条
+```
+
+**专注题目模式**（`src/content/focus-mode.ts`）就是照这张图收的：
+
+- 题面用 `.rendered-markdown` 找；找不到再按小标题找（跟 `read_problem` 同一套思路）；
+- 题面与**可写**的 `.cm-content` 的最近共同祖先就是分栏区，分栏区里另一个子节点就是作答区，收起来；
+- 从分栏区往上，每一层不在题面这条路上的兄弟都收起来——顶部标题栏、图标栏、题目列表侧栏、「Toggle Sidebar」条、顶部条、底部浮条就是这么没的；
+- 收起用「加 `data-pta-focus-hidden` 属性 + 挂一张样式表」，不碰页面自己的样式，关掉就把属性摘掉；
+- 换题是前端路由，DOM 会重渲染，所以要盯着 DOM 变化重新收一遍。
+
 ## 2. 定位作答区（编辑器）
 
 核心选择器就两个：`.cm-content` 与 `[contenteditable="true"]`，配合**可写性过滤**，取**文本最长**的那个（`findEditorElement`，`pta-scripts.ts`）：

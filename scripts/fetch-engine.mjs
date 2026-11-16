@@ -12,15 +12,11 @@ import { mkdir, rename, stat, unlink } from 'node:fs/promises';
 import { Readable } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
 import path from 'node:path';
+import { ENGINE_ASSETS, ENGINE_BASE_URL } from './engine-assets.mjs';
 
 const OUT_DIR = 'public/engine';
-const BASE_URL = 'https://github.com/cppstudio-io/wasm-clang-runtime/releases/download/v0.1.0';
-
-const ASSETS = [
-  { name: 'clang22-noeh', size: 36100574, sha256: 'e01346e33b31a3b3359a317450502bd4feb78cd6ca7fed08aca8601f9ff8834d' },
-  { name: 'lld22-noeh', size: 19183252, sha256: '63c397c582e193aacd96fbdeb04b1bd32f47ae505f6dc4a569ed08a80ddfeff7' },
-  { name: 'sysroot22.tar', size: 39876608, sha256: 'd991c621cdf9b4640c2cd4aa21abb08491c2ae6ef9917cac5c6065553604bcec' },
-];
+const BASE_URL = ENGINE_BASE_URL;
+const ASSETS = ENGINE_ASSETS;
 
 const force = process.argv.includes('--force');
 

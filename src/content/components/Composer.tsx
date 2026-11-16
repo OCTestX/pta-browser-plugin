@@ -17,6 +17,10 @@ interface ComposerProps {
   onReset?: () => void;
   /** 发送一条指定内容（斜杠指令选中后直接发出去） */
   onSendText?: (text: string) => void;
+  /** 专注题目模式：开着时页面上只留题面 */
+  focusMode?: boolean;
+  /** 切换专注题目模式 */
+  onToggleFocus?: () => void;
 }
 
 /** 空输入框连按几次回车算「开新会话」 */
@@ -31,6 +35,8 @@ export function Composer({
   focusSignal = 0,
   onReset,
   onSendText,
+  focusMode = false,
+  onToggleFocus,
 }: ComposerProps) {
   const inputRef = useRef<HTMLTextAreaElement>(null);
   // 空输入框连按回车：记着已经按了几次
@@ -173,9 +179,20 @@ export function Composer({
         onKeyDown={handleKeyDown}
       />
       <div className="composer__footer">
+        {/* 左下角：专注题目模式开关。开着时把页面上的无关面板收起来，只留题面 */}
+        <button
+          type="button"
+          className={`composer__focus${focusMode ? ' composer__focus--on' : ''}`}
+          onClick={() => onToggleFocus?.()}
+          aria-pressed={focusMode}
+          title="专注题目模式：把页面上与题目无关的面板（顶部标题栏、题目列表侧栏、作答区）收起来，只留题面"
+        >
+          专注题目
+        </button>
         {/* 底部只留「连按几次回车开新会话」这种一次性提示；
             发送/换行的快捷键已经写进输入框的 title（鼠标停上去就能看到），不再重复占地方 */}
         {emptyEnterLeft > 0 && <span className="composer__hint">再按 {emptyEnterLeft} 次回车开新会话</span>}
+        {/* 右下角：发送 / 停止 */}
         <div className="composer__actions">
           {streaming ? (
             <button type="button" className="composer__send composer__send--stop" onClick={onStop}>

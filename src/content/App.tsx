@@ -10,14 +10,17 @@ import { useSettings } from './hooks/useSettings';
 import {
   composerFocusRequest,
   getDraft,
+  isFocusMode,
   isPanelOpen,
   layoutResetCount,
   setDraft,
   setPanelOpen,
   subscribeComposerFocus,
   subscribeDraft,
+  subscribeFocusMode,
   subscribeLayoutReset,
   subscribePanel,
+  toggleFocusMode,
 } from './panelStore';
 
 type View = 'chat' | 'settings';
@@ -31,6 +34,8 @@ export function App() {
   const draft = useSyncExternalStore(subscribeDraft, getDraft, getDraft);
   // Alt+G 的聚焦请求：面板打开后由 Composer 消费
   const focusSignal = useSyncExternalStore(subscribeComposerFocus, composerFocusRequest, composerFocusRequest);
+  // 专注题目模式：开着时把页面上与题目无关的面板收起来（页面上的事，浮窗照常）
+  const focusMode = useSyncExternalStore(subscribeFocusMode, isFocusMode, isFocusMode);
   const [view, setView] = useState<View>('chat');
   const settings = useSettings();
   const chat = useChat(settings.hasApiKey);
@@ -173,6 +178,8 @@ export function App() {
             streaming={chat.streaming}
             focusSignal={focusSignal}
             onReset={chat.reset}
+            focusMode={focusMode}
+            onToggleFocus={toggleFocusMode}
             onSendText={(text) => {
               setDraft('');
               void chat.send(text);

@@ -845,7 +845,7 @@
 .composer__footer {
   display: flex;
   align-items: center;
-  justify-content: space-between;
+  gap: 8px;
   margin-top: 8px;
 }
 
@@ -854,10 +854,37 @@
   font-size: 12px;
 }
 
+/* 左下角：专注题目模式开关 */
+.composer__focus {
+  flex: none;
+  padding: 3px 10px;
+  border: 1px solid var(--pta-border);
+  border-radius: 999px;
+  background: transparent;
+  color: var(--pta-text-muted);
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.composer__focus:hover {
+  border-color: var(--pta-accent);
+  color: var(--pta-accent);
+}
+
+.composer__focus--on {
+  border-color: var(--pta-accent);
+  background: var(--pta-accent-soft);
+  color: var(--pta-accent);
+}
+
+/* 右下角：发送 / 停止 */
 .composer__actions {
   display: flex;
   align-items: center;
   gap: 8px;
+  margin-left: auto;
 }
 
 .composer__send {
