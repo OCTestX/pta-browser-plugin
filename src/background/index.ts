@@ -15,6 +15,7 @@ import type {
 import { isCompleteBaseURL, normalizeBaseURL } from '../shared/settings';
 import { createId, type ApiMessage } from '../shared/types';
 import { runAgent, type ToolOutcome } from './agent';
+import { batchActive, batchSnapshot, finishBatch } from './batch-progress';
 import { DEFAULT_INPUT_METHOD, findInputMethod } from '../shared/input-methods';
 import { pasteIntoEditor, runInputMethod } from './input-methods';
 import { readClipboardText } from './clipboard';
@@ -46,6 +47,8 @@ const DIFF_KEEP = 8;
  * 整段代码写进编辑器可能要几十秒，所以同样要能被「停止」打断。
  */
 const runningInputs = new Map<string, AbortController>();
+/** 每个正在跑的输入任务属于哪个标签页：面板的「停止」要能按到这个标签页上的任务 */
+const runningInputTabs = new Map<string, number>();
 
 /** callId -> 等用户点选的 ask 工具：面板点完选项用 chat/ask-answer 回来兑现 */
 interface PendingAsk {
@@ -216,6 +219,25 @@ ext.runtime.onMessage.addListener((message: unknown, sender, sendResponse) => {
         }
         return;
       }
+      case 'ui/navigate': {
+        // 赶题总览卡里点某道题：把这个标签页导航到那道题。
+        // content script 没有 chrome.tabs，只能让后台来跳；只放行 http(s)，别变成任意开页面的入口。
+        if (!/^https?:\/\//.test(message.url)) {
+          sendResponse({ ok: false, message: '只允许跳转到 http/https 链接' } satisfies StartChatResponse);
+          return;
+        }
+        if (tabId === undefined) {
+          sendResponse({ ok: false, message: '当前页面不支持跳转' } satisfies StartChatResponse);
+          return;
+        }
+        try {
+          await ext.tabs.update(tabId, { url: message.url });
+          sendResponse({ ok: true } satisfies StartChatResponse);
+        } catch (error) {
+          sendResponse({ ok: false, message: toErrorMessage(error) } satisfies StartChatResponse);
+        }
+        return;
+      }
       case 'ui/open-diff': {
         // diff 卡片的「全屏」：先落盘一份完整数据，再开标签页按 id 取回
         try {
@@ -251,6 +273,7 @@ ext.runtime.onMessage.addListener((message: unknown, sender, sendResponse) => {
         const controller = new AbortController();
         const requestId = message.requestId ?? createId();
         runningInputs.set(requestId, controller);
+        runningInputTabs.set(requestId, tabId);
         const stopKeepAlive = keepServiceWorkerAlive(() => runningInputs.has(requestId));
         let outcome: ToolOutcome;
         try {
@@ -263,6 +286,7 @@ ext.runtime.onMessage.addListener((message: unknown, sender, sendResponse) => {
         } finally {
           stopKeepAlive();
           runningInputs.delete(requestId);
+          runningInputTabs.delete(requestId);
         }
         sendResponse({
           ok: !outcome.isError,
@@ -280,6 +304,10 @@ ext.runtime.onMessage.addListener((message: unknown, sender, sendResponse) => {
       case 'chat/attach': {
         // 页面重新挂载后（刷新、整页跳转），把这一页正在跑的那一轮重新接上：
         // 没有它，面板就收不到那一轮的事件，「停止」也按不到后台
+        if (tabId === undefined) {
+          sendResponse({ ok: false } satisfies AttachChatResponse);
+          return;
+        }
         let requestId = '';
         for (const [id, idTab] of runningRequestTabs) {
           if (idTab === tabId && runningRequests.has(id)) {
@@ -287,13 +315,25 @@ ext.runtime.onMessage.addListener((message: unknown, sender, sendResponse) => {
             break;
           }
         }
-        sendResponse({ ok: Boolean(requestId), requestId } satisfies AttachChatResponse);
+        sendResponse({
+          ok: Boolean(requestId),
+          requestId,
+          // 赶题模式跑到一半页面刷新了：把当前进度一起带回去，总览卡不会空白
+          ...(batchActive(tabId) ? { snapshot: batchSnapshot(tabId) } : {}),
+        } satisfies AttachChatResponse);
         return;
       }
       case 'chat/stop': {
         // 面板只有一个「停止」：这一轮对话在跑、或者正在写作答区，都归它管
         runningRequests.get(message.requestId)?.abort();
         runningInputs.get(message.requestId)?.abort();
+        // 粘贴这类任务是页面自己发起的（id 对不上对话的 requestId），
+        // 所以按标签页再扫一遍：这个标签页上正在跑的输入任务一起停掉。
+        if (tabId !== undefined) {
+          for (const [id, inputTab] of runningInputTabs) {
+            if (inputTab === tabId) runningInputs.get(id)?.abort();
+          }
+        }
         releaseAsks(message.requestId);
         sendResponse({ ok: true } satisfies StartChatResponse);
         return;
@@ -441,18 +481,25 @@ async function startChat(
           onToolEnd: (callId, result, isError, diff) =>
             sendToTab(tabId, { type: 'chat/tool-end', requestId, callId, result, isError, diff }),
           onNotice: (text) => sendToTab(tabId, { type: 'chat/notice', requestId, text }),
+          onBatch: (snapshot) => sendToTab(tabId, { type: 'chat/batch', requestId, snapshot }),
           onUsage: (usage) => sendToTab(tabId, { type: 'chat/usage', requestId, ...usage }),
           runPageTool: (name, args) => runToolInTab(tabId, name, args),
           askUser: (callId, question, options) => askUserInTab(requestId, tabId, callId, question, options, controller.signal),
         },
       });
-      sendToTab(tabId, { type: 'chat/done', requestId, aborted: false });
+      // 这一轮是「跑完了」还是「用户按了停止」：看中止标记。
+      // agent loop 收到停止后可能正常收尾（不抛错），所以不能只看有没有进 catch。
+      finishBatchIfRunning(tabId, requestId, controller.signal.aborted ? 'stopped' : 'done');
+      sendToTab(tabId, { type: 'chat/done', requestId, aborted: controller.signal.aborted });
     } catch (error) {
       // 各阶段（模型流 / 页面脚本 / 编译 / 逐字输入）都靠同一个 AbortError 收工，
       // 这里只认「这一轮被停掉了」，别把它当成出错报给用户
       if (isAbortError(error, controller.signal)) {
+        // 用户按了停止：卡片要写明「已停止」，并给出「继续赶剩下的题」这个出口
+        finishBatchIfRunning(tabId, requestId, 'stopped');
         sendToTab(tabId, { type: 'chat/done', requestId, aborted: true });
       } else {
+        finishBatchIfRunning(tabId, requestId, 'done');
         sendToTab(tabId, { type: 'chat/error', requestId, message: toErrorMessage(error) });
       }
     } finally {
@@ -467,15 +514,41 @@ async function startChat(
 }
 
 /**
+ * 这一轮结束了：赶题模式（如果开着）标记成收工，并把最终快照推给面板。
+ * 没有开过赶题模式的标签页什么都不做——别凭空给普通对话塞一张进度卡。
+ */
+function finishBatchIfRunning(
+  tabId: number,
+  requestId: string,
+  reason: 'done' | 'stopped' = 'done',
+): void {
+  if (!batchActive(tabId)) return;
+  finishBatch(tabId, reason);
+  sendToTab(tabId, { type: 'chat/batch', requestId, snapshot: batchSnapshot(tabId) });
+}
+
+/**
  * 把一份 diff 存进 storage.local，返回 id。
  * 只保留最近几份：全屏页刷新时还能按 id 取回，关掉后也不会把 storage 撑满。
  */
+/** 从存下来的记录里取创建时间；不是对象或没有这个字段就当 0（排最后） */
+function diffCreatedAt(value: unknown): number {
+  if (value && typeof value === 'object' && 'createdAt' in value) {
+    const createdAt = value.createdAt;
+    return typeof createdAt === 'number' && Number.isFinite(createdAt) ? createdAt : 0;
+  }
+  return 0;
+}
+
 async function storeDiff(diff: DiffPayload): Promise<string> {
   const id = createId();
   const all = await ext.storage.local.get(null);
-  const keys = Object.keys(all).filter((key) => key.startsWith(DIFF_STORAGE_PREFIX)).sort();
-  // 键里带时间戳前缀，按名字排序就是时间顺序
-  const stale = keys.slice(0, Math.max(0, keys.length - (DIFF_KEEP - 1)));
+  const entries = Object.entries(all).filter(([key]) => key.startsWith(DIFF_STORAGE_PREFIX));
+  // 按存进去的时间排：键是随机的 uuid，按名字排会随机淘汰掉一份（可能正是用户刚点开的）。
+  const stale = entries
+    .sort((a, b) => diffCreatedAt(a[1]) - diffCreatedAt(b[1]))
+    .slice(0, Math.max(0, entries.length - (DIFF_KEEP - 1)))
+    .map(([key]) => key);
   if (stale.length > 0) await ext.storage.local.remove(stale);
   await ext.storage.local.set({ [`${DIFF_STORAGE_PREFIX}${id}`]: { ...diff, createdAt: Date.now() } });
   return id;

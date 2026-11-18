@@ -50,9 +50,30 @@ check('&#62; 解成 >', decodeRawTextEntities('<script>&#62;</script>') === '<sc
 check('&#x3E; 解成 >', decodeRawTextEntities('<script>&#x3E;</script>') === '<script>></script>');
 check('&#39; 解成 \'', decodeRawTextEntities('<script>&#39;</script>') === "<script>'</script>");
 check('&quot; 解成 "', decodeRawTextEntities('<script>&quot;</script>') === '<script>"</script>');
-check('&nbsp; 解成不换行空格', decodeRawTextEntities('<script>&nbsp;</script>') === '<script> </script>');
+check('&nbsp; 解成不换行空格', decodeRawTextEntities('<script>&nbsp;</script>') === `<script>${String.fromCharCode(160)}</script>`);
 check('未知实体原样保留', decodeRawTextEntities('<script>&copy;</script>') === '<script>&copy;</script>');
 check('不是实体的 & 保持原样', decodeRawTextEntities('<script>a && b</script>') === '<script>a && b</script>');
+
+/* ---------- 别把脚本写坏 ---------- */
+
+// 闭合标签可以拆开写：解出来还是闭合标签，脚本会被拦腰截断 → 这种不能解
+const splitClose = decodeRawTextEntities('<script>var s = "&lt;&#47;script&gt;";</script>');
+check('拆开写的闭合标签不会被解出来', !splitClose.includes('</script>') || splitClose.indexOf('</script>') === splitClose.lastIndexOf('</script>'), splitClose);
+check('拆开写的闭合标签留着实体', splitClose.includes('&lt;'), splitClose);
+
+// 字符串里解出控制字符（换行）会把单双引号的字符串截断 → 语法错误
+const newlineInString = decodeRawTextEntities('<script>var s = "第一行&#10;第二行";</script>');
+check('字符串里的换行实体不会被解成真换行', !newlineInString.includes('第一行\n第二行'), newlineInString);
+check('字符串里的换行实体留着原样', newlineInString.includes('&#10;'), newlineInString);
+
+// 反斜杠会把收尾的引号转义掉，字符串就断了
+const backslashInString = decodeRawTextEntities('<script>var s = "C:&#92;temp";</script>');
+check('字符串里的反斜杠实体不会被解出来', !backslashInString.includes('C:\\temp'), backslashInString);
+check('字符串里的反斜杠实体留着原样', backslashInString.includes('&#92;'), backslashInString);
+
+// 不在字符串里的时候照常解：代码里的比较运算符最常见
+check('代码里的 &lt; 照常解', decodeRawTextEntities('<script>if (a &lt; b) c();</script>').includes('if (a < b)'));
+check('代码里的 &#10; 照常解（不在字符串里）', decodeRawTextEntities('<script>var n = 1;&#10;var m = 2;</script>').includes('var n = 1;\nvar m = 2;'));
 
 /* ---------- 杂项：属性里有 '>'、大小写、未闭合 ---------- */
 

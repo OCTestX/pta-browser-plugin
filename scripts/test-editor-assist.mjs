@@ -308,6 +308,26 @@ check(
   bracketDepths('/* { */ int a;'),
 );
 
+// CRLF 文档：下标必须对得上原文（以前先把 \r\n 归一成 \n 再算，
+// 第一行之后的每个括号都少一个字符，彩虹括号整体错位）
+const crlfCode = 'int f() {\r\n  return g(1);\r\n}';
+const crlfMarks = bracketDepths(crlfCode);
+check(
+  'CRLF 文档里的括号下标对得上原文',
+  crlfMarks.map((mark) => mark.at).join(',') === '5,6,8,21,23,27',
+  crlfMarks,
+);
+check(
+  'CRLF 文档里的括号落在正确的字符上',
+  crlfMarks.every((mark) => '{}()'.includes(crlfCode[mark.at])),
+  crlfMarks.map((mark) => crlfCode[mark.at]),
+);
+check(
+  'CRLF 文档里的层数照常算',
+  crlfMarks.map((mark) => mark.depth).join(',') === '0,0,0,1,1,0',
+  crlfMarks,
+);
+
 // 层数要取模，否则超过颜色表长度就越界了；第 7 个是第 7 层（下标 6）
 const deepMarks = bracketDepths('{'.repeat(9));
 const seventh = deepMarks[6];

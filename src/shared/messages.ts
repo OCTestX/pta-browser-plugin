@@ -1,6 +1,7 @@
 import type { ApiMessage } from './types';
 import type { DiagnosticBox } from './editor-assist-protocol';
 import type { Settings, SettingsView } from './settings';
+import type { BatchSnapshot } from './batch';
 
 /* ---------- background -> content ---------- */
 
@@ -57,6 +58,8 @@ export type BackgroundEvent =
       options: string[];
     }
   | { type: 'chat/notice'; requestId: string; text: string }
+  /** 赶题模式（/fuck）的进度快照：面板靠它画总览卡 */
+  | { type: 'chat/batch'; requestId: string; snapshot: BatchSnapshot }
   /** 每轮请求结束后上报的累计 token 用量，面板顶栏实时显示 */
   | {
       type: 'chat/usage';
@@ -130,6 +133,8 @@ export type ContentRequest =
   | { type: 'ui/open-diff'; diff: DiffPayload }
   /** 讲解页的邀请卡片：点「打开讲解页」让后台开新标签页 */
   | { type: 'ui/open-explain'; pageId: string }
+  /** 赶题总览卡里点某道题：让后台把这个标签页导航到那道题 */
+  | { type: 'ui/navigate'; url: string }
   /** Ctrl+V / Ctrl+M 走不通时，读系统剪贴板的兜底 */
   | { type: 'clipboard/read' }
   /** 页面里拦下 Ctrl+V / Ctrl+M 之后，用插件自己的写入链路把剪贴板内容塞进作答区 */
@@ -152,6 +157,7 @@ export function isContentRequest(message: unknown): message is ContentRequest {
       message.type === 'ui/open-url' ||
       message.type === 'ui/open-diff' ||
       message.type === 'ui/open-explain' ||
+      message.type === 'ui/navigate' ||
       message.type === 'clipboard/read' ||
       message.type === 'code/paste')
   );
@@ -173,6 +179,8 @@ export interface AttachChatResponse {
   ok: boolean;
   /** 正在跑的 requestId；没有在跑的就是空串 */
   requestId?: string;
+  /** 赶题模式的当前进度：面板重新挂载时靠它把总览卡接回来 */
+  snapshot?: BatchSnapshot;
 }
 
 export interface TestInputResponse {

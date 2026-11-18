@@ -5,6 +5,8 @@
  * 另外模板字符串里写不了裸的三反引号，用 fence 变量拼代码块围栏。
  */
 
+import { PROBLEM_TYPES } from '../shared/problem-types.ts';
+
 const HELPERS = `
   // 模板字符串里写不了裸的三反引号，用它拼代码块围栏
   const fence = String.fromCharCode(96).repeat(3);
@@ -40,14 +42,10 @@ const HELPERS = `
     && typeof value.state.doc.toString === 'function';
 
   // PTA 的题型是固定的几个，题目集合地址里带着：/problems/type/N
-  // 1=判断题 2=选择题 6=代码填空 7=编程题 9=多文件
-  const PROBLEM_TYPE_NAMES = {
-    1: '判断题（True or False）',
-    2: '选择题（Multiple Choice）',
-    6: '代码填空（Code Completion）',
-    7: '编程题（Programming）',
-    9: '多文件（Multiple Files）',
-  };
+  // 名字放在 shared/problem-types.ts，这里插值进去（免得两处各写一份）
+  const PROBLEM_TYPE_NAMES = ${JSON.stringify(
+    Object.fromEntries(Object.entries(PROBLEM_TYPES).map(([key, value]) => [key, value.full])),
+  )};
 
   const detectProblemType = () => {
     const fromUrl = location.pathname.match(/\\/problems\\/type\\/(\\d+)/);
@@ -199,15 +197,27 @@ const HELPERS = `
     });
   };
 
-  // 作答区＝可写的那一个；传了序号就按序号取（多文件题），否则取内容最长的
-  const pickEditorView = (index) => {
+  // 作答区＝可写的那一个；传了序号就按序号取（多文件题），否则取内容最长的。
+  // preferFocused=true 时优先取「焦点所在」的那个：用户在测试用例输入框里按 Ctrl+V，
+  // 不该把内容写进作答区（那等于把答案写坏了）。
+  const pickEditorView = (index, preferFocused) => {
     const views = collectEditorViews();
     const writable = pickWritableViews();
     if (writable.length === 0) return { best: null, readOnlyCount: views.length, writableCount: 0 };
     const wanted = Number(index);
-    const best = Number.isInteger(wanted) && wanted >= 0 && wanted < writable.length
-      ? writable[wanted]
-      : writable.reduce((a, b) => (b.length > a.length ? b : a));
+    if (Number.isInteger(wanted) && wanted >= 0 && wanted < writable.length) {
+      return { best: writable[wanted], readOnlyCount: views.length - writable.length, writableCount: writable.length };
+    }
+    if (preferFocused) {
+      const active = document.activeElement;
+      if (active) {
+        const focused = writable.find((item) => item.element && (item.element === active || item.element.contains(active)));
+        if (focused) {
+          return { best: focused, readOnlyCount: views.length - writable.length, writableCount: writable.length };
+        }
+      }
+    }
+    const best = writable.reduce((a, b) => (b.length > a.length ? b : a));
     return { best, readOnlyCount: views.length - writable.length, writableCount: writable.length };
   };
 
@@ -1312,6 +1322,12 @@ if (options.skipCurrent === true && currentId) skipped[currentId] = true;
 const typeGroups = readProblemTypeGroups();
 const grid = readProblemGrid();
 
+// 整份题单的总量（所有题型加起来）：面板的进度条按这个口径画，
+// 不然跨题型切换时「还剩几题」会一会儿大一会儿小
+const totalAll = typeGroups.reduce((sum, group) => sum + (group.total || 0), 0);
+const answeredAll = typeGroups.reduce((sum, group) => sum + (group.answered || 0), 0);
+const remainingAll = Math.max(0, totalAll - answeredAll);
+
 // 还没做过的题：先找当前题型里当前题之后的，再回头找当前题型里前面的
 const pending = grid.filter((item) => !item.submitted && !skipped[item.id]);
 const currentIndex = grid.findIndex((item) => item.id === currentId);
@@ -1397,6 +1413,9 @@ if (nextItem) {
     total: grid.length,
     // 还剩几题 = 没做过的题里去掉当前这道（当前这道做完就没了）
     remaining: pending.filter((item) => item.id !== currentId).length,
+    // 整份题单的口径：面板进度条用这两个
+    totalAll: totalAll,
+    remainingAll: remainingAll,
     type: currentType,
   };
 }
@@ -1471,6 +1490,9 @@ for (let index = groupIndex + 1; index < typeGroups.length; index += 1) {
     index: nextGrid.indexOf(target),
     total: nextGrid.length,
     remaining: nextGrid.filter((item) => !item.submitted && !skipped[item.id]).length,
+    // 整份题单的口径：面板进度条用这两个
+    totalAll: totalAll,
+    remainingAll: remainingAll,
     type: group.type,
     typeName: PROBLEM_TYPE_NAMES[group.type] || ('题型 ' + group.type),
     switchedType: true,
@@ -1814,7 +1836,7 @@ const text = String(__args.text === undefined ? '' : __args.text);
 const json = __args.json === true;
 if (method !== 'clear' && method !== 'readDoc' && method !== 'rect' && !text) return '没有给 text';
 
-const picked = pickEditorView(__args.editorIndex);
+const picked = pickEditorView(__args.editorIndex, __args.preferFocused === true);
 const element = picked.best && picked.best.element ? picked.best.element : findEditorElement();
 
 // 统一的收尾：报告用了什么方法、回读比对结果；json 模式返回结构化数据（给写入链路判断用）

@@ -23,7 +23,7 @@ import type { EditorAssistInstallResponse, EditorCheckResponse } from '../shared
 /** 装过一次就不再装：换题是前端路由，agent 会自己重新绑定编辑器 */
 let started = false;
 /** 没找到作答区之前每 2 秒试一次 */
-let retry: number | null = null;
+let retry: number | undefined;
 
 const isProblemPage = (): boolean =>
   /(^|\.)pintia\.cn$/.test(location.hostname) && /\/problems\//.test(location.pathname);
@@ -36,10 +36,22 @@ export function startEditorAssist(): void {
     void install();
     return;
   }
-  retry = setInterval(() => {
+  scheduleRetry();
+}
+
+/**
+ * 每两秒看一眼，没装上就再试。
+ *
+ * 装不上的原因多是「后台还没醒」「扩展刚更新」「页面上还留着旧版本注入的脚本」，
+ * 这些都是过一会儿就会好的情况。只试一次的话，这个标签页里增强就彻底废了
+ * （PTA 换题不刷新页面，没有第二次注入的机会）。
+ */
+function scheduleRetry(): void {
+  if (retry !== undefined || started) return;
+  retry = window.setInterval(() => {
     if (!isProblemPage()) return;
-    if (retry) clearInterval(retry);
-    retry = null;
+    if (retry !== undefined) window.clearInterval(retry);
+    retry = undefined;
     void install();
   }, 2000);
 }
@@ -50,9 +62,13 @@ async function install(): Promise<void> {
   try {
     response = (await ext.runtime.sendMessage({ type: 'editor/assist/install' })) as EditorAssistInstallResponse;
   } catch {
-    return; // 后台还没醒（或旧版本插件）：下次进题页再试
+    scheduleRetry(); // 后台还没醒（或旧版本插件）：过会儿再试
+    return;
   }
-  if (!response?.ok || !response.token) return;
+  if (!response?.ok || !response.token) {
+    scheduleRetry();
+    return;
+  }
   started = true;
 
   const token = response.token;
@@ -100,26 +116,49 @@ async function handle(token: string, message: AgentEvent): Promise<void> {
  *
  * 结果带原文一起回给页面脚本：页面脚本只认「文本还对得上」的那一份，
  * 用户又改了字就直接丢掉，波浪线永远比正文慢一拍也不会画错位置。
+ *
+ * 同一时刻只留一个检查在跑：内置引擎一次只能处理一个请求，剩下的排队，
+ * 排队超过十几秒就报「编译器忙」。用户连续敲字时排队的全是已经被丢弃的旧版本，
+ * 最新那一份反而排不上，徽标就从「没有语法错误」变成「编译器忙」——等于没有实时检查。
+ * 所以后来的检查只留最新的那一份文本，等前一次跑完再查。
  */
+let checkInFlight = false;
+let checkPending: { text: string; language: string; fragment: boolean } | null = null;
+
 async function runCheck(token: string, text: string, language: string, fragment = false): Promise<void> {
-  let response: EditorCheckResponse | undefined;
-  try {
-    response = (await ext.runtime.sendMessage({
-      type: 'editor/check',
-      code: text,
-      language,
-      fragment,
-    })) as EditorCheckResponse;
-  } catch {
-    return; // 后台没醒 / 重载中：这一轮不画，下一次改动会再来
+  if (checkInFlight) {
+    checkPending = { text, language, fragment };
+    return;
   }
-  if (!response) return;
-  post(token, {
-    kind: 'diagnostics',
-    text,
-    boxes: Array.isArray(response.diagnostics) ? response.diagnostics : [],
-    note: response.note || response.message || '',
-  });
+  checkInFlight = true;
+  try {
+    let response: EditorCheckResponse | undefined;
+    try {
+      response = (await ext.runtime.sendMessage({
+        type: 'editor/check',
+        code: text,
+        language,
+        fragment,
+      })) as EditorCheckResponse;
+    } catch {
+      return; // 后台没醒 / 重载中：这一轮不画，下一次改动会再来
+    }
+    if (!response) return;
+    post(token, {
+      kind: 'diagnostics',
+      text,
+      boxes: Array.isArray(response.diagnostics) ? response.diagnostics : [],
+      note: response.note || response.message || '',
+    });
+  } finally {
+    checkInFlight = false;
+    const pending = checkPending;
+    checkPending = null;
+    // 文本没变就不用再查一遍（这次的结果就是最新的）
+    if (pending && pending.text !== text) {
+      void runCheck(token, pending.text, pending.language, pending.fragment);
+    }
+  }
 }
 
 function post(token: string, payload: AgentCommand): void {

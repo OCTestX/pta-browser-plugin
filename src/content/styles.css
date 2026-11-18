@@ -4,7 +4,9 @@
 
   --pta-surface: #ffffff;
   --pta-surface-alt: #f4f6fb;
+  --pta-surface-raised: #ffffff;
   --pta-border: #e2e6f0;
+  --pta-border-strong: #cfd6e6;
   --pta-text: #1f2430;
   --pta-text-muted: #8a93a6;
   --pta-accent: #2f6bff;
@@ -12,6 +14,57 @@
   --pta-danger: #d64545;
   --pta-danger-soft: #fdeeee;
   --pta-ok: #1a9e63;
+  --pta-ok-soft: #e6f7ef;
+  --pta-warning: #b7791f;
+  --pta-shadow: 0 18px 48px rgba(15, 23, 42, 0.28);
+  --pta-shadow-soft: 0 1px 2px rgba(15, 23, 42, 0.06);
+  --pta-code-bg: #1f2430;
+  --pta-code-text: #eef1f8;
+  /* diff 的几档底色（卡片与全屏 diff 页共用） */
+  --pta-diff-add: #e6f6ed;
+  --pta-diff-del: #fdecec;
+  --pta-diff-mod: #e8f0ff;
+  --pta-diff-word: #ffd7a8;
+  --pta-diff-word-text: #7a3c00;
+  --pta-diff-word-del: #f8b9b9;
+  --pta-diff-word-del-text: #8c1d1d;
+  --pta-diff-tag-add: #14663f;
+  --pta-diff-tag-mod: #1f4bb8;
+  --pta-diff-tag-del: #a33;
+}
+
+/* 跟着系统切深色：面板在 PTA 的浅色页面上已经够显眼，深色下也别刺眼 */
+@media (prefers-color-scheme: dark) {
+  :host {
+    --pta-surface: #171b24;
+    --pta-surface-alt: #1e2430;
+    --pta-surface-raised: #212836;
+    --pta-border: #2c3444;
+    --pta-border-strong: #3a4457;
+    --pta-text: #e6eaf2;
+    --pta-text-muted: #939db1;
+    --pta-accent: #6b9bff;
+    --pta-accent-soft: #1e2b47;
+    --pta-danger: #ff8080;
+    --pta-danger-soft: #3a2226;
+    --pta-ok: #45d69a;
+    --pta-ok-soft: #16342a;
+    --pta-warning: #e5b25c;
+    --pta-shadow: 0 18px 48px rgba(0, 0, 0, 0.55);
+    --pta-shadow-soft: 0 1px 2px rgba(0, 0, 0, 0.4);
+    --pta-code-bg: #10141c;
+    --pta-code-text: #e6eaf2;
+    --pta-diff-add: #16342a;
+    --pta-diff-del: #3a2226;
+    --pta-diff-mod: #1e2b47;
+    --pta-diff-word: #5a3c12;
+    --pta-diff-word-text: #ffd7a8;
+    --pta-diff-word-del: #5c2626;
+    --pta-diff-word-del-text: #f8b9b9;
+    --pta-diff-tag-add: #45d69a;
+    --pta-diff-tag-mod: #6b9bff;
+    --pta-diff-tag-del: #ff8080;
+  }
 }
 
 .panel {
@@ -27,12 +80,13 @@
   box-sizing: border-box;
   overflow: hidden;
   border: 1px solid var(--pta-border);
-  border-radius: 14px;
+  border-radius: 16px;
   background: var(--pta-surface);
-  box-shadow: 0 18px 48px rgba(15, 23, 42, 0.28);
+  box-shadow: var(--pta-shadow);
   color: var(--pta-text);
   font: 14px/1.6 -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Microsoft YaHei',
     sans-serif;
+  -webkit-font-smoothing: antialiased;
 }
 
 /* 右下角的缩放把手：拉它改面板大小（布局存在 storage 里，刷新还在） */
@@ -60,14 +114,15 @@
   display: flex;
   align-items: center;
   gap: 8px;
-  padding: 12px 14px;
+  padding: 11px 14px;
   border-bottom: 1px solid var(--pta-border);
-  background: var(--pta-surface-alt);
+  background: linear-gradient(180deg, var(--pta-surface-raised), var(--pta-surface-alt));
 }
 
 .panel__title {
   font-size: 15px;
   font-weight: 600;
+  letter-spacing: 0.01em;
 }
 
 .panel__badge {
@@ -76,6 +131,27 @@
   background: var(--pta-accent-soft);
   color: var(--pta-accent);
   font-size: 11px;
+}
+
+/* 当前模型：模型名可能很长，挤成一行 + 省略号，点一下进设置换模型 */
+.panel__model {
+  max-width: 96px;
+  overflow: hidden;
+  padding: 1px 0;
+  border: 0;
+  background: none;
+  color: var(--pta-text-muted);
+  font: inherit;
+  font-size: 11px;
+  text-align: left;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.panel__model:hover {
+  color: var(--pta-accent);
+  text-decoration: underline;
 }
 
 .panel__usage {
@@ -231,9 +307,10 @@
 }
 
 .bubble__content {
-  padding: 9px 12px;
+  padding: 9px 13px;
   border: 1px solid var(--pta-border);
-  border-radius: 10px;
+  border-radius: 12px;
+  background: var(--pta-surface-raised);
   white-space: pre-wrap;
   word-break: break-word;
 }
@@ -241,8 +318,9 @@
 .bubble--user .bubble__content {
   margin-left: 32px;
   border-color: transparent;
-  background: var(--pta-accent);
+  background: linear-gradient(135deg, var(--pta-accent), color-mix(in srgb, var(--pta-accent) 78%, #000));
   color: #ffffff;
+  box-shadow: var(--pta-shadow-soft);
 }
 
 .bubble--user .bubble__role {
@@ -313,9 +391,9 @@
 
 .bubble__content--md pre {
   padding: 10px 12px;
-  border-radius: 8px;
-  background: #1f2430;
-  color: #eef1f8;
+  border-radius: 10px;
+  background: var(--pta-code-bg);
+  color: var(--pta-code-text);
   overflow-x: auto;
 }
 
@@ -396,7 +474,7 @@
   margin-bottom: 8px;
   border: 1px solid var(--pta-border);
   border-left: 3px solid var(--pta-text-muted);
-  border-radius: 10px;
+  border-radius: 12px;
   background: var(--pta-surface-alt);
   overflow: hidden;
 }
@@ -469,8 +547,8 @@
 }
 
 .tool__code {
-  background: #1f2430;
-  color: #eef1f8;
+  background: var(--pta-code-bg);
+  color: var(--pta-code-text);
 }
 
 .tool__result {
@@ -492,10 +570,12 @@
   background: var(--pta-danger-soft);
   color: var(--pta-danger);
   font-size: 13px;
+  line-height: 1.5;
 }
 
 .notice__text {
   flex: 1;
+  min-width: 0;
 }
 
 .notice__action {
@@ -508,6 +588,11 @@
   font: inherit;
   font-size: 12px;
   cursor: pointer;
+}
+
+.notice__action:hover {
+  background: var(--pta-danger);
+  color: #ffffff;
 }
 
 /* ---------- settings ---------- */
@@ -828,18 +913,20 @@
   display: block;
   width: 100%;
   box-sizing: border-box;
-  padding: 9px 11px;
+  padding: 9px 12px;
   border: 1px solid var(--pta-border);
-  border-radius: 10px;
+  border-radius: 12px;
   background: var(--pta-surface);
   color: var(--pta-text);
   font: inherit;
   resize: none;
+  transition: border-color 0.15s ease, box-shadow 0.15s ease;
 }
 
 .composer__input:focus {
   outline: none;
   border-color: var(--pta-accent);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--pta-accent) 18%, transparent);
 }
 
 .composer__footer {
@@ -866,6 +953,7 @@
   font-size: 12px;
   cursor: pointer;
   white-space: nowrap;
+  transition: border-color 0.15s ease, color 0.15s ease, background 0.15s ease;
 }
 
 .composer__focus:hover {
@@ -888,13 +976,19 @@
 }
 
 .composer__send {
-  padding: 6px 16px;
+  padding: 6px 18px;
   border: none;
-  border-radius: 8px;
+  border-radius: 10px;
   background: var(--pta-accent);
   color: #ffffff;
   font: inherit;
+  font-weight: 500;
   cursor: pointer;
+  transition: filter 0.15s ease, opacity 0.15s ease;
+}
+
+.composer__send:hover:not(:disabled) {
+  filter: brightness(1.08);
 }
 
 .composer__send:disabled {
@@ -1265,4 +1359,475 @@
 .method-button--ok {
   border-color: var(--pta-ok);
   color: var(--pta-ok);
+}
+
+/* ---------- 赶题模式（/fuck）总览卡 ---------- */
+
+.batch {
+  flex: none;
+  padding: 10px 14px 12px;
+  border-bottom: 1px solid var(--pta-border);
+  background: var(--pta-surface-alt);
+}
+
+.batch--collapsed {
+  padding-bottom: 10px;
+}
+
+.batch__head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.batch__toggle {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: 6px;
+  padding: 2px 6px 2px 2px;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--pta-text);
+  font: inherit;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.batch__toggle:hover {
+  background: var(--pta-surface);
+}
+
+.batch__caret {
+  color: var(--pta-text-muted);
+  font-size: 10px;
+  line-height: 1;
+}
+
+.batch__state {
+  flex: none;
+  padding: 1px 8px;
+  border-radius: 999px;
+  background: var(--pta-accent-soft);
+  color: var(--pta-accent);
+  font-size: 11px;
+}
+
+.batch__state--done {
+  background: var(--pta-ok-soft);
+  color: var(--pta-ok);
+}
+
+.batch__elapsed {
+  flex: 1;
+  color: var(--pta-text-muted);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+}
+
+.batch__stop {
+  flex: none;
+  padding: 2px 10px;
+  border: 1px solid var(--pta-border-strong);
+  border-radius: 999px;
+  background: var(--pta-surface);
+  color: var(--pta-text-muted);
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.batch__stop:hover {
+  border-color: var(--pta-danger);
+  color: var(--pta-danger);
+}
+
+/* 「重做没过的 N 题」：这一轮收工之后最想按的一个按钮，给它一点存在感 */
+.batch__redo {
+  flex: none;
+  padding: 2px 10px;
+  border: 1px solid var(--pta-accent);
+  border-radius: 999px;
+  background: var(--pta-accent-soft);
+  color: var(--pta-accent);
+  font: inherit;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.batch__redo:hover {
+  background: var(--pta-accent);
+  color: var(--pta-surface);
+}
+
+/* 进度条：绿=AC，红=没过，蓝=还没结论，空白=还没做 */
+.batch__bar {
+  display: flex;
+  height: 6px;
+  margin: 10px 0 8px;
+  border-radius: 999px;
+  background: var(--pta-border);
+  overflow: hidden;
+}
+
+.batch__seg {
+  display: block;
+  height: 100%;
+  min-width: 0;
+  transition: flex-grow 0.3s ease;
+}
+
+.batch__seg--ok {
+  background: var(--pta-ok);
+}
+
+.batch__seg--bad {
+  background: var(--pta-danger);
+}
+
+.batch__seg--todo {
+  background: var(--pta-accent);
+}
+
+.batch__stats {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 6px;
+}
+
+.batch__ratio {
+  margin: 0 0 8px;
+  color: var(--pta-text-muted);
+  font-size: 12px;
+}
+
+.batch__ratio b {
+  color: var(--pta-text);
+  font-variant-numeric: tabular-nums;
+}
+
+.batch__stat {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  padding: 6px 4px;
+  border: 1px solid var(--pta-border);
+  border-radius: 10px;
+  background: var(--pta-surface);
+}
+
+.batch__stat-value {
+  font-size: 16px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  line-height: 1.2;
+}
+
+.batch__stat-label {
+  color: var(--pta-text-muted);
+  font-size: 11px;
+}
+
+.batch__stat--ok .batch__stat-value {
+  color: var(--pta-ok);
+}
+
+.batch__stat--bad .batch__stat-value {
+  color: var(--pta-danger);
+}
+
+.batch__current {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  margin: 8px 0 0;
+  font-size: 12px;
+}
+
+.batch__current-label {
+  flex: none;
+  color: var(--pta-text-muted);
+}
+
+.batch__current-title {
+  min-width: 0;
+  overflow: hidden;
+  font-weight: 500;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.batch__list {
+  max-height: 132px;
+  margin: 8px 0 0;
+  padding: 0;
+  overflow-y: auto;
+  list-style: none;
+  border: 1px solid var(--pta-border);
+  border-radius: 10px;
+  background: var(--pta-surface);
+}
+
+.batch__row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 5px 9px;
+  font-size: 12.5px;
+}
+
+.batch__row + .batch__row {
+  border-top: 1px solid var(--pta-border);
+}
+
+.batch__row--current {
+  background: var(--pta-accent-soft);
+}
+
+.batch__row-title {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* 有地址的题：点一下能跳回去，指针和颜色都告诉用户「这行可以点」 */
+.batch__row-title--link {
+  cursor: pointer;
+}
+
+.batch__row-title--link:hover {
+  color: var(--pta-accent);
+  text-decoration: underline;
+}
+
+.batch__row-title:disabled {
+  cursor: default;
+}
+
+.batch__mark {
+  flex: none;
+  padding: 0 7px;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 600;
+  line-height: 1.7;
+}
+
+.batch__mark--ok {
+  background: var(--pta-ok-soft);
+  color: var(--pta-ok);
+}
+
+.batch__mark--bad {
+  background: var(--pta-danger-soft);
+  color: var(--pta-danger);
+}
+
+.batch__mark--now {
+  background: var(--pta-accent-soft);
+  color: var(--pta-accent);
+}
+
+.batch__mark--todo {
+  background: var(--pta-surface-alt);
+  color: var(--pta-text-muted);
+}
+
+.batch__hint {
+  margin: 8px 0 0;
+  color: var(--pta-text-muted);
+  font-size: 11.5px;
+}
+
+/* ---------- 滚动条：细一点，别抢内容的视线 ---------- */
+
+.messages::-webkit-scrollbar,
+.batch__list::-webkit-scrollbar,
+.tool__code::-webkit-scrollbar,
+.tool__result::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+.messages::-webkit-scrollbar-thumb,
+.batch__list::-webkit-scrollbar-thumb,
+.tool__code::-webkit-scrollbar-thumb,
+.tool__result::-webkit-scrollbar-thumb {
+  border: 2px solid transparent;
+  border-radius: 999px;
+  background: var(--pta-border-strong);
+  background-clip: content-box;
+}
+
+.messages::-webkit-scrollbar-track,
+.batch__list::-webkit-scrollbar-track,
+.tool__code::-webkit-scrollbar-track,
+.tool__result::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+/* 不想看动画的人：把会动的地方都停掉（进度条上面已经单独放慢了，这里不管它） */
+@media (prefers-reduced-motion: reduce) {
+  .bubble__cursor {
+    animation: none;
+  }
+
+  .panel__ring-fg,
+  .composer__input,
+  .composer__focus,
+  .composer__send,
+  .batch__seg {
+    transition: none;
+  }
+}
+
+/* 进度条里「还没做」的那一段：留白，别跟已做的混在一起 */
+.batch__seg--rest {
+  background: transparent;
+}
+
+/* 赶题卡片：各题型做了几题 */
+.batch__types {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin: 8px 0 0;
+}
+
+.batch__type {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 1px 7px;
+  border: 1px solid var(--pta-border);
+  border-radius: 999px;
+  background: var(--pta-surface);
+  color: var(--pta-text-muted);
+  font-size: 11px;
+}
+
+.batch__type b {
+  color: var(--pta-text);
+  font-variant-numeric: tabular-nums;
+}
+
+/* 赶题卡片：没过的题单独列一行 */
+.batch__failed {
+  margin: 8px 0 0;
+  color: var(--pta-danger);
+  font-size: 11.5px;
+  line-height: 1.6;
+}
+
+.batch__failed-item {
+  margin-left: 5px;
+}
+
+/* ---------- 空状态：快捷入口 ---------- */
+
+.welcome {
+  margin-top: 4px;
+  padding: 12px;
+  border: 1px solid var(--pta-border);
+  border-radius: 12px;
+  background: var(--pta-surface-alt);
+}
+
+.welcome__text {
+  margin: 0 0 10px;
+  color: var(--pta-text-muted);
+  font-size: 12.5px;
+}
+
+.welcome__text code {
+  padding: 1px 5px;
+  border-radius: 4px;
+  background: var(--pta-surface);
+  font-family: 'SFMono-Regular', Consolas, Menlo, monospace;
+  font-size: 12px;
+}
+
+.welcome__actions {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 6px;
+}
+
+.welcome__action {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 7px 9px;
+  border: 1px solid var(--pta-border);
+  border-radius: 9px;
+  background: var(--pta-surface);
+  color: var(--pta-text);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+  transition: border-color 0.15s ease, transform 0.15s ease;
+}
+
+.welcome__action:hover {
+  border-color: var(--pta-accent);
+  transform: translateY(-1px);
+}
+
+.welcome__action-label {
+  font-size: 13px;
+  font-weight: 500;
+}
+
+.welcome__action-hint {
+  color: var(--pta-text-muted);
+  font-size: 11px;
+  line-height: 1.4;
+}
+
+/* ---------- markdown 代码块：右上角一个复制按钮 ---------- */
+
+.md-code {
+  position: relative;
+}
+
+.bubble__content--md .md-code pre {
+  margin-bottom: 8px;
+}
+
+.md-code__copy {
+  position: absolute;
+  top: 6px;
+  right: 8px;
+  z-index: 1;
+  padding: 1px 8px;
+  border: 1px solid var(--pta-border);
+  border-radius: 6px;
+  background: var(--pta-surface-alt);
+  color: var(--pta-text-muted);
+  font: inherit;
+  font-size: 11px;
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity 0.15s ease, color 0.15s ease;
+}
+
+.md-code:hover .md-code__copy,
+.md-code__copy:focus-visible {
+  opacity: 1;
+}
+
+.md-code__copy:hover {
+  color: var(--pta-accent);
 }

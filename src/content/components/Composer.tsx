@@ -167,7 +167,7 @@ export function Composer({
         placeholder={
           streaming
             ? '正在生成，可以点「停止」打断'
-            : '输入你的问题，Enter 发送，Shift + Enter 换行（输入 / 看指令）'
+            : '输入你的问题，或输入 / 看指令'
         }
         onChange={(event) => {
           onChange(event.target.value);

@@ -27,6 +27,18 @@ function isInsidePlugin(path: EventTarget[]): boolean {
 }
 
 /**
+ * 是不是 PTA 的页面。
+ *
+ * 粘贴只在 PTA 上接管：内容脚本跑在所有站点上（清单写的是 <all_urls>），
+ * 在别的网站接管 Ctrl+V 会把人家自己的粘贴也顶掉——别的站点没有 PTA 的作答区，
+ * 插件的写入链路走不通，用户按了 Ctrl+V 什么也没发生。
+ */
+function isPtaHost(): boolean {
+  const host = location.hostname;
+  return host === 'pintia.cn' || host.endsWith('.pintia.cn');
+}
+
+/**
  * 焦点在可写作答区里才接管粘贴。
  * 只认 CodeMirror（PTA 的作答区就是它）；contenteditable 只限 PTA 域名，
  * 否则会把别的网站（在线文档之类）的 Ctrl+V 也顶掉。
@@ -34,11 +46,12 @@ function isInsidePlugin(path: EventTarget[]): boolean {
 function editableTarget(event: Event): Element | null {
   const path = typeof event.composedPath === 'function' ? event.composedPath() : [];
   if (isInsidePlugin(path)) return null;
+  if (!isPtaHost()) return null;
 
   const target = event.target instanceof Element ? event.target : null;
   if (!target) return null;
   const codeMirror = target.closest('.cm-content');
-  const element = codeMirror ?? (location.hostname.endsWith('pintia.cn') ? target.closest(EDITOR_SELECTOR) : null);
+  const element = codeMirror ?? target.closest(EDITOR_SELECTOR);
   if (!element) return null;
   // 题面的样例框也是 .cm-content，但只读；只读就交给浏览器默认行为
   if (element.getAttribute('aria-readonly') === 'true') return null;

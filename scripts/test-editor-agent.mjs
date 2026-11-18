@@ -290,6 +290,8 @@ async function runScenario(page) {
   send(window, { kind: 'diagnostics', text: 'Y', boxes: [ERROR_BOX, WARN_BOX] });
   await sleep(650);
   page.content.dispatchEvent(new window.MouseEvent('mousemove', { clientX: 5, clientY: 5, bubbles: true }));
+  // 悬停是攒到下一帧才算的（mousemove 一秒上百次，逐个算会把编辑器拖卡）
+  await sleep(50);
   const tip = document.getElementById('pta-assist-tip');
   check(
     '鼠标压在波浪线上弹出报错原文与中文建议',

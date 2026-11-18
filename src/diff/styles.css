@@ -8,7 +8,43 @@
   --pta-accent-soft: #eaf0ff;
   --pta-danger: #d64545;
   --pta-ok: #1a9e63;
-  color-scheme: light;
+  /* diff 的几档底色（跟悬浮窗里那张卡片共用一份变量名） */
+  --pta-diff-add: #e6f6ed;
+  --pta-diff-del: #fdecec;
+  --pta-diff-mod: #e8f0ff;
+  --pta-diff-word: #ffd7a8;
+  --pta-diff-word-text: #7a3c00;
+  --pta-diff-word-del: #f8b9b9;
+  --pta-diff-word-del-text: #8c1d1d;
+  --pta-diff-tag-add: #14663f;
+  --pta-diff-tag-mod: #1f4bb8;
+  --pta-diff-tag-del: #a33;
+  color-scheme: light dark;
+}
+
+/* 跟悬浮窗一样跟随系统切深色 */
+@media (prefers-color-scheme: dark) {
+  :root {
+    --pta-surface: #171b24;
+    --pta-surface-alt: #1e2430;
+    --pta-border: #2c3444;
+    --pta-text: #e6eaf2;
+    --pta-text-muted: #939db1;
+    --pta-accent: #6b9bff;
+    --pta-accent-soft: #1e2b47;
+    --pta-danger: #ff8080;
+    --pta-ok: #45d69a;
+    --pta-diff-add: #16342a;
+    --pta-diff-del: #3a2226;
+    --pta-diff-mod: #1e2b47;
+    --pta-diff-word: #5a3c12;
+    --pta-diff-word-text: #ffd7a8;
+    --pta-diff-word-del: #5c2626;
+    --pta-diff-word-del-text: #f8b9b9;
+    --pta-diff-tag-add: #45d69a;
+    --pta-diff-tag-mod: #6b9bff;
+    --pta-diff-tag-del: #ff8080;
+  }
 }
 
 * {

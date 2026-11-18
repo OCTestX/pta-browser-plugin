@@ -435,6 +435,27 @@ const jumpResult = await runScript(jumpPage, NEXT_PROBLEM_SCRIPT, { timeoutMs: 3
 check('切到下一题后报出新题的位置与剩余题数', jumpResult.ok === true && jumpResult.index === 1 && jumpResult.total === 3 && jumpResult.remaining === 2, jumpResult);
 check('切到下一题后报出新题的标题与地址', jumpResult.title === '7-13 另一道题' && String(jumpResult.url).includes('problemSetProblemId=2092326321552957460'), jumpResult);
 
+// 「还剩几题」要按整份题单算（所有题型加起来），不然跨题型切换时数字会跳
+const groupsPage = createProblemListPage(
+  ['2092326321552957459', '2092326321552957460', '2092326321552957461'],
+  {
+    groups: [
+      { type: '1', name: '判断题', answered: '4', total: '5' },
+      { type: '7', name: '编程题', answered: '2', total: '6' },
+    ],
+    submitted: ['2092326321552957460'],
+  },
+);
+// 前两个链接是题型分组，第三、四、五个才是题目：要点第三道题
+groupsPage.document.querySelectorAll('a')[4].addEventListener('click', (event) => {
+  event.preventDefault();
+  groupsPage.history.pushState({}, '', '/problem-sets/2092326321452294144/exam/problems/type/7?problemSetProblemId=2092326321552957461');
+});
+const groupsResult = await runScript(groupsPage, NEXT_PROBLEM_SCRIPT, { timeoutMs: 3000, pollMs: 20 });
+check('报出整份题单的题数（所有题型加起来）', groupsResult.totalAll === 11, groupsResult);
+check('报出整份题单还剩几题', groupsResult.remainingAll === 5, groupsResult);
+check('当前题型自己的「还剩几题」也照样给模型看', groupsResult.remaining === 1, groupsResult);
+
 // 做过的题要跳过：PTA 不允许重复提交
 const submittedPage = createProblemListPage(
   ['2092326321552957459', '2092326321552957460', '2092326321552957461'],

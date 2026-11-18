@@ -74,7 +74,7 @@ const check = (label, ok) => {
   console.log(`✓ ${label}`);
 };
 
-function boot({ hasApiKey, store, pageHtml }) {
+function boot({ hasApiKey, store, pageHtml, pendingCommand }) {
   const dom = new JSDOM(`<!doctype html><html><body>${pageHtml ?? '<p>题目页面</p>'}</body></html>`, {
     url: 'https://pintia.cn/problem-sets/1/problems/1',
     runScripts: 'dangerously',
@@ -161,6 +161,9 @@ function boot({ hasApiKey, store, pageHtml }) {
             };
           case 'ui/open-url':
             return { ok: true };
+          case 'ui/navigate':
+            // 带 /fail/ 的地址当作跳不过去：面板要给出提示，不能把待发指令留在那儿
+            return message.url.includes('/fail/') ? { ok: false, message: '跳不过去' } : { ok: true };
           case 'ui/open-diff':
             return { ok: true };
           case 'clipboard/read':
@@ -179,6 +182,11 @@ function boot({ hasApiKey, store, pageHtml }) {
     model: 'deepseek-ai/DeepSeek-V4.1-Flash',
     hasApiKey: keySet,
   });
+
+  // 模拟「跳到那道题之后重新挂载」：待发指令先放好，content script 一挂载就该把它补发出去
+  if (pendingCommand) {
+    window.sessionStorage.setItem('pta-assistant-pending-command', pendingCommand);
+  }
 
   window.eval(code);
 
@@ -232,6 +240,40 @@ check('聊天区存在', Boolean(withKey.find('.messages')));
 check('输入框存在', Boolean(withKey.find('.composer__input')));
 check('标题栏版本号跟清单一致（2.0.0 → v2.0）', withKey.find('.panel__badge')?.textContent === 'v2.0');
 check('没聊过时圆环没有 token 明细', (withKey.find('.panel__ctx')?.getAttribute('title') ?? '').includes('还没有接口回传'));
+// 顶栏显示当前模型：等一次长回答之前，用户得知道自己在跟谁说话
+await tick();
+check('顶栏显示当前模型', (withKey.find('.panel__model')?.textContent ?? '').includes('DeepSeek'), withKey.find('.panel__model')?.textContent);
+withKey.find('.panel__model').click();
+await tick();
+check('点模型名进设置页', withKey.find('.panel__back') !== null);
+withKey.find('.panel__back').click();
+await tick();
+check('从设置页能退回聊天', withKey.find('.panel__back') === null);
+
+// 空状态：常用的几个入口摆出来，点一下直接发对应指令
+// （另起一个面板测，免得把后面「发送 → 生成中」的流程搅乱）
+const quick = boot({ hasApiKey: true });
+await tick();
+quick.toggle();
+await tick();
+const quickActions = [...(quick.find('.welcome')?.querySelectorAll('.welcome__action') ?? [])];
+check('空状态列出快捷入口', quickActions.length === 4, quickActions.length);
+check(
+  '快捷入口里有解决当前题目与赶题模式',
+  quickActions.some((el) => el.textContent.includes('解决当前题目'))
+  && quickActions.some((el) => el.textContent.includes('赶完整个题单')),
+  quickActions.map((el) => el.textContent),
+);
+const requestsBeforeQuick = quick.requests.length;
+quickActions[0].click();
+await tick();
+check('点快捷入口就发起了一轮对话', quick.requests.length > requestsBeforeQuick, quick.requests.at(-1));
+check(
+  '点快捷入口发出的是斜杠指令',
+  quick.requests.at(-1)?.type === 'chat/start'
+  && JSON.stringify(quick.requests.at(-1)?.messages ?? '').includes('/resolve'),
+  quick.requests.at(-1),
+);
 
 withKey.setValue(withKey.find('.composer__input'), '帮我看看这道题');
 await tick();
@@ -261,6 +303,8 @@ check(
 check('行内加粗生效', withKey.find('.bubble__content--md strong')?.textContent === '输入输出');
 check('行内公式渲染成 KaTeX', Boolean(withKey.find('.bubble__content--md .katex')));
 check('未闭合的代码围栏先按代码块渲染', Boolean(withKey.find('.bubble__content--md pre code')));
+check('代码块右上角有复制按钮', Boolean(withKey.find('.bubble__content--md .md-code__copy')));
+check('复制按钮不混进代码内容里', !(withKey.find('.bubble__content--md pre')?.textContent ?? '').includes('复制'));
 check('生成中显示光标', Boolean(withKey.find('.bubble__cursor')));
 
 withKey.emit({
@@ -1467,6 +1511,259 @@ const focusNoEditorHidden = (selector) =>
   focusNoEditor.window.document.querySelector(selector)?.hasAttribute('data-pta-focus-hidden') === true;
 check('没有作答区时页面外壳照样收起来', focusNoEditorHidden('.top-bar') && focusNoEditorHidden('.rail') && focusNoEditorHidden('.sidebar'));
 check('没有作答区时题面留着', focusNoEditorHidden('.rendered-markdown') === false);
+
+// 代码填空题那种「作答区就在题面里面」的页面：
+// 分栏区就是题面自己，这时候不能按分栏处理——题面的内容一根都不能收，收了页面直接白屏
+const focusFragment = boot({
+  hasApiKey: true,
+  pageHtml: `
+    <div id="exam-app">
+      <div class="grid">
+        <div class="top-bar">标题</div>
+        <div class="rail">图标栏</div>
+        <div class="content">
+          <div class="sidebar">题目列表</div>
+          <main>
+            <div class="toggle-strip">Toggle Sidebar</div>
+            <div class="left-col">
+              <div class="rendered-markdown">
+                <h3>7-2 阶乘计算升级版</h3>
+                <p>题目描述：给定一个正整数 n，请计算 n 的阶乘并输出。输入格式：一个正整数 n。输出格式：一个整数。样例输入：3。样例输出：6。这里再多写几个字，让题面够长、能被认出来。</p>
+                <div class="cm-content" contenteditable="true">int main(void) { return 0; }</div>
+              </div>
+            </div>
+          </main>
+        </div>
+      </div>
+    </div>`,
+});
+await tick();
+focusFragment.toggle();
+await tick();
+focusFragment.find('.composer__focus').click();
+await tick();
+const fragmentHidden = (selector) =>
+  focusFragment.window.document.querySelector(selector)?.hasAttribute('data-pta-focus-hidden') === true;
+check('作答区在题面里面时题面不会被收光', fragmentHidden('.rendered-markdown') === false);
+check(
+  '作答区在题面里面时题面的正文不会被收掉',
+  fragmentHidden('.rendered-markdown h3') === false && fragmentHidden('.rendered-markdown p') === false,
+);
+check('作答区在题面里面时题面那一列也不会被收掉', fragmentHidden('.left-col') === false);
+check('作答区在题面里面时页面外壳照样收起来', fragmentHidden('.top-bar') && fragmentHidden('.rail') && fragmentHidden('.sidebar'));
+
+/* ---------- 场景：赶题模式（/fuck）的总览卡 ---------- */
+
+const batch = boot({ hasApiKey: true });
+await tick();
+batch.toggle();
+await tick();
+check('没进赶题模式时不画总览卡', batch.find('.batch') === null);
+
+// 后台推来一份进度快照（结构化通道 chat/batch）
+const batchSnapshot = {
+  active: true,
+  attempted: 3,
+  accepted: 2,
+  failed: 1,
+  unknown: 0,
+  remaining: 5,
+  total: 12,
+  current: { title: '7-6 斐波那契数列', type: '7' },
+  problems: [
+    { key: 'p1', title: '7-1 A+B', type: '7', verdict: 'AC', status: 'accepted' },
+    { key: 'p2', title: '7-2 阶乘', type: '7', verdict: 'AC', status: 'accepted' },
+    { key: 'p3', title: '7-3 数组求和', type: '7', verdict: 'WA', status: 'failed' },
+  ],
+  elapsedMinutes: 4,
+  finished: false,
+  updatedAt: Date.now(),
+};
+batch.emit({ type: 'chat/batch', requestId: 'batch-request', snapshot: batchSnapshot });
+await tick();
+check('推来快照后总览卡出现', batch.find('.batch') !== null);
+const batchText = batch.find('.batch')?.textContent ?? '';
+check('总览卡写明已做几题', batchText.includes('本轮已做 3 题'), batchText);
+check('总览卡写明题单共几题', batchText.includes('题单共 12 题'), batchText);
+check('总览卡写明还剩几题', batchText.includes('还剩 5 题'), batchText);
+check('总览卡列出每道题的结论', batchText.includes('7-1 A+B') && batchText.includes('WA'), batchText);
+check('总览卡写明当前在做哪题', batchText.includes('7-6 斐波那契数列'), batchText);
+check('总览卡按题型分组', (batch.find('.batch__types')?.textContent ?? '').includes('编程题'), batch.find('.batch__types')?.textContent);
+check('总览卡单独列出没过的题', (batch.find('.batch__failed')?.textContent ?? '').includes('7-3 数组求和'), batch.find('.batch__failed')?.textContent);
+check('总览卡显示进行中', batchText.includes('进行中'), batchText);
+
+// 收起 / 展开
+batch.find('.batch__toggle').click();
+await tick();
+check('总览卡能收起成一行', batch.find('.batch--collapsed') !== null && !(batch.find('.batch__list')?.textContent ?? '').includes('7-1 A+B'));
+batch.find('.batch__toggle').click();
+await tick();
+check('总览卡能再展开', batch.find('.batch--collapsed') === null && (batch.find('.batch__list')?.textContent ?? '').includes('7-1 A+B'));
+
+// 这一轮收工了：卡片定格在最终统计上
+batch.emit({
+  type: 'chat/batch',
+  requestId: 'batch-request',
+  snapshot: { ...batchSnapshot, finished: true, elapsedMinutes: 9 },
+});
+await tick();
+check('收工后总览卡标记为已收工', (batch.find('.batch')?.textContent ?? '').includes('已收工'));
+
+/* ---------- 收工之后：点一行跳回那道题、没过的题一键重做 ---------- */
+
+const withUrls = {
+  ...batchSnapshot,
+  finished: true,
+  problems: [
+    {
+      key: 'p1',
+      title: '7-1 A+B',
+      type: '7',
+      url: 'https://pintia.cn/problem-sets/1/exam/problems/type/7?problemSetProblemId=111',
+      verdict: 'AC',
+      status: 'accepted',
+    },
+    {
+      key: 'p3',
+      title: '7-3 数组求和',
+      type: '7',
+      url: 'https://pintia.cn/problem-sets/1/exam/problems/type/7?problemSetProblemId=333',
+      verdict: 'WA',
+      status: 'failed',
+    },
+  ],
+};
+
+/* ---------- 用户按了停止：写明「已停止」，并给出继续赶的出口 ---------- */
+
+batch.emit({
+  type: 'chat/batch',
+  requestId: 'batch-request',
+  snapshot: { ...withUrls, finished: true, stopReason: 'stopped', remaining: 5 },
+});
+await tick();
+const stoppedText = batch.find('.batch')?.textContent ?? '';
+check('按停止后卡片写明已停止', stoppedText.includes('已停止'), stoppedText);
+check('按停止后不写「已收工」', !stoppedText.includes('已收工'), stoppedText);
+const continueBtn = batch.find('.batch__redo');
+check('按停止后有「继续赶剩下的题」按钮', (continueBtn?.textContent ?? '').includes('继续赶剩下的 5 题'), continueBtn?.textContent);
+const requestsBeforeContinue = batch.requests.length;
+continueBtn?.click();
+await tick();
+check(
+  '点继续赶会发起新一轮 /fuck',
+  batch.requests.slice(requestsBeforeContinue).some(
+    (request) => request.type === 'chat/start' && JSON.stringify(request.messages ?? '').includes('/fuck'),
+  ),
+  batch.requests.at(-1),
+);
+
+// 题单真的走完了：没有「继续赶」这个说法
+batch.emit({
+  type: 'chat/batch',
+  requestId: 'batch-request',
+  snapshot: { ...withUrls, finished: true, stopReason: 'done', remaining: 0 },
+});
+await tick();
+check('题单走完后没有继续赶的按钮', (batch.find('.batch__redo')?.textContent ?? '').includes('重做没过的'));
+
+batch.emit({ type: 'chat/batch', requestId: 'batch-request', snapshot: withUrls });
+await tick();
+check('收工后有「重做没过的题」按钮', batch.find('.batch__redo') !== null);
+check('收工后不再显示停止按钮', batch.find('.batch__stop') === null);
+
+batch.find('.batch__redo').click();
+await tick();
+const redoNav = batch.requests.filter((request) => request.type === 'ui/navigate').at(-1);
+check('点重做会导航到没过的那道题', String(redoNav?.url ?? '').includes('problemSetProblemId=333'), redoNav);
+const redoCommand = batch.window.sessionStorage.getItem('pta-assistant-pending-command') ?? '';
+check('点重做会留下一条带地址的指令', redoCommand.includes('/fuck') && redoCommand.includes('problemSetProblemId=333'), redoCommand);
+check('点重做会带上每一道没过的题', redoCommand.includes('problemSetProblemId=333'), redoCommand);
+
+// 点清单里的某一行：只跳过去，不自动开新一轮
+// （上一步的待发指令按真机那样被「跳过去的那个页面」消费掉了）
+batch.window.sessionStorage.removeItem('pta-assistant-pending-command');
+batch.requests.length = 0;
+batch.find('.batch__row-title').click();
+await tick();
+const rowNav = batch.requests.filter((request) => request.type === 'ui/navigate').at(-1);
+check('点清单里的一行会跳到那道题', String(rowNav?.url ?? '').includes('problemSetProblemId=111'), rowNav);
+check('点一行不会顺手发起新一轮', batch.window.sessionStorage.getItem('pta-assistant-pending-command') === null);
+
+// 这一轮还在跑的时候：不能跳题（agent 正在题上写代码）
+batch.emit({ type: 'chat/batch', requestId: 'batch-request', snapshot: { ...withUrls, finished: false } });
+await tick();
+check('还在跑时没有重做按钮', batch.find('.batch__redo') === null);
+check('还在跑时清单不可点', batch.find('.batch__row-title')?.disabled === true);
+
+// 跳不过去：给出提示，并且不把待发指令留在那儿
+const failBatch = boot({ hasApiKey: true });
+await tick();
+failBatch.toggle();
+await tick();
+failBatch.emit({
+  type: 'chat/batch',
+  requestId: 'batch-request',
+  snapshot: {
+    ...withUrls,
+    problems: [
+      {
+        key: 'p9',
+        title: '7-9 跳不过去的题',
+        type: '7',
+        url: 'https://pintia.cn/fail/9',
+        verdict: 'WA',
+        status: 'failed',
+      },
+    ],
+  },
+});
+await tick();
+failBatch.find('.batch__redo').click();
+await tick();
+check('跳不过去时给出提示', (failBatch.find('.notice')?.textContent ?? '').includes('跳不过去'), failBatch.find('.notice')?.textContent);
+check(
+  '跳不过去时不留下待发指令',
+  failBatch.window.sessionStorage.getItem('pta-assistant-pending-command') === null,
+  failBatch.window.sessionStorage.getItem('pta-assistant-pending-command'),
+);
+
+/* ---------- 跳过去之后：页面重新挂载，待发的指令自动补发 ---------- */
+
+const resumed = boot({ hasApiKey: true, pendingCommand: '/fuck' });
+await tick();
+await tick();
+const resumedStart = resumed.requests.find((request) => request.type === 'chat/start');
+check('重新挂载后补发了待发指令', resumedStart !== undefined, resumed.requests.map((r) => r.type));
+check(
+  '补发的就是那条指令',
+  JSON.stringify(resumedStart?.messages ?? '').includes('/fuck'),
+  resumedStart?.messages,
+);
+check(
+  '补发之后待发指令被消费掉',
+  resumed.window.sessionStorage.getItem('pta-assistant-pending-command') === null,
+);
+
+// 新会话：卡片清掉
+batch.find('.panel__new-chat').click();
+await tick();
+check('开新会话后总览卡消失', batch.find('.batch') === null);
+
+// 快照里缺字段（老版本后台推的）也不能渲染出空洞
+const partial = boot({ hasApiKey: true });
+await tick();
+partial.toggle();
+await tick();
+partial.emit({
+  type: 'chat/batch',
+  requestId: 'batch-request',
+  snapshot: { active: true, attempted: 1, accepted: 1, failed: 0, unknown: 0, problems: [], elapsedMinutes: 1, finished: false, updatedAt: Date.now() },
+});
+await tick();
+const partialText = partial.find('.batch__ratio')?.textContent ?? '';
+check('快照缺 total 时不会渲染出空洞', !partialText.includes('题单共'), partialText);
+check('快照缺 total 时照样写明已做几题', partialText.includes('本轮已做 1 题'), partialText);
 
 // 关掉所有 jsdom 窗口：题目面板里有个盯地址的定时器（换题是前端路由，页面不刷新），
 // 窗口不关的话 node 进程会一直等着它

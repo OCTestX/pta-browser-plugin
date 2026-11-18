@@ -15,8 +15,9 @@ async function writeOnce(
   code: string,
   signal?: AbortSignal,
   editorIndex?: number,
+  preferFocused?: boolean,
 ): Promise<{ ok: boolean; detail: string }> {
-  const result = await injectScript(tabId, INPUT_METHOD_SCRIPT, { method, text: code, json: true, editorIndex }, undefined, signal);
+  const result = await injectScript(tabId, INPUT_METHOD_SCRIPT, { method, text: code, json: true, editorIndex, preferFocused }, undefined, signal);
   // injectScript 会把对象 JSON 化，这里解析回来
   try {
     const parsed = JSON.parse(result.output) as { ok: boolean; detail: string };
@@ -56,7 +57,10 @@ export async function pasteIntoEditor(options: {
   if (!text) return { output: '剪贴板是空的', isError: true };
 
   try {
-    const result = await injectScript(tabId, INPUT_METHOD_SCRIPT, { method: 'insert', text, json: true }, undefined, signal);
+    // preferFocused：用户在哪个编辑器里按的 Ctrl+V，就写进哪个。
+    // 「测试用例」输入框也是可写编辑器，默认按「内容最长」挑会挑到作答区去——
+    // 那等于把用户想粘的测试数据写成了答案。
+    const result = await injectScript(tabId, INPUT_METHOD_SCRIPT, { method: 'insert', text, json: true, preferFocused: true }, undefined, signal);
     try {
       const parsed = JSON.parse(result.output) as { ok?: boolean; detail?: string };
       if (parsed.ok === true) {
@@ -69,7 +73,7 @@ export async function pasteIntoEditor(options: {
     if (isAbortError(error, signal)) throw error;
   }
 
-  const replaced = await writeEditorCode({ tabId, code: text, signal });
+  const replaced = await writeEditorCode({ tabId, code: text, signal, preferFocused: true });
   if (replaced.isError) {
     return { output: `粘贴失败：${replaced.output}`, isError: true };
   }
@@ -77,8 +81,8 @@ export async function pasteIntoEditor(options: {
 }
 
 /** 清空作答区：换备用实现之前先把内容全部删掉 */
-async function clearEditor(tabId: number, signal?: AbortSignal, editorIndex?: number): Promise<void> {
-  const result = await injectScript(tabId, INPUT_METHOD_SCRIPT, { method: 'clear', text: '', editorIndex }, undefined, signal);
+async function clearEditor(tabId: number, signal?: AbortSignal, editorIndex?: number, preferFocused?: boolean): Promise<void> {
+  const result = await injectScript(tabId, INPUT_METHOD_SCRIPT, { method: 'clear', text: '', editorIndex, preferFocused }, undefined, signal);
   if (!result.ok || !result.output.includes('已清空')) {
     throw new Error(result.output);
   }
@@ -102,16 +106,18 @@ export async function writeEditorCode(options: {
   signal?: AbortSignal;
   /** 多文件题：写到第几个可写编辑器（从 0 开始），默认取内容最长的那个 */
   editorIndex?: number;
+  /** 优先写进「焦点所在」的那个编辑器：粘贴时用户在哪个框里按的 Ctrl+V，就写进哪个 */
+  preferFocused?: boolean;
 }): Promise<ToolOutcome> {
   const attempts: string[] = [];
-  const { signal, editorIndex } = options;
+  const { signal, editorIndex, preferFocused } = options;
 
   for (const method of WRITE_FALLBACK_CHAIN) {
     try {
       // 换下一种实现之前先确认没被停掉，否则会把作答区清空却什么都没写进去
       throwIfAborted(signal);
-      await clearEditor(options.tabId, signal, editorIndex);
-      const result = await writeOnce(options.tabId, method, options.code, signal, editorIndex);
+      await clearEditor(options.tabId, signal, editorIndex, preferFocused);
+      const result = await writeOnce(options.tabId, method, options.code, signal, editorIndex, preferFocused);
       if (result.ok) {
         const parts = [`写入成功（${findInputMethod(method).label}）`, result.detail];
         if (attempts.length > 0) parts.push(`之前失败的尝试：${attempts.join('；')}`);

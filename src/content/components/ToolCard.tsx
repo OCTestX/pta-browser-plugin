@@ -2,7 +2,7 @@ import { memo, useState } from 'react';
 import { ext } from '../../shared/browser';
 import type { ChatMessage } from '../../shared/types';
 import { DiffView } from './DiffView';
-
+import { copyText } from '../clipboard';
 const STATUS_LABEL: Record<NonNullable<ChatMessage['toolStatus']>, string> = {
   running: '执行中',
   ok: '完成',
@@ -158,20 +158,3 @@ export const ToolCard = memo(function ToolCard({ message, onAnswer, onFullscreen
   );
 });
 
-/** 面板里没有 clipboard 权限，用 execCommand 复制（用户点击触发，够用） */
-function copyText(text: string): void {
-  const area = document.createElement('textarea');
-  area.value = text;
-  area.setAttribute('readonly', '');
-  area.style.position = 'fixed';
-  area.style.top = '-1000px';
-  area.style.opacity = '0';
-  document.documentElement.appendChild(area);
-  area.select();
-  try {
-    document.execCommand('copy');
-  } catch {
-    // 复制失败就算了，用户可以自己选
-  }
-  area.remove();
-}

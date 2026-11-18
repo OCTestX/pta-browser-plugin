@@ -52,6 +52,10 @@ const STATEMENT_MARKERS = [
 
 let observer: MutationObserver | null = null;
 let ticker: number | undefined;
+/** 防抖定时器：页面改动停下来之后再重算一次 */
+let pendingTimer: number | undefined;
+/** 这一轮认定的题面：收元素时它（以及装着它的元素）永远不能动 */
+let statementRef: HTMLElement | null = null;
 
 /** 专注题目模式：页面只留题面 */
 export function applyFocusMode(): void {
@@ -68,10 +72,17 @@ export function applyFocusMode(): void {
 export function clearFocusMode(): void {
   observer?.disconnect();
   observer = null;
+  if (pendingTimer !== undefined) {
+    // 不清掉它的话，关掉模式之后这个定时器还会再跑一遍 hideChrome()，
+    // 把刚摘掉的属性又写回页面（肉眼看不出来，下次开模式时却会立刻生效）。
+    window.clearTimeout(pendingTimer);
+    pendingTimer = undefined;
+  }
   if (ticker !== undefined) {
     window.clearInterval(ticker);
     ticker = undefined;
   }
+  statementRef = null;
   for (const node of Array.from(document.querySelectorAll(`[${HIDE_ATTR}], [${COLUMN_ATTR}], [${SPLIT_ATTR}]`))) {
     node.removeAttribute(HIDE_ATTR);
     node.removeAttribute(COLUMN_ATTR);
@@ -95,11 +106,13 @@ function ensureStyle(): void {
  */
 function watchChanges(): void {
   if (observer) return;
-  let timer: number | undefined;
   observer = new MutationObserver(() => {
-    if (timer !== undefined) window.clearTimeout(timer);
+    if (pendingTimer !== undefined) window.clearTimeout(pendingTimer);
     // 页面改动很密，攒一会儿再算，别一改就重算一遍
-    timer = window.setTimeout(() => hideChrome(), 120);
+    pendingTimer = window.setTimeout(() => {
+      pendingTimer = undefined;
+      hideChrome();
+    }, 120);
   });
   observer.observe(document.documentElement, { childList: true, subtree: true });
 }
@@ -113,8 +126,12 @@ function hideChrome(): void {
 
   const statement = findStatement();
   if (!statement) return;
+  statementRef = statement;
 
   const editor = findAnswerEditor();
+  // 代码填空题那种「作答区就在题面里面」的页面：分栏区就是题面自己。
+  // 这种题不能按分栏处理——题面的内容一根都不能收，收了页面直接白屏。
+  const editorInsideStatement = Boolean(editor && statement.contains(editor));
   // 作答区在的时候，题面与编辑器共同的上层就是分栏区
   const splitArea = editor ? commonAncestor(statement, editor) : appRoot;
 
@@ -124,9 +141,16 @@ function hideChrome(): void {
     keep.add(node);
     if (node === splitArea) break;
   }
+  // 作答区在题面里面时，作答区那条路上的元素也要留着
+  if (editorInsideStatement && editor) {
+    for (let node: Element | null = editor; node && node !== statement; node = node.parentElement) {
+      keep.add(node);
+    }
+  }
 
-  // 分栏区里：题面这一列留着，编辑器那一列（和中间的分隔条）收起来
-  if (splitArea !== appRoot) {
+  // 分栏区里：题面这一列留着，编辑器那一列（和中间的分隔条）收起来。
+  // 题面自己就是分栏区时（作答区在题面里面）跳过：那会把题面的内容收光。
+  if (splitArea !== appRoot && !editorInsideStatement) {
     for (const child of Array.from(splitArea.children)) {
       if (!keep.has(child)) hide(child);
     }
@@ -154,6 +178,8 @@ function hideChrome(): void {
 function hide(node: Element): void {
   if (SKIP_TAGS[node.tagName]) return;
   if (node.getAttribute('aria-hidden') === 'true') return;
+  // 题面本身（以及装着题面的元素）永远不能收：收了页面就白屏了
+  if (statementRef && (node === statementRef || node.contains(statementRef))) return;
   (node as HTMLElement).setAttribute(HIDE_ATTR, '');
 }
 

@@ -100,6 +100,49 @@ async function fetchLatestRelease(url: string): Promise<ReleasePayload | null> {
 let cached: UpdateCheckResponse | null = null;
 let cachedAt = 0;
 const CACHE_TTL = 1000 * 60 * 60; // 1 小时内不重复请求
+/** 查失败的缓存只留 5 分钟：网络抽风时别把新版本挡太久，但别反复去打接口 */
+const FAILURE_TTL = 1000 * 60 * 5;
+
+/**
+ * 检查结果存在 storage.local 里，不只放在内存里。
+ *
+ * MV3 的 service worker 空闲三十秒左右就被回收，内存缓存跟着一起没了：
+ * 「打开设置页」这个动作几乎等于一次 GitHub 匿名请求，而 GitHub 匿名配额是
+ * 60 次/小时/IP——PTA 的用户群集中在校园网，很容易被打到限流，
+ * 之后两个源一起返回空，界面上只剩「没查到新版本（可能网络不通）」。
+ */
+const UPDATE_CACHE_KEY = 'pta-assistant-update-cache';
+
+interface UpdateCacheEntry {
+  result: UpdateCheckResponse | null;
+  at: number;
+  /** true 表示这次是查失败的（缓存只留 FAILURE_TTL 那么久） */
+  failed?: boolean;
+}
+
+async function readUpdateCache(): Promise<UpdateCacheEntry | null> {
+  try {
+    const stored = await ext.storage.local.get(UPDATE_CACHE_KEY);
+    const entry = stored[UPDATE_CACHE_KEY];
+    if (entry && typeof entry === 'object' && 'at' in entry) {
+      const value = entry as { at?: unknown; result?: unknown; failed?: unknown };
+      if (typeof value.at !== 'number') return null;
+      const result = value.result && typeof value.result === 'object' ? (value.result as UpdateCheckResponse) : null;
+      return { at: value.at, result, failed: value.failed === true };
+    }
+  } catch {
+    /* 读不到就当没有缓存 */
+  }
+  return null;
+}
+
+async function writeUpdateCache(entry: UpdateCacheEntry): Promise<void> {
+  try {
+    await ext.storage.local.set({ [UPDATE_CACHE_KEY]: entry });
+  } catch {
+    /* 写不进去不影响功能 */
+  }
+}
 
 /**
  * 查最新 release 标签，与内置版本比对；顺带挑出当前浏览器能装的包。
@@ -109,23 +152,66 @@ const CACHE_TTL = 1000 * 60 * 60; // 1 小时内不重复请求
  */
 export async function checkForUpdates(force = false): Promise<UpdateCheckResponse> {
   const now = Date.now();
-  if (!force && cached && now - cachedAt < CACHE_TTL) return cached;
+  if (!force) {
+    // 内存里没有就从 storage 里捞：service worker 被回收过之后缓存还在
+    if (!cached) {
+      const entry = await readUpdateCache();
+      if (entry) {
+        const ttl = entry.failed ? FAILURE_TTL : CACHE_TTL;
+        if (now - entry.at < ttl) {
+          if (entry.result) {
+            cached = entry.result;
+            cachedAt = entry.at;
+          } else {
+            // 五分钟前刚查失败过：别再去打接口了（配额有限），先把「没有新版本」报出去。
+            // 用户点设置页的「检查更新」按钮能强制重来。
+            return cached ?? { available: false, latest: '', current: MANIFEST_VERSION, packageUrl: '' };
+          }
+        }
+      }
+    }
+    if (cached && now - cachedAt < CACHE_TTL) return cached;
+  }
 
   let latest = '';
   let assets: ReleaseAsset[] = [];
+  let tagWithoutPackage = '';
   for (const url of RELEASE_APIS) {
     const payload = await fetchLatestRelease(url);
     const tag = payload?.tag_name?.trim() ?? '';
     if (!tag) continue;
+    // 光有标签不算数：GitHub 上可能建了 release 却没传安装包，
+    // 这时应该接着问另一个源，而不是拿着一份「有新版但下不了」的结果就收工。
+    const packageUrl = pickPackageUrl(payload?.assets ?? [], IS_FIREFOX ? 'xpi' : 'zip');
+    if (!packageUrl) {
+      if (!tagWithoutPackage) tagWithoutPackage = tag;
+      continue;
+    }
     latest = tag;
     assets = payload?.assets ?? [];
     break;
   }
 
+  if (!latest && tagWithoutPackage && isNewerVersion(tagWithoutPackage, MANIFEST_VERSION)) {
+    // 两个源都只有标签、没有能装的包：如实说「有新版但下不了」，
+    // 装成「没有新版本」等于骗用户——版本确实发布了，只是作者还没传包。
+    cached = {
+      available: true,
+      latest: tagWithoutPackage,
+      current: MANIFEST_VERSION,
+      packageUrl: '',
+    };
+    cachedAt = now;
+    await writeUpdateCache({ result: cached, at: now });
+    return cached;
+  }
+
   if (!latest) {
-    // 没查到就不写缓存：网络多半是临时抽风，缓存一小时会把新版本硬生生挡掉。
+    // 查不到：把「这次没查到」也记下来（只留 5 分钟），别让用户每开一次设置页
+    // 就打一次匿名接口——GitHub 的匿名配额是 60 次/小时/IP，校园网很容易被打爆。
     // 已经知道的旧结果照旧报出去——某个版本发布过是事实，不会因为这次没查到就不算数，
     // 总不能让用户点一次「检查更新」就把横幅弄没了。
+    await writeUpdateCache({ result: null, at: now, failed: true });
     return cached ?? { available: false, latest: '', current: MANIFEST_VERSION, packageUrl: '' };
   }
 
@@ -136,5 +222,6 @@ export async function checkForUpdates(force = false): Promise<UpdateCheckRespons
     packageUrl: pickPackageUrl(assets, IS_FIREFOX ? 'xpi' : 'zip'),
   };
   cachedAt = now;
+  await writeUpdateCache({ result: cached, at: now });
   return cached;
 }

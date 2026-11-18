@@ -30,8 +30,13 @@ function splitLines(text: string): string[] {
   return lines;
 }
 
-/** LCS 动态规划的规模上限：超过就退化成「整体删除 + 整体新增」，别把界面卡住 */
-const MAX_DP_CELLS = 600 * 600;
+/**
+ * LCS 动态规划的规模上限：超过就退化成「整体删除 + 整体新增」，别把界面卡住。
+ *
+ * 1000×1000 是 100 万格（Int32 约 4MB，算起来十几毫秒），够用了；
+ * 再大就真的算不动了（几千行的改动每秒都跑不完）。
+ */
+const MAX_DP_CELLS = 1000 * 1000;
 
 export function diffLines(before: string, after: string): DiffRow[] {
   const left = splitLines(before);
@@ -58,12 +63,24 @@ export function diffLines(before: string, after: string): DiffRow[] {
   const baseRight = head;
 
   if (midLeft.length * midRight.length > MAX_DP_CELLS) {
-    // 改动规模太大，逐行算不动：中间整体当作删除 + 新增
-    for (let i = 0; i < midLeft.length; i += 1) {
-      rows.push({ type: 'del', left: midLeft[i], leftNo: baseLeft + i + 1 });
+    // 改动规模太大，逐行算不动：中间整体当作删除 + 新增。
+    // 但左右还是一行一行对上——整份代码被重写时，两列并排才看得出改了什么；
+    // 全堆在左边、右边空一大片的话，用户得先滚完上千行删除才看得到新代码。
+    const pairs = Math.min(midLeft.length, midRight.length);
+    for (let p = 0; p < pairs; p += 1) {
+      rows.push({
+        type: 'mod',
+        left: midLeft[p],
+        right: midRight[p],
+        leftNo: baseLeft + p + 1,
+        rightNo: baseRight + p + 1,
+      });
     }
-    for (let i = 0; i < midRight.length; i += 1) {
-      rows.push({ type: 'add', right: midRight[i], rightNo: baseRight + i + 1 });
+    for (let p = pairs; p < midLeft.length; p += 1) {
+      rows.push({ type: 'del', left: midLeft[p], leftNo: baseLeft + p + 1 });
+    }
+    for (let p = pairs; p < midRight.length; p += 1) {
+      rows.push({ type: 'add', right: midRight[p], rightNo: baseRight + p + 1 });
     }
   } else {
     rows.push(...middleDiff(midLeft, midRight, baseLeft, baseRight));

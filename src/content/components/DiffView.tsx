@@ -19,6 +19,14 @@ interface DiffViewProps {
 const COLLAPSE_AFTER = 6;
 /** 折叠时前后各留几行上下文 */
 const CONTEXT_KEEP = 2;
+/**
+ * 全屏页一次最多渲染这么多行。
+ *
+ * diff 的算法本身很快（两千行也就几毫秒），慢的是渲染：一行要建六七个节点，
+ * 四千行就是两万个节点，React 建它们要几百毫秒，页面直接卡住。
+ * 超出的部分不渲染，只写明一共多少行——想拿完整内容用「复制新代码」。
+ */
+const FULL_RENDER_LIMIT = 1200;
 
 /**
  * 左右两列 + 中间一条道的差异视图（照 IDEA 的 diff 做的）：
@@ -63,59 +71,94 @@ export function DiffView({
       </div>
 
       <div className="diff__body">
-        {segments.map((segment, index) => {
-          if (segment.kind === 'hunk') {
-            return (
-              <div className="diff__hunk" key={index}>
-                <div className="diff__row diff__row--fence">
-                  <span className="diff__cell diff__cell--blank" />
-                  <span className="diff__gutter diff__gutter--start">»</span>
-                  <span className="diff__cell diff__cell--blank" />
-                </div>
-                {segment.rows.map((row, position) => (
-                  <DiffRowView
-                    key={position}
-                    row={row}
-                    capTop={position === 0}
-                    capBottom={position === segment.rows.length - 1}
-                  />
-                ))}
-                <div className="diff__row diff__row--fence">
-                  <span className="diff__cell diff__cell--blank" />
-                  <span className="diff__gutter diff__gutter--end">«</span>
-                  <span className="diff__cell diff__cell--blank" />
-                </div>
-              </div>
-            );
-          }
-
-          const long = !full && segment.rows.length > COLLAPSE_AFTER && !expanded[index];
-          const head = long ? segment.rows.slice(0, CONTEXT_KEEP) : segment.rows;
-          const tail = long ? segment.rows.slice(-CONTEXT_KEEP) : [];
-          const hidden = segment.rows.length - head.length - tail.length;
+        {(() => {
+          // 全屏模式下行数是封顶的：数到上限就不往后渲染了
+          let budget = full ? FULL_RENDER_LIMIT : Number.POSITIVE_INFINITY;
+          let shown = 0;
+          let total = 0;
+          const clipped = segments.map((segment) => {
+            if (segment.kind === 'hunk') {
+              const rows = segment.rows;
+              total += rows.length + 2;
+              if (budget <= 0) return { segment, rows: [] as DiffRow[] };
+              const take = Math.min(rows.length, budget);
+              budget -= take;
+              shown += take;
+              return { segment, rows: rows.slice(0, take) };
+            }
+            const rows = segment.rows;
+            total += rows.length;
+            if (budget <= 0) return { segment, rows: [] as DiffRow[] };
+            const take = Math.min(rows.length, budget);
+            budget -= take;
+            shown += take;
+            return { segment, rows: rows.slice(0, take) };
+          });
 
           return (
-            <div className="diff__context" key={index}>
-              {head.map((row, position) => (
-                <DiffRowView key={position} row={row} />
-              ))}
-              {long && (
-                <>
-                  <button
-                    type="button"
-                    className="diff__more"
-                    onClick={() => setExpanded((prev) => ({ ...prev, [index]: true }))}
-                  >
-                    ⋯ 还有 {hidden} 行没改动，点开
-                  </button>
-                  {tail.map((row, position) => (
-                    <DiffRowView key={`t${position}`} row={row} />
-                  ))}
-                </>
+            <>
+              {clipped.map(({ segment, rows: visibleRows }, index) => {
+                if (segment.kind === 'hunk') {
+                  if (visibleRows.length === 0) return null;
+                  return (
+                    <div className="diff__hunk" key={index}>
+                      <div className="diff__row diff__row--fence">
+                        <span className="diff__cell diff__cell--blank" />
+                        <span className="diff__gutter diff__gutter--start">»</span>
+                        <span className="diff__cell diff__cell--blank" />
+                      </div>
+                      {visibleRows.map((row, position) => (
+                        <DiffRowView
+                          key={position}
+                          row={row}
+                          capTop={position === 0}
+                          capBottom={position === visibleRows.length - 1}
+                        />
+                      ))}
+                      <div className="diff__row diff__row--fence">
+                        <span className="diff__cell diff__cell--blank" />
+                        <span className="diff__gutter diff__gutter--end">«</span>
+                        <span className="diff__cell diff__cell--blank" />
+                      </div>
+                    </div>
+                  );
+                }
+
+                const long = !full && segment.rows.length > COLLAPSE_AFTER && !expanded[index];
+                const head = long ? visibleRows.slice(0, CONTEXT_KEEP) : visibleRows;
+                const tail = long ? visibleRows.slice(-CONTEXT_KEEP) : [];
+                const hidden = visibleRows.length - head.length - tail.length;
+
+                return (
+                  <div className="diff__context" key={index}>
+                    {head.map((row, position) => (
+                      <DiffRowView key={position} row={row} />
+                    ))}
+                    {long && (
+                      <>
+                        <button
+                          type="button"
+                          className="diff__more"
+                          onClick={() => setExpanded((prev) => ({ ...prev, [index]: true }))}
+                        >
+                          ⋯ 还有 {hidden} 行没改动，点开
+                        </button>
+                        {tail.map((row, position) => (
+                          <DiffRowView key={`t${position}`} row={row} />
+                        ))}
+                      </>
+                    )}
+                  </div>
+                );
+              })}
+              {shown < total && (
+                <p className="diff__clipped">
+                  改动太多（共 {total} 行），这里只渲染了前 {shown} 行；完整内容用「复制新代码」拿走。
+                </p>
               )}
-            </div>
+            </>
           );
-        })}
+        })()}
       </div>
 
       <div className="diff__legend">

@@ -47,46 +47,65 @@ const BRACKET_PAIRS: readonly BracketShape[] = [
  *
  * 返回的下标是**原始文本**里的下标（`stripLiteralsAndComments` 用空格等长
  * 替换，所以剥完之后下标仍然对得上），调用方可以拿它直接去 `domAtPos`。
+ *
+ * 换行一律按原文走：以前先把 \r\n 归一成 \n 再算下标，
+ * 遇到 CRLF 的文档（Windows 上编辑、存成 CRLF 的题目），
+ * 第一行之后的每个下标都会比原文少一个字符——彩虹括号就整体错位了。
  */
 export function bracketDepths(code: string): BracketMark[] {
   const marks: BracketMark[] = [];
-  const source = String(code ?? '').replace(/\r\n?/g, '\n');
-  const lines = source.split('\n');
+  const source = String(code ?? '');
 
   // 三种括号各一个深度计数器，再取总和：`f([1])` 的 `[` 会落在 `(` 里面一层
   const depths = [0, 0, 0];
   let inBlockComment = false;
-  let base = 0;
 
-  for (const raw of lines) {
-    const stripped = stripLiteralsAndComments(raw, inBlockComment);
+  for (const line of splitLines(source)) {
+    const stripped = stripLiteralsAndComments(line.text, inBlockComment);
     inBlockComment = stripped.inBlockComment;
-    const line = stripped.code;
+    const text = stripped.code;
 
-    for (let index = 0; index < line.length; index += 1) {
-      const char = line[index];
+    for (let index = 0; index < text.length; index += 1) {
+      const char = text[index];
       if (char === ' ' || char === '\t') continue;
 
       for (let kind = 0; kind < BRACKET_PAIRS.length; kind += 1) {
         const pair = BRACKET_PAIRS[kind];
         if (char === pair.open) {
           const total = depths[0] + depths[1] + depths[2];
-          marks.push({ at: base + index, depth: total % RAINBOW_COLORS.length });
+          marks.push({ at: line.start + index, depth: total % RAINBOW_COLORS.length });
           depths[kind] += 1;
           break;
         }
         if (char === pair.close) {
           depths[kind] = Math.max(0, depths[kind] - 1);
           const total = depths[0] + depths[1] + depths[2];
-          marks.push({ at: base + index, depth: total % RAINBOW_COLORS.length });
+          marks.push({ at: line.start + index, depth: total % RAINBOW_COLORS.length });
           break;
         }
       }
     }
-
-    // +1 是换行符本身（\r\n 已经先归一成 \n 了）
-    base += raw.length + 1;
   }
 
   return marks;
+}
+
+/** 按原文拆行：给出每一行的文本与它在原文里的起始下标 */
+function splitLines(source: string): { text: string; start: number }[] {
+  const lines: { text: string; start: number }[] = [];
+  let start = 0;
+  let index = 0;
+  while (index < source.length) {
+    const char = source[index];
+    if (char === '\n' || char === '\r') {
+      lines.push({ text: source.slice(start, index), start });
+      // \r\n 是一个换行
+      index += char === '\r' && source[index + 1] === '\n' ? 2 : 1;
+      start = index;
+      continue;
+    }
+    index += 1;
+  }
+  if (start < source.length) lines.push({ text: source.slice(start), start });
+  return lines;
 }

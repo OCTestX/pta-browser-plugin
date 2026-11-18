@@ -24,6 +24,7 @@ export type ToolName =
   | 'write_explanation_page'
   | 'next_problem'
   | 'list_problems'
+  | 'open_problem'
   | 'set_language';
 
 export const TOOL_NAMES: ToolName[] = [
@@ -51,6 +52,7 @@ export const TOOL_NAMES: ToolName[] = [
   'write_explanation_page',
   'next_problem',
   'list_problems',
+  'open_problem',
   'set_language',
 ];
 
@@ -133,6 +135,8 @@ export const SYSTEM_PROMPT = [
   '  它会告诉你这是第几题、还剩几题；说「没有下一题了」就停下来汇总。',
   '- list_problems：读题目列表总览——各题型分组的「已答/总数」、当前题型的每道题是否已提交、哪道是当前题。',
   '  用户问「还有哪些题没做」「这题单是什么结构」时用它，不要用 js_inject 去猜侧栏。',
+  '- open_problem：跳到指定的题目（给那道题的完整地址）。用户让你重做某几道指定的题时用它，',
+  '  一道一道地跳过去做；不要用它跳去别的网站。',
   '',
   '工具使用规则（重要）：',
   '1. 读题面用 read_problem，读代码用 read_editor_code，改代码用 write_editor_code。',
@@ -464,6 +468,24 @@ export const TOOL_SCHEMAS: ToolSchema[] = [
           },
         },
         required: [],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'open_problem',
+      description:
+        '跳到指定的题目（给的是那道题的完整地址）。'
+        + '用来重做某几道指定的题：用户会在消息里列出几道题的标题与地址，你逐个跳过去做。'
+        + '只能跳到当前站点下的地址；跳完会等页面加载好，再返回新页面的标题与地址。'
+        + '不要用它乱跳到别的网站去。',
+      parameters: {
+        type: 'object',
+        properties: {
+          url: { type: 'string', description: '那道题的完整地址（例如 https://pintia.cn/problem-sets/…/type/7?problemSetProblemId=…）' },
+        },
+        required: ['url'],
       },
     },
   },

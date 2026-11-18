@@ -2,11 +2,15 @@ import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from '
 import { ext } from '../shared/browser';
 import { pickContextWindow } from '../shared/settings';
 import { Composer } from './components/Composer';
+import { BatchPanel } from './components/BatchPanel';
 import { MessageList } from './components/MessageList';
 import { SettingsPanel } from './components/SettingsPanel';
 import { useChat } from './hooks/useChat';
 import { usePanelLayout } from './hooks/usePanelLayout';
 import { useSettings } from './hooks/useSettings';
+import { clearPendingCommand, setPendingCommand } from './chatStore';
+import type { BatchProblemItem } from '../shared/batch';
+import { buildRedoCommand } from '../shared/batch';
 import {
   composerFocusRequest,
   getDraft,
@@ -59,6 +63,57 @@ export function App() {
     [],
   );
 
+  // 让后台把这个标签页导航到某个地址；成功返回 null，失败返回原因
+  const navigateTo = useCallback(async (url: string): Promise<string | null> => {
+    try {
+      const response = (await ext.runtime.sendMessage({ type: 'ui/navigate', url })) as
+        | { ok?: boolean; message?: string }
+        | undefined;
+      if (response?.ok) return null;
+      return response?.message ?? '跳转失败';
+    } catch {
+      return '插件后台没有响应';
+    }
+  }, []);
+
+  // 赶题总览卡里点某道题：跳到那道题去
+  const openProblem = useCallback(
+    async (problem: BatchProblemItem) => {
+      if (!problem.url) return;
+      const error = await navigateTo(problem.url);
+      if (error) chat.notify(`跳到「${problem.title}」失败：${error}`);
+    },
+    [navigateTo, chat],
+  );
+
+  // 重做没过的题：把每道题的地址写进一条指令，跳到第一道。
+  // 跳过去之后页面重新挂载，新挂载的那一份会把那条指令补发出去——
+  // 于是 agent 拿着这一串地址，一道一道把它们重做一遍。
+  const redoProblems = useCallback(
+    async (problems: BatchProblemItem[]) => {
+      const command = buildRedoCommand(problems);
+      const first = problems[0];
+      if (!command || !first?.url) {
+        chat.notify('这几道题没有地址，跳不过去');
+        return;
+      }
+      setPendingCommand(command);
+      const error = await navigateTo(first.url);
+      if (error) {
+        // 跳不过去就别把待发指令留在那儿：不然下次打开页面它会莫名其妙冒出来
+        clearPendingCommand();
+        chat.notify(`跳过去失败：${error}`);
+      }
+    },
+    [navigateTo, chat],
+  );
+
+  // 接着赶剩下的题：用户中途按了停止时给的出口。
+  // agent 从当前这道题接着做，已经提交过的题它自己会跳过。
+  const continueRush = useCallback(() => {
+    void chat.send('/fuck');
+  }, [chat]);
+
   if (!open) return null;
 
   const send = () => {
@@ -100,6 +155,18 @@ export function App() {
           <>
             <span className="panel__title">PTA 助手</span>
             <span className="panel__badge">{VERSION_LABEL}</span>
+            {/* 当前用哪个模型：等一次长回答之前，用户得知道自己在跟谁说话。
+                名字可能很长，挤成一行 + 省略号，完整名字放在 title 里。 */}
+            {settings.view?.model && (
+              <button
+                type="button"
+                className="panel__model"
+                title={`当前模型：${settings.view.model}\n点一下去设置里换`}
+                onClick={() => setView('settings')}
+              >
+                {settings.view.model}
+              </button>
+            )}
             <ContextRing
               usage={chat.usage}
               liveTokens={chat.liveOutputTokens}
@@ -148,10 +215,22 @@ export function App() {
           {chat.busy && (
             <div className="panel__progress" role="progressbar" aria-label="正在工作" />
           )}
+          {/* 赶题模式（/fuck）的总览卡：进度、结论、还剩几题都在这里 */}
+          <BatchPanel
+            snapshot={chat.batch}
+            onStop={chat.stop}
+            onOpenProblem={openProblem}
+            onRedo={redoProblems}
+            onContinue={continueRush}
+          />
           <MessageList
             messages={chat.messages}
             onAnswer={chat.answerAsk}
             onFullscreenDiff={openDiffFullscreen}
+            onSendText={(text) => {
+              void chat.send(text);
+              setDraft('');
+            }}
           />
           {chat.notice && (
             <div className="notice">
@@ -262,6 +341,9 @@ function ContextRing({
           r={radius}
           strokeDasharray={`${(circumference * ratio).toFixed(2)} ${circumference.toFixed(2)}`}
           transform="rotate(-90 10 10)"
+          // 用量还是 0 的时候圆头会把「零长度」画成一个小圆点，看着像在转圈；
+          // 这时候改成平头，就只是一条还没走的空进度环。
+          style={ratio > 0 ? undefined : { strokeLinecap: 'butt' }}
         />
       </svg>
     </span>

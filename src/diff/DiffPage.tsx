@@ -23,7 +23,18 @@ export function DiffPage() {
     }
     void (async () => {
       const key = `${DIFF_STORAGE_PREFIX}${id}`;
-      const stored = await ext.storage.local.get(key);
+      let stored: Record<string, unknown> = {};
+      try {
+        stored = await ext.storage.local.get(key);
+      } catch (error) {
+        // 读不出来（扩展刚被更新、存储被清）也得给句话：
+        // 不然页面一直停在「正在读取 diff…」，用户只看到个转圈
+        setState({
+          status: 'error',
+          message: `读不到这份 diff：${error instanceof Error ? error.message : String(error)}。回到面板重新点一次「全屏查看」`,
+        });
+        return;
+      }
       const diff = stored[key] as (DiffPayload & { createdAt?: number }) | undefined;
       if (!diff || typeof diff.left !== 'string' || typeof diff.right !== 'string') {
         setState({

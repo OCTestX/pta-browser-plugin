@@ -150,6 +150,38 @@ function startsCloseTag(text: string, from: number, tag: string): boolean {
   return new RegExp('^/' + tag + '(?=[&\\s/>]|$)', 'i').test(rest);
 }
 
+/** 不带任何保护地解一层实体：只用来做「往后看」的预判 */
+function decodeEntitiesPlain(text: string): string {
+  return text.replace(new RegExp(ENTITY_PATTERN.source, 'g'), (whole, body: string) => decodeOneEntity(body) ?? whole);
+}
+
+/**
+ * 往后看一段（把实体也解掉），是不是闭合标签。
+ *
+ * 闭合标签可以拆开写：`&lt;&#47;script&gt;` 解出来就是 `</script>`。
+ * 只看原文里紧跟着的字符挡不住这种写法——原文里跟的是 `&#47;`，不是 `/script`。
+ */
+function closesTagAfterDecode(text: string, from: number, tag: string): boolean {
+  const lookahead = decodeEntitiesPlain(text.slice(from, from + 80));
+  return new RegExp('^/' + tag + '(?=[&\\s/>]|$)', 'i').test(lookahead);
+}
+
+/**
+ * 这个字符解到字符串里会不会把代码写坏。
+ *
+ * · 控制字符（换行之类）：单双引号的字符串不能跨行，解出来就是语法错误；
+ * · 反斜杠：会把收尾的引号转义掉，字符串就断在那儿；
+ * · 反引号：模板串会被截断。
+ */
+function breaksString(decoded: string, quote: Quote | null): boolean {
+  if (!quote) return false;
+  const code = decoded.charCodeAt(0);
+  if (code < 0x20 || code === 0x7f) return true;
+  if (decoded === '\\') return true;
+  if (quote === '`' && decoded === '`') return true;
+  return false;
+}
+
 /**
  * 解一层实体。
  *
@@ -178,8 +210,8 @@ function decodeEntitiesOnce(text: string, tag: RawTextTag): string {
     const decoded = decodeOneEntity(body);
     if (decoded === undefined) {
       out += whole;
-    } else if (decoded === '<' && startsCloseTag(text, cursor, tag)) {
-      // 解开就是闭合标签，脚本会被截断，宁可留着不解
+    } else if (decoded === '<' && (startsCloseTag(text, cursor, tag) || closesTagAfterDecode(text, cursor, tag))) {
+      // 解开就是闭合标签（哪怕是拆开写的实体），脚本会被截断，宁可留着不解
       out += whole;
     } else if (decoded === '"' || decoded === "'") {
       if (scanner.currentQuote() === decoded) {
@@ -190,6 +222,9 @@ function decodeEntitiesOnce(text: string, tag: RawTextTag): string {
         // 状态只跟着原文里的引号走，模型写成 &quot; 的地方不该被当成新字符串的开头
         out += decoded;
       }
+    } else if (breaksString(decoded, scanner.currentQuote())) {
+      // 字符串里解出控制字符/反斜杠会把代码写坏：宁可留着实体
+      out += whole;
     } else {
       out += decoded;
     }

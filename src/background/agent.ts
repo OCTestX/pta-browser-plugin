@@ -32,8 +32,9 @@ import {
 } from './pta-scripts';
 import { describeTypist, runTypist } from './typist';
 import { storeExplanation } from './explain-pages';
-import { batchStats, batchSummary, recordVerdict, resetBatch, setCurrentProblem } from './batch-progress';
+import { batchStats, batchSummary, batchSnapshot, finishBatch, recordVerdict, resetBatch, setCurrentProblem, setRemaining, setTotal } from './batch-progress';
 import { compactConversation } from '../shared/context-window';
+import { canNavigateTo } from '../shared/navigation';
 
 const DEFAULT_PER_CHAR_DELAY_MS = 8;
 /**
@@ -64,6 +65,8 @@ import {
   writeGuardReason,
 } from '../shared/guardrails';
 import type { DiffPayload, TokenUsage } from '../shared/messages';
+import type { BatchSnapshot } from '../shared/batch';
+import { parseRedoTargets } from '../shared/batch';
 
 export interface ToolOutcome {
   output: string;
@@ -81,6 +84,8 @@ export interface AgentEvents {
   onNotice: (text: string) => void;
   /** 每轮结束把累计 token 用量报给面板（接口没回传 usage 时不报） */
   onUsage: (usage: TokenUsage) => void;
+  /** 赶题模式：把最新进度快照推给面板画总览卡 */
+  onBatch?: (snapshot: BatchSnapshot) => void;
   /** 需要页面上下文才能执行的工具（url / write_document），交给 content script 做 */
   runPageTool: (name: string, args: Record<string, unknown>) => Promise<ToolOutcome>;
   /** ask 工具：把选择题发给面板，等用户点选 */
@@ -136,6 +141,9 @@ function commandInstruction(id: string, rest: string): string {
       '**代码填空题**：作答区里就是那段代码（要填的地方是空的或带 TODO），',
       '先 read_editor_code 把作答区现在的代码读出来，在它基础上把空缺补完整，再用 write_editor_code 写回去——不要凭空重写整段。',
       '一道题最多自己改两次；还是不过就调 next_problem（带 skipCurrent=true）跳过它，继续下一题。',
+      '**如果用户补充里点名要重做某几道题**（消息里列了几道题的标题与地址）：一道一道来——',
+      'open_problem(地址) 跳到那道题，再照常 read_problem → 写代码 → 提交 → 看结论；',
+      '做完一道做下一道，直到列出来的题都过了一遍。这种时候不要调 next_problem（它会跳到别的题上去）。',
       '用户随时能按「停止」打断，你不用管，也别解释你在干什么。' + extra,
     ].join('\n');
   }
@@ -215,6 +223,9 @@ export async function runAgent(options: RunAgentOptions): Promise<void> {
   const conversation: ApiMessage[] = buildConversation(SYSTEM_PROMPT, messages, instruction) as ApiMessage[];
   // /fuck：极限赶时间无人监管模式——不问、不解释、直接提交、做完自动切下一题
   const fuckMode = command?.id === 'fuck';
+  // 「重做没过的题」那一轮:用户把要重做的题连同地址列在消息里。
+  // 这种轮次不能走 next_problem(它会跳到别的题上去),只能一道一道 open_problem 跳过去。
+  const redoTargets = fuckMode && command ? parseRedoTargets(command.rest ?? '') : [];
   // /resolve 与 /fuck：用户明说「直接答题」，这一轮不再要求先 ask
   const forced = commandForcesWrite(command?.id);
   // 赶题模式要连着做完整个题目列表，工具轮数得放开（平时 80 轮只够做一道题）
@@ -223,6 +234,8 @@ export async function runAgent(options: RunAgentOptions): Promise<void> {
     // 面板上给个明确的横幅：这个模式会自己往下做，用户想插手就按「停止」
     resetBatch(tabId);
     events.onNotice('赶题模式开始：直接做题、直接提交，做完自动切到下一题。按「停止」可以随时打断。');
+    // 总览卡先亮出来：用户一进来就能看到「赶题模式正在跑」
+    events.onBatch?.(batchSnapshot(tabId));
   }
   // 一轮对话往往要多次请求模型，用量累加起来才是这一轮真实花掉的 token
   const usage: TokenUsage = { promptTokens: 0, completionTokens: 0, totalTokens: 0 };
@@ -335,6 +348,8 @@ export async function runAgent(options: RunAgentOptions): Promise<void> {
             runPageTool: events.runPageTool,
             askUser: events.askUser,
             onBatchNotice: fuckMode ? events.onNotice : undefined,
+            onBatchUpdate: fuckMode ? () => events.onBatch?.(batchSnapshot(tabId)) : undefined,
+            redoTargets,
           });
         } catch (error) {
           // 工具跑到一半被停：先给面板一个收尾（卡片不会一直转），再按中止退出这一轮
@@ -469,6 +484,13 @@ export interface ToolContext {
   askUser: (callId: string, question: string, options: string[]) => Promise<string>;
   /** 赶题模式里把进度推给面板（横幅） */
   onBatchNotice?: (text: string) => void;
+  /** 赶题模式里统计变了：让调用方把最新快照推给面板 */
+  onBatchUpdate?: () => void;
+  /**
+   * 这一轮用户点名要重做哪几道题（地址列表）。
+   * 非空时说明是「重做」轮：next_problem 不能用（它会跳到别的题上去）。
+   */
+  redoTargets?: string[];
 }
 
 /**
@@ -600,6 +622,12 @@ interface NextProblemResult {
   index?: number;
   total?: number;
   remaining?: number;
+  /** 整份题单的题数（所有题型加起来） */
+  totalAll?: number;
+  /** 整份题单里还没答的题数 */
+  remainingAll?: number;
+  /** 题单真的走完时脚本会带这个字段（别拿它跟「出错了」混为一谈） */
+  done?: number;
   reason?: string;
   type?: string;
   switchedType?: boolean;
@@ -654,7 +682,7 @@ function rememberProblemFromRead(tabId: number, output: string): void {
   const title = /(?:^|\n)题目：(.+)/.exec(output)?.[1]?.trim();
   const type = (String(url || '').match(/\/problems\/type\/(\d+)/) || [])[1] || '';
   const key = id || problemKeyFrom(url || '') || title || '';
-  if (key) setCurrentProblem(tabId, { key, title, type });
+  if (key) setCurrentProblem(tabId, { key, title, type, url });
 }
 
 /** 从判题结果里取结论；同一段输出里可能有多个，取最后一个 */
@@ -881,20 +909,45 @@ export async function runTool(
 
   // 赶题模式：切到题目列表里的下一题（脚本返回 JSON，这里说成人话）
   if (name === 'next_problem') {
+    // 「重做」轮里不能用它：它会切到题目列表里的下一道题（已经提交过的会被跳过），
+    // 那样就跳出用户点名要重做的那几道题了。
+    if (context.redoTargets && context.redoTargets.length > 0) {
+      return {
+        output:
+          '这一轮是重做用户点名的那几道题，不要用 next_problem（它会跳到别的题上去）。' +
+          '用 open_problem(地址) 跳到下一道要重做的题，做完再看还有没有下一道。',
+        isError: true,
+      };
+    }
     const outcome = await runPtaScript('next_problem', args, context);
     const parsed = parseNextProblem(outcome.output);
     if (parsed?.ok) {
       const key = problemKeyFrom(parsed.url ?? '') || parsed.title || '';
-      if (key) setCurrentProblem(tabId, { key, title: parsed.title, type: parsed.type });
+      if (key) setCurrentProblem(tabId, { key, title: parsed.title, type: parsed.type, url: parsed.url });
+    }
+    // 「还剩几题」按整份题单算（不是当前题型那一组）：跨题型切换时数字才稳定
+    if (typeof parsed?.remainingAll === 'number') setRemaining(tabId, parsed.remainingAll);
+    if (typeof parsed?.totalAll === 'number') setTotal(tabId, parsed.totalAll);
+    if (parsed && parsed.ok === false && typeof parsed.done === 'number') {
+      // 题单真的走完了（脚本带 done 字段）：这一轮收工，总览卡定格在最终统计上。
+      // 别把「找不到当前题」「点链接失败」这类报错也当成走完了——那不是收工，是出错。
+      finishBatch(tabId);
     }
     const summary = parsed && parsed.ok === false ? batchSummary(tabId) : '';
     if (parsed?.ok && context.onBatchNotice) {
       const stats = batchStats(tabId);
       if (stats) {
-        const left = typeof parsed.remaining === 'number' ? `，还剩 ${parsed.remaining} 题` : '';
+        // 横幅里的「还剩几题」也按整份题单算，跟面板总览卡口径一致
+        const left =
+          typeof parsed.remainingAll === 'number'
+            ? `，还剩 ${parsed.remainingAll} 题`
+            : typeof parsed.remaining === 'number'
+              ? `，还剩 ${parsed.remaining} 题`
+              : '';
         context.onBatchNotice(`赶题进度：已做 ${stats.attempted} 题、AC ${stats.accepted} 题${left}`);
       }
     }
+    context.onBatchUpdate?.();
     return { output: describeNextProblem(outcome.output, summary), isError: outcome.isError };
   }
 
@@ -906,6 +959,10 @@ export async function runTool(
     if (name === 'read_problem' && !outcome.isError) rememberProblemFromRead(tabId, outcome.output);
     if ((name === 'submit_answer' || name === 'read_judge_result') && !outcome.isError) {
       rememberVerdictFromJudge(tabId, outcome.output);
+    }
+    // 读题、提交、看判题都会改统计：改完就把新快照推给面板的总览卡
+    if (name === 'read_problem' || name === 'submit_answer' || name === 'read_judge_result') {
+      context.onBatchUpdate?.();
     }
     return outcome;
   }
@@ -920,6 +977,10 @@ export async function runTool(
     }
   }
 
+  if (name === 'open_problem') {
+    return openProblem(args, tabId, signal);
+  }
+
   if (name === 'simulate_keyboard_input') {
     // 不再受任何开关管制：要真按键就直接用调试器，attach 失败由 typeWithDebugger 自己兜底
     return typeWithDebugger(args, tabId, runPageTool, signal);
@@ -927,6 +988,78 @@ export async function runTool(
 
   // 其余工具需要页面上下文
   return abortable(runPageTool(name, args), signal);
+}
+
+/**
+ * 跳到指定的题目。
+ *
+ * 地址是用户给的（面板总览卡点「重做」时会把那几道题的地址写进指令），
+ * 这里只做两件事：确认地址跟当前页面同源（模型编出来的外站地址不跳），
+ * 以及跳完等页面加载好再回话——不等的话模型会在旧页面上读题，读到的是上一道题。
+ */
+async function openProblem(
+  args: Record<string, unknown>,
+  tabId: number,
+  signal: AbortSignal,
+): Promise<ToolOutcome> {
+  const url = typeof args.url === 'string' ? args.url.trim() : '';
+  if (!url) {
+    return { output: '没有给地址（url 参数是空的）。', isError: true };
+  }
+  let current = '';
+  try {
+    const tab = await ext.tabs.get(tabId);
+    current = tab?.url ?? '';
+  } catch {
+    current = '';
+  }
+  if (!canNavigateTo(url, current)) {
+    return {
+      output: `不跳：${url}\n只能跳到当前站点下的题目地址（当前页面：${current || '未知'}）。`,
+      isError: true,
+    };
+  }
+  try {
+    await ext.tabs.update(tabId, { url });
+  } catch (error) {
+    const reason = error instanceof Error ? error.message : String(error);
+    return { output: `跳转失败：${reason}`, isError: true };
+  }
+  const loaded = await waitForTabLoad(tabId, signal);
+  if (!loaded) {
+    return { output: `已经跳到 ${url}，但页面没能在超时前加载完；可以稍后再读题。`, isError: false };
+  }
+  let title = '';
+  try {
+    const tab = await ext.tabs.get(tabId);
+    title = tab?.title ?? '';
+  } catch {
+    title = '';
+  }
+  return { output: `已跳到：${title || url}\n地址：${url}`, isError: false };
+}
+
+/** 等标签页加载完（最多 20 秒）；用户按了停止就提前退出 */
+function waitForTabLoad(tabId: number, signal: AbortSignal): Promise<boolean> {
+  // 这里只能 new Promise：工程的 lib 是 ES2022，清单最低支持 Firefox 115，都没有 Promise.withResolvers
+  return new Promise((resolve) => {
+    let settled = false;
+    const finish = (ok: boolean) => {
+      if (settled) return;
+      settled = true;
+      ext.tabs.onUpdated.removeListener(listener);
+      signal.removeEventListener('abort', onAbort);
+      resolve(ok);
+    };
+    const listener = (updatedTabId: number, info: { status?: string }) => {
+      if (updatedTabId !== tabId) return;
+      if (info.status === 'complete') finish(true);
+    };
+    const onAbort = () => finish(false);
+    ext.tabs.onUpdated.addListener(listener);
+    signal.addEventListener('abort', onAbort, { once: true });
+    setTimeout(() => finish(false), 20000);
+  });
 }
 
 /**

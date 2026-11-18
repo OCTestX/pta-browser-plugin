@@ -166,3 +166,43 @@ export async function clearMessages(bucket?: string): Promise<void> {
   delete next[bucket ?? conversationKey()];
   writeStore(next);
 }
+
+/**
+ * 跳到某道题之后要补发的那条指令。
+ *
+ * 赶题总览卡里点「重做没过的题」：面板先把这条指令存下，再让后台把标签页导航到那道题。
+ * 导航会整页刷新，content script 会重新挂载；新挂载的这一份读出这条指令补发出去，
+ * 于是「跳过去 → 重新赶题」这一步是连着的，用户只点一下。
+ */
+const PENDING_COMMAND_KEY = 'pta-assistant-pending-command';
+
+export function setPendingCommand(text: string): void {
+  if (!tabStorage) return;
+  try {
+    tabStorage.setItem(PENDING_COMMAND_KEY, text);
+  } catch {
+    /* 存不下就算了：这次不自动补发，用户自己发一遍 */
+  }
+}
+
+/** 取出并清掉待发指令；没有就是空串 */
+export function takePendingCommand(): string {
+  if (!tabStorage) return '';
+  try {
+    const value = tabStorage.getItem(PENDING_COMMAND_KEY) || '';
+    tabStorage.removeItem(PENDING_COMMAND_KEY);
+    return value;
+  } catch {
+    return '';
+  }
+}
+
+/** 跳不过去的时候把待发指令撤掉：不能让一条陈旧的指令在下次打开页面时冒出来 */
+export function clearPendingCommand(): void {
+  if (!tabStorage) return;
+  try {
+    tabStorage.removeItem(PENDING_COMMAND_KEY);
+  } catch {
+    /* 忽略 */
+  }
+}

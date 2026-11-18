@@ -9,6 +9,8 @@ interface MessageListProps {
   onAnswer?: (callId: string, choice: string) => void;
   /** diff 卡片「全屏查看」：让 background 开新标签页显示完整 diff */
   onFullscreenDiff?: (diff: { left: string; right: string; leftLabel: string; rightLabel: string }) => void;
+  /** 发一条指定内容（空状态里的快捷按钮用它直接发指令） */
+  onSendText?: (text: string) => void;
 }
 
 const ROLE_LABEL: Record<ChatMessage['role'], string> = {
@@ -21,7 +23,7 @@ const ROLE_LABEL: Record<ChatMessage['role'], string> = {
 /** 离底部这么近就算「还在底部」，继续自动跟随 */
 const STICK_THRESHOLD = 40;
 
-export function MessageList({ messages, onAnswer, onFullscreenDiff }: MessageListProps) {
+export function MessageList({ messages, onAnswer, onFullscreenDiff, onSendText }: MessageListProps) {
   const scrollRef = useRef<HTMLDivElement>(null);
   const [atBottom, setAtBottom] = useState(true);
   // 滚动事件一秒能来几十次：状态只在「离开底部 / 回到底部」那一下变，
@@ -68,6 +70,10 @@ export function MessageList({ messages, onAnswer, onFullscreenDiff }: MessageLis
           }
           return <Bubble key={message.id} message={message} />;
         })}
+        {/* 空状态：把常用的几个入口摆出来，用户点一下就能开始，不用记指令 */}
+        {messages.length === 1 && messages[0].id === 'welcome' && (
+          <WelcomeCard onSendText={onSendText} />
+        )}
       </div>
 
       {!atBottom && (
@@ -75,6 +81,39 @@ export function MessageList({ messages, onAnswer, onFullscreenDiff }: MessageLis
           ↓ 回到底部
         </button>
       )}
+    </div>
+  );
+}
+
+/** 空状态里的快捷入口：点一下直接发对应的斜杠指令 */
+const QUICK_ACTIONS: { command: string; label: string; hint: string }[] = [
+  { command: '/resolve', label: '解决当前题目', hint: '读题、写代码、跑样例、提交' },
+  { command: '/fuck', label: '赶完整个题单', hint: '不问不解释，直接提交刷题' },
+  { command: '/why', label: '讲解当前代码', hint: '只讲错在哪，不改代码' },
+  { command: '/what', label: '生成讲解页', hint: '苏格拉底式问答，可交互网页' },
+];
+
+function WelcomeCard({ onSendText }: { onSendText?: (text: string) => void }) {
+  if (!onSendText) return null;
+  return (
+    <div className="welcome">
+      <p className="welcome__text">
+        点下面的按钮直接开始，或者在输入框里用 <code>/</code> 列出全部指令。
+      </p>
+      <div className="welcome__actions">
+        {QUICK_ACTIONS.map((action) => (
+          <button
+            type="button"
+            className="welcome__action"
+            key={action.command}
+            onClick={() => onSendText(action.command)}
+            title={action.hint}
+          >
+            <span className="welcome__action-label">{action.label}</span>
+            <span className="welcome__action-hint">{action.hint}</span>
+          </button>
+        ))}
+      </div>
     </div>
   );
 }

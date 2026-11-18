@@ -149,31 +149,31 @@
 }
 
 .diff__row--add .diff__cell--right {
-  background: #e6f6ed;
+  background: var(--pta-diff-add);
 }
 
 .diff__row--del .diff__cell--left {
-  background: #fdecec;
+  background: var(--pta-diff-del);
 }
 
 .diff__row--mod .diff__cell--left {
-  background: #fdecec;
+  background: var(--pta-diff-del);
 }
 
 .diff__row--mod .diff__cell--right {
-  background: #e8f0ff;
+  background: var(--pta-diff-mod);
 }
 
 /* 行内被改掉的词，再深一档 */
 .diff__word {
   border-radius: 3px;
-  background: #ffd7a8;
-  color: #7a3c00;
+  background: var(--pta-diff-word);
+  color: var(--pta-diff-word-text);
 }
 
 .diff__row--del .diff__word {
-  background: #f8b9b9;
-  color: #8c1d1d;
+  background: var(--pta-diff-word-del);
+  color: var(--pta-diff-word-del-text);
 }
 
 .diff__more {
@@ -193,6 +193,17 @@
   color: var(--pta-accent);
 }
 
+/* 改动太多时渲染封顶的提示 */
+.diff__clipped {
+  margin: 0;
+  padding: 8px 10px;
+  border-top: 1px solid var(--pta-border);
+  background: var(--pta-surface-alt);
+  color: var(--pta-text-muted);
+  font-size: 12px;
+  text-align: center;
+}
+
 .diff__legend {
   display: flex;
   gap: 8px;
@@ -205,13 +216,13 @@
 }
 
 .diff__tag--add {
-  color: #14663f;
+  color: var(--pta-diff-tag-add);
 }
 
 .diff__tag--mod {
-  color: #1f4bb8;
+  color: var(--pta-diff-tag-mod);
 }
 
 .diff__tag--del {
-  color: #a33;
+  color: var(--pta-diff-tag-del);
 }

@@ -7,12 +7,13 @@ import {
   type TokenUsage,
 } from '../../shared/messages';
 import { createId, toApiMessages, type ChatMessage, type ToolCall } from '../../shared/types';
+import type { BatchSnapshot } from '../../shared/batch';
 import { diffLines, diffStats } from '../../shared/diff';
-import { clearMessages, loadMessages, runConversationKey, saveMessages } from '../chatStore';
+import { clearMessages, loadMessages, runConversationKey, saveMessages, takePendingCommand } from '../chatStore';
 import { setPanelOpen } from '../panelStore';
 
 
-const WELCOME = '你好，我是 PTA 助手。点击浏览器工具栏的插件图标可以开关这个悬浮窗。';
+const WELCOME = '你好，我是 PTA 助手。工具栏上的插件图标可以随时开关这个悬浮窗。';
 
 export interface ChatNotice {
   text: string;
@@ -30,14 +31,29 @@ export function useChat(hasApiKey: boolean) {
   const messagesRef = useRef<ChatMessage[]>(messages);
   messagesRef.current = messages;
   const [usage, setUsage] = useState<TokenUsage | null>(null);
+  // 赶题模式（/fuck）的进度快照：面板据此画总览卡
+  const [batch, setBatch] = useState<BatchSnapshot | null>(null);
+  // 同一份状态的镜像：用来判断新来的快照是不是更新的那份
+  const batchRef = useRef<BatchSnapshot | null>(null);
   // 当前正在写的 assistant 气泡；为 null 表示下一段文字要新起一个气泡
   const assistantRef = useRef<string | null>(null);
+  // 最新的 send：页面刚挂载时要补发一条指令，那时的闭包还是第一次渲染的那份
+  const sendRef = useRef<((text: string) => Promise<void>) | null>(null);
 
   // 流式增量按帧合并：模型一个字一个字往下推，每个 delta 都 setState 会让
   // 整棵消息树每字符重渲染一次，内容一多就卡。这里攒到下一帧再一次性上屏。
   const pendingDeltaRef = useRef('');
   const deltaFrameRef = useRef<number | null>(null);
   const appendDeltaRef = useRef<(text: string) => void>(() => undefined);
+  /**
+   * 这一轮模型吐出来的字，同步记一份。
+   *
+   * 收尾时要判断「模型这一轮有没有说话」——气泡里的内容是攒到下一帧才 setState 的，
+   * 读 state 会读到还没更新的旧值（标签页在后台时 rAF 根本不跑，一整轮都攒着），
+   * 于是明明答了一整段话，却报「模型这一轮没有输出内容」。
+   * 这里同步累加，收尾时读它就是准的。
+   */
+  const producedRef = useRef('');
 
   const flushDelta = useCallback(() => {
     if (deltaFrameRef.current !== null) {
@@ -87,15 +103,23 @@ export function useChat(hasApiKey: boolean) {
     let cancelled = false;
     void (async () => {
       let attachId = '';
+      let attachSnapshot: BatchSnapshot | undefined;
       try {
         const response = (await ext.runtime.sendMessage({ type: 'chat/attach' })) as
-          | { ok?: boolean; requestId?: string }
+          | { ok?: boolean; requestId?: string; snapshot?: BatchSnapshot }
           | undefined;
         if (response?.requestId) attachId = response.requestId;
+        attachSnapshot = response?.snapshot;
       } catch {
         // 后台没响应就当没有在跑的对话
       }
       if (cancelled) return;
+      // 赶题总览卡里点了「跳到那道题」：那边留了一条待发指令，这里取出来。
+      // 先取出来再走下面的分支：万一这一页还有一轮在跑（用户手快），
+      // 这条指令也不能一直躺在存储里，等下次打开页面时莫名其妙冒出来。
+      const pending = takePendingCommand();
+      // 赶题模式跑到一半页面刷新了：总览卡跟着接回来
+      if (attachSnapshot) applyBatch(attachSnapshot);
       if (attachId) {
         // 接回正在跑的那一轮：对话按 requestId 存盘，事件也要按它的 requestId 收。
         // 面板这时是关着的（刷新后默认关闭），自动打开它，
@@ -108,8 +132,20 @@ export function useChat(hasApiKey: boolean) {
         return;
       }
       const restored = await loadMessages();
-      if (cancelled || restored.length === 0) return;
-      setMessages(restored);
+      if (cancelled) return;
+      if (restored.length > 0) {
+        // 先把引用也换掉：紧接着要补发的指令要用「恢复后的」那份消息当上下文，
+        // 而 setMessages 的渲染要等到下一个任务，这里等不及。
+        messagesRef.current = restored;
+        setMessages(restored);
+      }
+      // 跳过去之后接着赶题：把待发的那条指令补发出去（用户只点一下就够了）。
+      // 面板默认是关着的（刷新后要重新点图标），这里顺手打开：
+      // 用户刚点了「重做」，得看得见 agent 在干活。
+      if (pending) {
+        setPanelOpen(true);
+        await sendRef.current?.(pending);
+      }
     })();
     return () => {
       cancelled = true;
@@ -136,6 +172,15 @@ export function useChat(hasApiKey: boolean) {
   useEffect(() => {
     const listener = (message: unknown) => {
       if (!isChatEvent(message)) return;
+
+      // 赶题进度是「这个标签页」的状态，不是「这一轮对话」的状态：
+      // 用户按了停止之后 requestRef 已经清空，但后台还会补一条收工快照，
+      // 卡片要照常定格在最终统计上。所以这里单独放行，只认更新的那份快照。
+      if (message.type === 'chat/batch') {
+        applyBatch(message.snapshot);
+        return;
+      }
+
       if (message.requestId !== requestRef.current) return;
 
       // 除增量以外的事件都要先把攒着的文字落到气泡里，保证顺序不乱
@@ -189,6 +234,8 @@ export function useChat(hasApiKey: boolean) {
   }, []);
 
   const appendDelta = useCallback((text: string) => {
+    // 同步记一份：收尾时判断「这轮有没有吐字」不能等 state 更新
+    producedRef.current += text;
     setMessages((prev) => {
       const currentId = assistantRef.current;
       if (currentId) {
@@ -308,13 +355,26 @@ export function useChat(hasApiKey: boolean) {
     ]);
   }, []);
 
+  /**
+   * 收下后台推来的赶题进度快照。
+   *
+   * 只认更新的那份：晚到的旧快照（比如上一轮残留的）不能把新一轮的进度盖回去。
+   */
+  const applyBatch = useCallback((snapshot: BatchSnapshot) => {
+    const current = batchRef.current;
+    if (current && snapshot.updatedAt < current.updatedAt) return;
+    batchRef.current = snapshot;
+    setBatch(snapshot);
+  }, []);
+
   const finish = useCallback(() => {
     flushDelta();
     const currentId = assistantRef.current;
     if (currentId) {
-      // 模型这一轮一个字都没吐：空气泡不渲染，用户会以为卡死了，所以留个提示
-      const produced = messagesRef.current
-        .find((message) => message.id === currentId)?.content.trim();
+      // 模型这一轮一个字都没吐：空气泡不渲染，用户会以为卡死了，所以留个提示。
+      // 读同步记的那份，而不是气泡里的内容——后者是攒到下一帧才写进去的，
+      // 这会儿往往还是空的（标签页在后台时 rAF 压根不跑）。
+      const produced = producedRef.current.trim();
       setMessages((prev) =>
         prev.map((message) =>
           message.id === currentId ? { ...message, streaming: false } : message,
@@ -350,8 +410,10 @@ export function useChat(hasApiKey: boolean) {
         createdAt: Date.now(),
         streaming: true,
       };
-      // 用面板里的会话重建上下文，工具卡片会变成 tool 消息，工具调用记录挂在 assistant 上
-      const apiMessages = toApiMessages(messages, content);
+      // 用面板里的会话重建上下文，工具卡片会变成 tool 消息，工具调用记录挂在 assistant 上。
+      // 读的是 messagesRef 而不是闭包里的 messages：页面刚挂载时要补发一条指令，
+      // 那时恢复出来的对话还没进 state，闭包里的那份是旧的。
+      const apiMessages = toApiMessages(messagesRef.current, content);
 
       // 第一次对话开始后，欢迎语就没用了：把它撤掉，面板上不再占地方
       setMessages((prev) => [
@@ -364,6 +426,8 @@ export function useChat(hasApiKey: boolean) {
       const requestId = createId();
       requestRef.current = requestId;
       assistantRef.current = assistantMessage.id;
+      // 新的一轮从头记：上一轮吐过的字不算这一轮的
+      producedRef.current = '';
 
       let response: StartChatResponse | undefined;
       try {
@@ -384,8 +448,9 @@ export function useChat(hasApiKey: boolean) {
         setNotice({ text: response?.message ?? '请求失败', needsApiKey: !hasApiKey });
       }
     },
-    [hasApiKey, messages, streaming],
+    [hasApiKey, streaming],
   );
+  sendRef.current = send;
 
   const stop = useCallback(() => {
     flushDelta();
@@ -459,6 +524,8 @@ export function useChat(hasApiKey: boolean) {
     setStreaming(false);
     setNotice(null);
     setUsage(null);
+    setBatch(null);
+    batchRef.current = null;
     setMessages([{ id: 'welcome', role: 'system', content: WELCOME, createdAt: 0 }]);
     // 存盘的那份也要清掉，否则刷新一下旧对话又回来了
     void clearMessages();
@@ -472,6 +539,8 @@ export function useChat(hasApiKey: boolean) {
     /** 后台还有活没干完（生成中——含等用户回答 ask 的那段时间） */
     busy: streaming,
     usage,
+    /** 赶题模式（/fuck）的进度快照；null 表示没在赶题模式 */
+    batch,
     /** 接口没回传 usage 时也要让数字动起来：按中英文字符粗估**当前这一轮**的输出 */
     liveOutputTokens: streaming
       ? estimateTokens(
@@ -480,6 +549,8 @@ export function useChat(hasApiKey: boolean) {
       : 0,
     notice,
     dismissNotice: useCallback(() => setNotice(null), []),
+    /** 面板自己冒出来的一句话提示（跳转失败之类的） */
+    notify: useCallback((text: string) => setNotice({ text, needsApiKey: false }), []),
     send,
     stop,
     answerAsk,

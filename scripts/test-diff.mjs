@@ -69,6 +69,26 @@ check(
   big.some((row) => row.type === 'add' && row.right === 'extra') && big.length > 900,
 );
 
+// 整份代码被重写（每一行都不同）→ 触发降级路径。
+// 降级后左右仍然要一行一行对上：不然用户得先滚完左边上千行删除才看得到右边的新代码。
+const rewriteBigLeft = Array.from({ length: 1200 }, (_, i) => `old ${i}`).join('\n');
+const rewriteBigRight = Array.from({ length: 1200 }, (_, i) => `new ${i}`).join('\n');
+const bigRewrite = diffLines(rewriteBigLeft, rewriteBigRight);
+check(
+  '超大重写降级后左右仍然逐行对齐',
+  bigRewrite.length === 1200 &&
+    bigRewrite.every((row) => row.type === 'mod' && row.left !== undefined && row.right !== undefined),
+  bigRewrite.length,
+);
+check(
+  '超大重写降级后行号一一对应',
+  bigRewrite[0].leftNo === 1 && bigRewrite[0].rightNo === 1 && bigRewrite[1199].leftNo === 1200 && bigRewrite[1199].rightNo === 1200,
+);
+check(
+  '超大重写降级后左右内容对得上',
+  bigRewrite[0].left === 'old 0' && bigRewrite[0].right === 'new 0' && bigRewrite[1199].right === 'new 1199',
+);
+
 /* ---------- 统计与行号合计自洽 ---------- */
 
 const sample = diffLines('1\n2\n3\n4', '1\n9\n3\n4\n5');

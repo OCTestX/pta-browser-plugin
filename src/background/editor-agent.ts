@@ -470,6 +470,10 @@ export const EDITOR_AGENT_SOURCE = String.raw`return (() => {
     tip.style.top = Math.round(top) + 'px';
   };
 
+  // 单词匹配的正则提到外面：每次新建正则会重新编译（同一个正则反复 exec 又有 lastIndex 的坑，
+  // 所以用完要把 lastIndex 归零）
+  const WORD_PATTERN = /[A-Za-z_][A-Za-z_0-9]*/g;
+
   const wordAt = (pos) => {
     const view = state.view;
     if (!view) return null;
@@ -478,22 +482,25 @@ export const EDITOR_AGENT_SOURCE = String.raw`return (() => {
     const line = doc.lineAt(pos);
     const text = line.text;
     const offset = Math.min(Math.max(pos - line.from, 0), text.length);
-    // 每次新建正则：同一个正则反复 exec 会带着 lastIndex
-    const pattern = /[A-Za-z_][A-Za-z_0-9]*/g;
-    let match = pattern.exec(text);
+    WORD_PATTERN.lastIndex = 0;
+    let match = WORD_PATTERN.exec(text);
     while (match) {
       const start = match.index;
       const end = start + match[0].length;
       if (offset >= start && offset <= end) return match[0];
-      match = pattern.exec(text);
+      match = WORD_PATTERN.exec(text);
     }
     return null;
   };
 
-  const onMove = (event) => {
-    const x = event.clientX;
-    const y = event.clientY;
+  // 悬停注释：mousemove 一秒能来上百次，而 posAtCoords 要量位置（强制同步布局），
+  // 每次都算一遍的话，在编辑器里挪鼠标就卡。所以把事件攒到下一帧再算：
+  // 一帧最多算一次，视觉上察觉不出来。
+  let hoverFrame = 0;
+  let hoverX = 0;
+  let hoverY = 0;
 
+  const updateHover = (x, y) => {
     // 1) 压在波浪线上：报错比函数注释更要紧，先判它
     for (const rect of state.rects) {
       if (x >= rect.left && x <= rect.right && y >= rect.top && y <= rect.bottom) {
@@ -512,6 +519,25 @@ export const EDITOR_AGENT_SOURCE = String.raw`return (() => {
     const doc = DOCS[word];
     if (!doc) { hideTip(); return; }
     showTip(x, y, word + '：' + doc.summary, doc.signature + (doc.note ? '\n' + doc.note : ''));
+  };
+
+  const onMove = (event) => {
+    hoverX = event.clientX;
+    hoverY = event.clientY;
+    if (hoverFrame) return;
+    hoverFrame = requestAnimationFrame(() => {
+      hoverFrame = 0;
+      updateHover(hoverX, hoverY);
+    });
+  };
+
+  // 鼠标移出代码框：把还没算的那一帧撤掉，别在离开之后又冒出个提示
+  const onLeave = () => {
+    if (hoverFrame) {
+      cancelAnimationFrame(hoverFrame);
+      hoverFrame = 0;
+    }
+    hideTip();
   };
 
   /* ---------- 轻提示 ---------- */
@@ -703,7 +729,7 @@ export const EDITOR_AGENT_SOURCE = String.raw`return (() => {
     }
     if (state.el) {
       state.el.removeEventListener('mousemove', listeners.onMove);
-      state.el.removeEventListener('mouseleave', hideTip);
+      state.el.removeEventListener('mouseleave', onLeave);
     }
     state.listeners = null;
   };
@@ -754,7 +780,7 @@ export const EDITOR_AGENT_SOURCE = String.raw`return (() => {
     state.listeners = { onScroll: onScroll, onMove: onMove };
     if (found.view.scrollDOM) found.view.scrollDOM.addEventListener('scroll', onScroll, { passive: true });
     state.el.addEventListener('mousemove', onMove);
-    state.el.addEventListener('mouseleave', hideTip);
+    state.el.addEventListener('mouseleave', onLeave);
 
     // 代码框尺寸一变就立刻重排：展开/收起「Test Case」、拖动分栏、字体变化都走这里，
     // 不等 500ms 巡检，否则工具栏会明显滞后一截

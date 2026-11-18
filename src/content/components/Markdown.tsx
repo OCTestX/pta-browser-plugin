@@ -1,8 +1,9 @@
-import { memo } from 'react';
+import { memo, type ReactNode } from 'react';
 import ReactMarkdown, { type Components } from 'react-markdown';
 import rehypeKatex from 'rehype-katex';
 import remarkGfm from 'remark-gfm';
 import remarkMath from 'remark-math';
+import { useCopy } from '../clipboard';
 
 const remarkPlugins = [remarkGfm, remarkMath];
 const rehypePlugins = [rehypeKatex];
@@ -16,7 +17,38 @@ const components: Components = {
       </a>
     );
   },
+  // 代码块右上角加一个「复制」：模型给的代码用户多半要直接贴走
+  pre({ children }) {
+    return <CodeBlock>{children}</CodeBlock>;
+  },
 };
+
+/** 代码块：内容照旧，右上角多一个复制按钮 */
+function CodeBlock({ children }: { children?: ReactNode }) {
+  const text = textOf(children);
+  const [copied, copy] = useCopy(() => text);
+  return (
+    <div className="md-code">
+      <button type="button" className="md-code__copy" onClick={copy} title="复制代码">
+        {copied ? '已复制' : '复制'}
+      </button>
+      <pre>{children}</pre>
+    </div>
+  );
+}
+
+/** 从代码块的 children 里把纯文本抠出来（react-markdown 给的是 <code> 元素） */
+function textOf(node: ReactNode): string {
+  if (node === null || node === undefined || typeof node === 'boolean') return '';
+  if (typeof node === 'string') return node;
+  if (typeof node === 'number') return String(node);
+  if (Array.isArray(node)) return node.map(textOf).join('');
+  if (typeof node === 'object' && 'props' in node) {
+    const props = node.props as { children?: ReactNode };
+    return textOf(props.children);
+  }
+  return '';
+}
 
 interface MarkdownProps {
   content: string;
