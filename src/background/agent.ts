@@ -223,8 +223,8 @@ export async function runAgent(options: RunAgentOptions): Promise<void> {
   const conversation: ApiMessage[] = buildConversation(SYSTEM_PROMPT, messages, instruction) as ApiMessage[];
   // /fuck：极限赶时间无人监管模式——不问、不解释、直接提交、做完自动切下一题
   const fuckMode = command?.id === 'fuck';
-  // 「重做没过的题」那一轮:用户把要重做的题连同地址列在消息里。
-  // 这种轮次不能走 next_problem(它会跳到别的题上去),只能一道一道 open_problem 跳过去。
+  // 「重做没过的题」那一轮：用户把要重做的题连同地址列在消息里。
+  // 这种轮次不能走 next_problem（它会跳到别的题上去），只能一道一道 open_problem 跳过去。
   const redoTargets = fuckMode && command ? parseRedoTargets(command.rest ?? '') : [];
   // /resolve 与 /fuck：用户明说「直接答题」，这一轮不再要求先 ask
   const forced = commandForcesWrite(command?.id);
