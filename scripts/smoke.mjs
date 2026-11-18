@@ -1142,6 +1142,39 @@ check(
     diffCard.querySelector('.diff__legend').textContent.includes('删除 0'),
 );
 
+// 改动大到要封顶：一次渲染两千行会建两万个节点，页面直接卡住。
+// 超出的不渲染，但要写明一共多少行，别让用户以为改动就这么点。
+const hugeLeft = Array.from({ length: 1400 }, (_, i) => `int v${i} = ${i};`).join('\n');
+const hugeRight = Array.from({ length: 1400 }, (_, i) => `int v${i} = ${i + 1};`).join('\n');
+tools2.emit({
+  type: 'chat/tool-start',
+  requestId: askId,
+  callId: 'call_diff_huge',
+  name: 'diff',
+  args: JSON.stringify({ left: hugeLeft, right: hugeRight }),
+});
+tools2.emit({
+  type: 'chat/tool-end',
+  requestId: askId,
+  callId: 'call_diff_huge',
+  result: '差异：新增 0 行，修改 1400 行，删除 0 行（左右对照已展示给用户）',
+  isError: false,
+  diff: { left: hugeLeft, right: hugeRight, leftLabel: '改动前', rightLabel: '改动后' },
+});
+await tick();
+const hugeCard = [...tools2.shadow().querySelectorAll('.tool')].at(-1);
+const hugeRows = hugeCard.querySelectorAll('.diff__row').length;
+check(
+  '大改动时 diff 卡片只渲染前 1200 行（改动块前后各有一行围栏）',
+  hugeRows === 1202,
+  hugeRows,
+);
+check(
+  '大改动时写明一共多少行',
+  (hugeCard.querySelector('.diff__clipped')?.textContent ?? '').includes('共 1400 行'),
+  hugeCard.querySelector('.diff__clipped')?.textContent,
+);
+
 tools2.emit({ type: 'chat/done', requestId: askId, aborted: false });
 await tick();
 check('这一轮结束后进度条消失', !tools2.find('.panel__progress'));
@@ -1645,6 +1678,30 @@ await tick();
 const stoppedText = batch.find('.batch')?.textContent ?? '';
 check('按停止后卡片写明已停止', stoppedText.includes('已停止'), stoppedText);
 check('按停止后不写「已收工」', !stoppedText.includes('已收工'), stoppedText);
+
+// 这一轮是出错的（接口报错之类），不是走完了题单：不能报成「已收工」
+batch.emit({
+  type: 'chat/batch',
+  requestId: 'batch-request',
+  snapshot: { ...withUrls, finished: true, stopReason: 'error', remaining: 5 },
+});
+await tick();
+const erroredText = batch.find('.batch')?.textContent ?? '';
+check('出错中断时卡片写明「出错中断」', erroredText.includes('出错中断'), erroredText);
+check('出错中断时不写「已收工」', !erroredText.includes('已收工'), erroredText);
+check(
+  '出错中断后仍能接着赶',
+  (batch.find('.batch__redo')?.textContent ?? '').includes('继续赶剩下的 5 题'),
+  batch.find('.batch__redo')?.textContent,
+);
+
+// 回到「用户按了停止」那一档，后面的用例继续用它
+batch.emit({
+  type: 'chat/batch',
+  requestId: 'batch-request',
+  snapshot: { ...withUrls, finished: true, stopReason: 'stopped', remaining: 5 },
+});
+await tick();
 const continueBtn = batch.find('.batch__redo');
 check('按停止后有「继续赶剩下的题」按钮', (continueBtn?.textContent ?? '').includes('继续赶剩下的 5 题'), continueBtn?.textContent);
 const requestsBeforeContinue = batch.requests.length;

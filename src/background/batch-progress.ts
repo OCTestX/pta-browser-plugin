@@ -28,10 +28,10 @@ export interface BatchState {
   remaining: number | null;
   /** 整份题单一共几题：next_problem 报来的 */
   total: number | null;
-  /** 这一轮是不是已经收工（题单走完或用户按了停止） */
+  /** 这一轮是不是已经收工（题单走完、用户按了停止、或出错中断） */
   finished: boolean;
-  /** 怎么收的：'done' 题单走完或 agent 自己收尾；'stopped' 用户按了停止 */
-  stopReason: 'done' | 'stopped' | null;
+  /** 怎么收的：'done' 题单走完或 agent 自己收尾；'stopped' 用户按了停止；'error' 这一轮出错了 */
+  stopReason: 'done' | 'stopped' | 'error' | null;
 }
 
 const states = new Map<number, BatchState>();
@@ -78,8 +78,8 @@ export function setTotal(tabId: number, total: number | null): void {
   state.total = total === null || !Number.isFinite(total) ? null : Math.max(0, Math.trunc(total));
 }
 
-/** 这一轮收工了（题单走完、或者用户按了停止） */
-export function finishBatch(tabId: number, reason: 'done' | 'stopped' = 'done'): void {
+/** 这一轮收工了（题单走完、用户按了停止、或者中途出错） */
+export function finishBatch(tabId: number, reason: 'done' | 'stopped' | 'error' = 'done'): void {
   // 只标已有的那一轮：没开过赶题模式的标签页不该凭空多出一份统计
   const state = states.get(tabId);
   if (state) {

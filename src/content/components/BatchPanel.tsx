@@ -50,6 +50,8 @@ export function BatchPanel({ snapshot, onStop, onOpenProblem, onRedo, onContinue
   } = snapshot;
   // 用户按了停止 ≠ 题单做完了：卡片上要写清楚，并给出「接着赶」的出口
   const stopped = stopReason === 'stopped';
+  // 出错中断也不是走完了题单：不能写成「已收工」
+  const errored = stopReason === 'error';
   // 进度条按整份题单的题数画：本轮做过的部分 + 题单里剩下的部分
   const scale = typeof total === 'number' && total > 0 ? total : Math.max(attempted, 1);
   // 本轮各题型做了几题：题单里判断/选择/填空/编程混着走，用户想知道分布
@@ -81,11 +83,11 @@ export function BatchPanel({ snapshot, onStop, onOpenProblem, onRedo, onContinue
           </span>
           <span className="batch__title">赶题模式</span>
         </button>
-        <span className={`batch__state${finished ? ' batch__state--done' : ''}`}>
-          {finished ? (stopped ? '已停止' : '已收工') : '进行中'}
+        <span className={`batch__state${finished && !errored ? ' batch__state--done' : ''}`}>
+          {finished ? (stopped ? '已停止' : errored ? '出错中断' : '已收工') : '进行中'}
         </span>
         <span className="batch__elapsed">{elapsedMinutes} 分钟</span>
-        {finished && stopped && onContinue && (
+        {finished && (stopped || errored) && onContinue && (
           <button
             type="button"
             className="batch__redo"

@@ -20,7 +20,7 @@ const COLLAPSE_AFTER = 6;
 /** 折叠时前后各留几行上下文 */
 const CONTEXT_KEEP = 2;
 /**
- * 全屏页一次最多渲染这么多行。
+ * 一次最多渲染这么多行（面板里的卡片与全屏页都一样）。
  *
  * diff 的算法本身很快（两千行也就几毫秒），慢的是渲染：一行要建六七个节点，
  * 四千行就是两万个节点，React 建它们要几百毫秒，页面直接卡住。
@@ -72,32 +72,29 @@ export function DiffView({
 
       <div className="diff__body">
         {(() => {
-          // 全屏模式下行数是封顶的：数到上限就不往后渲染了
-          let budget = full ? FULL_RENDER_LIMIT : Number.POSITIVE_INFINITY;
+          // 行数是封顶的：数到上限就不往后渲染了。
+          // 折叠掉的上下文本来就不画，所以只按真正要画出来的行数算额度。
+          let budget = FULL_RENDER_LIMIT;
           let shown = 0;
           let total = 0;
-          const clipped = segments.map((segment) => {
-            if (segment.kind === 'hunk') {
-              const rows = segment.rows;
-              total += rows.length + 2;
-              if (budget <= 0) return { segment, rows: [] as DiffRow[] };
-              const take = Math.min(rows.length, budget);
-              budget -= take;
-              shown += take;
-              return { segment, rows: rows.slice(0, take) };
-            }
-            const rows = segment.rows;
-            total += rows.length;
-            if (budget <= 0) return { segment, rows: [] as DiffRow[] };
-            const take = Math.min(rows.length, budget);
+          const clipped = segments.map((segment, index) => {
+            // 这一段真正要画哪些行：改动块全画；没动的上下文折叠时只画前后两行
+            const collapsed =
+              !full && segment.kind === 'context' && segment.rows.length > COLLAPSE_AFTER && !expanded[index];
+            const visible = collapsed
+              ? [...segment.rows.slice(0, CONTEXT_KEEP), ...segment.rows.slice(-CONTEXT_KEEP)]
+              : segment.rows;
+            total += visible.length;
+            if (budget <= 0) return { segment, rows: [] as DiffRow[], collapsed, clipped: true };
+            const take = Math.min(visible.length, budget);
             budget -= take;
             shown += take;
-            return { segment, rows: rows.slice(0, take) };
+            return { segment, rows: visible.slice(0, take), collapsed, clipped: take < visible.length };
           });
 
           return (
             <>
-              {clipped.map(({ segment, rows: visibleRows }, index) => {
+              {clipped.map(({ segment, rows: visibleRows, collapsed, clipped: cut }, index) => {
                 if (segment.kind === 'hunk') {
                   if (visibleRows.length === 0) return null;
                   return (
@@ -124,30 +121,29 @@ export function DiffView({
                   );
                 }
 
-                const long = !full && segment.rows.length > COLLAPSE_AFTER && !expanded[index];
-                const head = long ? visibleRows.slice(0, CONTEXT_KEEP) : visibleRows;
-                const tail = long ? visibleRows.slice(-CONTEXT_KEEP) : [];
-                const hidden = visibleRows.length - head.length - tail.length;
+                // 没动的上下文：折叠时只画前后两行，中间放一个「点开」的按钮。
+                // 被行数上限截掉的那段不放这个按钮——点开也画不出来（额度用完了）。
+                const hidden = segment.rows.length - visibleRows.length;
+                const head = collapsed ? visibleRows.slice(0, CONTEXT_KEEP) : visibleRows;
+                const tail = collapsed ? visibleRows.slice(CONTEXT_KEEP) : [];
 
                 return (
                   <div className="diff__context" key={index}>
                     {head.map((row, position) => (
                       <DiffRowView key={position} row={row} />
                     ))}
-                    {long && (
-                      <>
-                        <button
-                          type="button"
-                          className="diff__more"
-                          onClick={() => setExpanded((prev) => ({ ...prev, [index]: true }))}
-                        >
-                          ⋯ 还有 {hidden} 行没改动，点开
-                        </button>
-                        {tail.map((row, position) => (
-                          <DiffRowView key={`t${position}`} row={row} />
-                        ))}
-                      </>
+                    {collapsed && !cut && (
+                      <button
+                        type="button"
+                        className="diff__more"
+                        onClick={() => setExpanded((prev) => ({ ...prev, [index]: true }))}
+                      >
+                        ⋯ 还有 {hidden} 行没改动，点开
+                      </button>
                     )}
+                    {tail.map((row, position) => (
+                      <DiffRowView key={`t${position}`} row={row} />
+                    ))}
                   </div>
                 );
               })}

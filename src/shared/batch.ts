@@ -42,10 +42,16 @@ export interface BatchSnapshot {
   problems: BatchProblemItem[];
   /** 这一轮跑了多少分钟 */
   elapsedMinutes: number;
-  /** 这一轮是不是已经结束（做完题单 / 用户按了停止） */
+  /** 这一轮是不是已经结束（做完题单 / 用户按了停止 / 出错中断） */
   finished: boolean;
-  /** 怎么结束的：'done' 题单走完或 agent 自己收尾；'stopped' 用户按了停止；null 还在跑 */
-  stopReason: 'done' | 'stopped' | null;
+  /**
+   * 怎么结束的：
+   * 'done' 题单走完或 agent 自己收尾；
+   * 'stopped' 用户按了停止；
+   * 'error' 这一轮是出错的（比如接口报错），不是走完了；
+   * null 还在跑。
+   */
+  stopReason: 'done' | 'stopped' | 'error' | null;
   /** 快照生成时间 */
   updatedAt: number;
 }

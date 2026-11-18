@@ -499,7 +499,9 @@ async function startChat(
         finishBatchIfRunning(tabId, requestId, 'stopped');
         sendToTab(tabId, { type: 'chat/done', requestId, aborted: true });
       } else {
-        finishBatchIfRunning(tabId, requestId, 'done');
+        // 这一轮是出错的（比如接口报错），不是走完了题单：
+        // 卡片上要写明「出错中断」，别报成「已收工」——用户还以为题都做完了。
+        finishBatchIfRunning(tabId, requestId, 'error');
         sendToTab(tabId, { type: 'chat/error', requestId, message: toErrorMessage(error) });
       }
     } finally {
@@ -520,7 +522,7 @@ async function startChat(
 function finishBatchIfRunning(
   tabId: number,
   requestId: string,
-  reason: 'done' | 'stopped' = 'done',
+  reason: 'done' | 'stopped' | 'error' = 'done',
 ): void {
   if (!batchActive(tabId)) return;
   finishBatch(tabId, reason);
