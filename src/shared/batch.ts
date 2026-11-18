@@ -6,7 +6,12 @@
  */
 
 /** 一道题在赶题进度里的状态 */
-export type BatchProblemStatus = 'current' | 'accepted' | 'failed' | 'pending';
+/**
+ * 一道题在总览卡里的状态：
+ * current 正在做、accepted 过了、failed 没过、
+ * unknown 提交过了但没拿到判题结论、pending 还没做。
+ */
+export type BatchProblemStatus = 'current' | 'accepted' | 'failed' | 'unknown' | 'pending';
 
 export interface BatchProblemItem {
   /** 题目 ID：同一道题重复读只算一条 */

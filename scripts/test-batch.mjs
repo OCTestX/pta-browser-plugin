@@ -14,6 +14,11 @@ import {
   setTotal,
 } from '../src/background/batch-progress.ts';
 import { buildRedoCommand, parseRedoTargets } from '../src/shared/batch.ts';
+import {
+  clearSubmitted,
+  markSubmitted,
+  submittedProblems,
+} from '../src/background/submitted-problems.ts';
 
 const check = (label, ok, detail) => {
   if (!ok) {
@@ -180,5 +185,51 @@ check(
   '多道题能抠出多个地址',
   parseRedoTargets('1. 甲\n   地址：https://a/1\n2. 乙\n   地址：https://b/2').join(',') === 'https://a/1,https://b/2',
 );
+
+/* ---------- 插件自己记的「提交过的题」 ---------- */
+
+clearSubmitted(77);
+check('一开始没提交过任何题', submittedProblems(77).length === 0);
+markSubmitted(77, '733');
+markSubmitted(77, '734');
+check('提交过的题被记下来', submittedProblems(77).join(',') === '733,734', submittedProblems(77));
+markSubmitted(77, '733');
+check('同一道题重复提交只记一条', submittedProblems(77).length === 2);
+markSubmitted(77, '  ');
+check('空 ID 不记', submittedProblems(77).length === 2);
+markSubmitted(78, '900');
+check('不同标签页各记各的', submittedProblems(77).length === 2 && submittedProblems(78).length === 1);
+clearSubmitted(77);
+check('整页重新加载后清掉（页面侧栏这时已经刷新）', submittedProblems(77).length === 0);
+check('别的标签页不受影响', submittedProblems(78).length === 1);
+
+/* ---------- 提交过却没拿到结论的题 ---------- */
+
+resetBatch(99);
+setCurrentProblem(99, { key: 'p1', title: '题目一' });
+markSubmitted(99, 'p1');
+let snap99 = batchSnapshot(99);
+check(
+  '正在做的题标成 current',
+  snap99.problems.find((problem) => problem.key === 'p1')?.status === 'current',
+  snap99.problems,
+);
+setCurrentProblem(99, { key: 'p2', title: '题目二' });
+snap99 = batchSnapshot(99);
+const doneWithoutVerdict = snap99.problems.find((problem) => problem.key === 'p1');
+check(
+  '提交过但没拿到判题结论的题标成「没结论」（不是「待做」）',
+  doneWithoutVerdict?.status === 'unknown',
+  doneWithoutVerdict,
+);
+// 判题结论记在当前题头上（判题弹窗是当前这一页的）
+recordVerdict(99, 'AC');
+snap99 = batchSnapshot(99);
+check(
+  '判题结论记到当前题上',
+  snap99.problems.find((problem) => problem.key === 'p2')?.status === 'accepted',
+  snap99.problems,
+);
+clearSubmitted(99);
 
 console.log('\n赶题统计通过');

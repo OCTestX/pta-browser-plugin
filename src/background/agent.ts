@@ -32,7 +32,17 @@ import {
 } from './pta-scripts';
 import { describeTypist, runTypist } from './typist';
 import { storeExplanation } from './explain-pages';
-import { batchStats, batchSummary, batchSnapshot, finishBatch, recordVerdict, resetBatch, setCurrentProblem, setRemaining, setTotal } from './batch-progress';
+import {
+  batchStats,
+  batchSummary,
+  batchSnapshot,
+  finishBatch,
+  recordVerdict,
+  resetBatch,
+  setCurrentProblem,
+  setRemaining,
+  setTotal,
+} from './batch-progress';
 import { compactConversation } from '../shared/context-window';
 import { canNavigateTo } from '../shared/navigation';
 
@@ -59,6 +69,7 @@ import { diffLines, diffStats } from '../shared/diff';
 import {
   choiceDeniesSubmit,
   choiceDeniesWrite,
+  fuckToolBlockReason,
   parseOptionQuestion,
   submitGuardReason,
   whyToolBlockReason,
@@ -67,6 +78,7 @@ import {
 import type { DiffPayload, TokenUsage } from '../shared/messages';
 import type { BatchSnapshot } from '../shared/batch';
 import { parseRedoTargets } from '../shared/batch';
+import { markSubmitted, submittedProblems } from './submitted-problems';
 
 export interface ToolOutcome {
   output: string;
@@ -141,6 +153,8 @@ function commandInstruction(id: string, rest: string): string {
       '**代码填空题**：作答区里就是那段代码（要填的地方是空的或带 TODO），',
       '先 read_editor_code 把作答区现在的代码读出来，在它基础上把空缺补完整，再用 write_editor_code 写回去——不要凭空重写整段。',
       '一道题最多自己改两次；还是不过就调 next_problem（带 skipCurrent=true）跳过它，继续下一题。',
+      '**不要用 js_inject**：它在页面主线程里跑，写出死循环或同步等待就会把整个页面卡死，',
+      '插件的超时也救不回来（用户连「停止」都按不到）。读题用 read_problem，看作答区用 read_editor_code。',
       '**如果用户补充里点名要重做某几道题**（消息里列了几道题的标题与地址）：一道一道来——',
       'open_problem(地址) 跳到那道题，再照常 read_problem → 写代码 → 提交 → 看结论；',
       '做完一道做下一道，直到列出来的题都过了一遍。这种时候不要调 next_problem（它会跳到别的题上去）。',
@@ -325,7 +339,12 @@ export async function runAgent(options: RunAgentOptions): Promise<void> {
       });
       const toolName = call.function.name;
       // 硬门：没 ask 过（且用户本条没明确授权）时，直接拦下改代码/提交，逼模型先问
-      const commandBlocked = command?.id === 'why' ? whyToolBlockReason(toolName) : null;
+      // 斜杠指令还有各自的禁手清单：/why 不许翻页面，/fuck 不许 js_inject（会把页面卡死）
+      const commandBlocked = command?.id === 'why'
+        ? whyToolBlockReason(toolName)
+        : fuckMode
+          ? fuckToolBlockReason(toolName)
+          : null;
       const blockedReason = commandBlocked ??
         (toolName === 'write_editor_code'
           ? writeGuardReason({ askUsed: askUsedThisTurn, denied: writeDenied, lastUserText, forced })
@@ -626,6 +645,11 @@ interface NextProblemResult {
   totalAll?: number;
   /** 整份题单里还没答的题数 */
   remainingAll?: number;
+  /**
+   * 侧栏的「已答」数（页面不刷新侧栏，提交之后这个数是旧的）。
+   * 后台拿它加上插件自己提交过的题数，才算得出真实的「还剩几题」。
+   */
+  answeredAll?: number;
   /** 题单真的走完时脚本会带这个字段（别拿它跟「出错了」混为一谈） */
   done?: number;
   reason?: string;
@@ -681,8 +705,34 @@ function rememberProblemFromRead(tabId: number, output: string): void {
   const url = /(?:^|\n)地址：(\S+)/.exec(output)?.[1];
   const title = /(?:^|\n)题目：(.+)/.exec(output)?.[1]?.trim();
   const type = (String(url || '').match(/\/problems\/type\/(\d+)/) || [])[1] || '';
-  const key = id || problemKeyFrom(url || '') || title || '';
-  if (key) setCurrentProblem(tabId, { key, title, type, url });
+  // 没有题目 ID 就说明这不是某一道题：题型列表页也会被 read_problem 读到
+  // （输出里只有「题目类型：Programming（5 小题）」和列表页的地址）。
+  // 把它当成一道题记进统计，总览卡里就会多出一行「Programming - Problem List」。
+  if (!id) return;
+  setCurrentProblem(tabId, { key: id, title, type, url });
+}
+
+/**
+ * 提交成功：把「现在这道题」记进插件自己的已提交名单。
+ *
+ * 用标签页当前地址取题目 ID——比「上次读到的题」更准：
+ * 模型可能没读题就提交（或者读的是题型列表页），这时统计里没有当前题，
+ * 判题结论就会落到一个假题上（总览卡里多出一行「（当前题）」）。
+ */
+async function rememberSubmittedProblem(tabId: number): Promise<void> {
+  let url = '';
+  try {
+    const tab = await ext.tabs.get(tabId);
+    url = tab?.url ?? '';
+  } catch {
+    url = '';
+  }
+  const id = problemKeyFrom(url);
+  if (!id) return;
+  markSubmitted(tabId, id);
+  // 把「当前题」也对上：后面的判题结论要记到这道题头上
+  const type = (String(url).match(/\/problems\/type\/(\d+)/) || [])[1] || '';
+  setCurrentProblem(tabId, { key: id, type, url });
 }
 
 /** 从判题结果里取结论；同一段输出里可能有多个，取最后一个 */
@@ -919,13 +969,17 @@ export async function runTool(
         isError: true,
       };
     }
-    const outcome = await runPtaScript('next_problem', args, context);
+    // 把「插件提交过的题」一起给页面脚本：PTA 侧栏不刷新，脚本光看页面
+    // 会以为刚做完的题还没做（于是又挑一遍，总览卡的「还剩」也一直停在总数上）。
+    const doneIds = submittedProblems(tabId);
+    const outcome = await runPtaScript('next_problem', { ...args, doneIds }, context);
     const parsed = parseNextProblem(outcome.output);
     if (parsed?.ok) {
       const key = problemKeyFrom(parsed.url ?? '') || parsed.title || '';
       if (key) setCurrentProblem(tabId, { key, title: parsed.title, type: parsed.type, url: parsed.url });
     }
-    // 「还剩几题」按整份题单算（不是当前题型那一组）：跨题型切换时数字才稳定
+    // 「还剩几题」按整份题单算（不是当前题型那一组）：跨题型切换时数字才稳定。
+    // 脚本里算好了（侧栏的计数可能是旧数，脚本拿网格里实际的已提交数校正过）。
     if (typeof parsed?.remainingAll === 'number') setRemaining(tabId, parsed.remainingAll);
     if (typeof parsed?.totalAll === 'number') setTotal(tabId, parsed.totalAll);
     if (parsed && parsed.ok === false && typeof parsed.done === 'number') {
@@ -955,8 +1009,20 @@ export async function runTool(
   if (PTA_SCRIPTS[name]) {
     // 页面脚本只认字符串：模型把数据集写成数字（stdin: 2）时先归一化，别静默丢成空串
     const scriptArgs = name === 'simulate_pta_run' ? { ...args, stdin: asStdin(args.stdin) } : args;
+    // 列题也要知道插件提交过哪些题（页面侧栏不刷新，标记是旧的）
+    if (name === 'list_problems') {
+      scriptArgs.doneIds = submittedProblems(tabId);
+    }
     const outcome = await runPtaScript(name, scriptArgs, context);
     if (name === 'read_problem' && !outcome.isError) rememberProblemFromRead(tabId, outcome.output);
+    if ((name === 'submit_answer' || name === 'read_judge_result') && !outcome.isError) {
+      rememberVerdictFromJudge(tabId, outcome.output);
+    }
+    // 提交成功就记下这道题：页面侧栏不刷新，插件得自己记着，
+    // 下次换题才知道该跳过哪些题、「还剩几题」该减几。
+    if (name === 'submit_answer' && !outcome.isError && /已点击提交/.test(outcome.output)) {
+      await rememberSubmittedProblem(tabId);
+    }
     if ((name === 'submit_answer' || name === 'read_judge_result') && !outcome.isError) {
       rememberVerdictFromJudge(tabId, outcome.output);
     }

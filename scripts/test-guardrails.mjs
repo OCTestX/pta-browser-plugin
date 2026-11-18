@@ -7,6 +7,7 @@ import {
   submitGuardReason,
   userAskedToSubmit,
   userAskedToWrite,
+  fuckToolBlockReason,
   whyToolBlockReason,
   writeGuardReason,
 } from '../src/shared/guardrails.ts';
@@ -96,6 +97,15 @@ check(
   '/why 拦下会翻页面/判题/改代码的工具',
   ['js_inject', 'read_judge_result', 'submit_answer', 'write_editor_code', 'next_problem']
     .every((name) => whyToolBlockReason(name) !== null),
+);
+check(
+  '/fuck 拦下 js_inject（它能把页面卡死，连「停止」都按不到）',
+  fuckToolBlockReason('js_inject') !== null,
+);
+check(
+  '/fuck 放行读题、读写代码、提交与换题',
+  ['read_problem', 'read_editor_code', 'write_editor_code', 'submit_answer', 'next_problem', 'compile_and_run_c']
+    .every((name) => fuckToolBlockReason(name) === null),
 );
 check(
   '/why 放行读代码、读题与本地编译',

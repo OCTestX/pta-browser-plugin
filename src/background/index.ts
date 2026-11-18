@@ -16,6 +16,7 @@ import { isCompleteBaseURL, normalizeBaseURL } from '../shared/settings';
 import { createId, type ApiMessage } from '../shared/types';
 import { runAgent, type ToolOutcome } from './agent';
 import { batchActive, batchSnapshot, finishBatch } from './batch-progress';
+import { clearSubmitted } from './submitted-problems';
 import { DEFAULT_INPUT_METHOD, findInputMethod } from '../shared/input-methods';
 import { pasteIntoEditor, runInputMethod } from './input-methods';
 import { readClipboardText } from './clipboard';
@@ -308,6 +309,10 @@ ext.runtime.onMessage.addListener((message: unknown, sender, sendResponse) => {
           sendResponse({ ok: false } satisfies AttachChatResponse);
           return;
         }
+        // 整页重新加载之后，页面侧栏的「已答 / 总数」会刷新、网格里的标记也就准了，
+        // 插件自己记的「提交过的题」这时是重复的一份，清掉。
+        // （单页应用内部的跳转不会重新挂载，所以名单能一直留着。）
+        clearSubmitted(tabId);
         let requestId = '';
         for (const [id, idTab] of runningRequestTabs) {
           if (idTab === tabId && runningRequests.has(id)) {

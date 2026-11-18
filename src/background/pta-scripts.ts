@@ -263,6 +263,13 @@ const HELPERS = `
 
   // 题目列表网格：只认站内 problemSetProblemId 链接，同一道题只算一次。
   // （页面上的「意见反馈」是 mailto: 链接，正文里也带着 problemSetProblemId）
+  //
+  // doneIds 是插件自己提交过的题（题目 ID）：PTA 是单页应用，提交之后侧栏不刷新，
+  // 网格里的 PROBLEM_ACCEPTED 标记还是旧的，脚本会以为这些题没做过。
+  // 所以插件把提交过的名单传进来，这里一并当成「已提交」。
+  const doneIds = new Set(
+    (Array.isArray(__args && __args.doneIds) ? __args.doneIds : []).map((id) => String(id)),
+  );
   const readProblemGrid = () => {
     const items = [];
     const seen = new Set();
@@ -278,7 +285,7 @@ const HELPERS = `
       items.push({
         id: id,
         anchor: anchor,
-        submitted: hasSubmittedMark(anchor),
+        submitted: hasSubmittedMark(anchor) || doneIds.has(id),
         title: String(anchor.getAttribute('title') || textOf(anchor)).replace(/\\s+/g, ' ').trim(),
         type: (href.match(/\\/problems\\/type\\/(\\d+)/) || [])[1] || '',
       });
@@ -1325,7 +1332,15 @@ const grid = readProblemGrid();
 // 整份题单的总量（所有题型加起来）：面板的进度条按这个口径画，
 // 不然跨题型切换时「还剩几题」会一会儿大一会儿小
 const totalAll = typeGroups.reduce((sum, group) => sum + (group.total || 0), 0);
-const answeredAll = typeGroups.reduce((sum, group) => sum + (group.answered || 0), 0);
+// 当前题型里已经做过的题：网格里数一遍（含插件报上来的已提交，精确）。
+// 侧栏的「已答」数有时是提交之前的旧数（PTA 是单页应用，提交后侧栏不立刻刷新），
+// 所以取两个数里大的那个：网格数出来的至少不会漏掉插件刚提交的那几道。
+const submittedInGrid = grid.filter((item) => item.submitted).length;
+const currentGroup = typeGroups.find((group) => group.type === currentType);
+const groupAnswered = currentGroup ? (currentGroup.answered || 0) : 0;
+const answeredInCurrentType = Math.max(groupAnswered, submittedInGrid);
+const answeredAll =
+  typeGroups.reduce((sum, group) => sum + (group.answered || 0), 0) - groupAnswered + answeredInCurrentType;
 const remainingAll = Math.max(0, totalAll - answeredAll);
 
 // 还没做过的题：先找当前题型里当前题之后的，再回头找当前题型里前面的
@@ -1416,6 +1431,9 @@ if (nextItem) {
     // 整份题单的口径：面板进度条用这两个
     totalAll: totalAll,
     remainingAll: remainingAll,
+    // 侧栏的「已答」数（提交之后不刷新，是旧数）：后台拿它加上插件自己提交过的题数，
+    // 才算得出真实的「还剩几题」
+    answeredAll: answeredAll,
     type: currentType,
   };
 }
@@ -1493,6 +1511,8 @@ for (let index = groupIndex + 1; index < typeGroups.length; index += 1) {
     // 整份题单的口径：面板进度条用这两个
     totalAll: totalAll,
     remainingAll: remainingAll,
+    // 侧栏的「已答」数（提交之后不刷新，是旧数）
+    answeredAll: answeredAll,
     type: group.type,
     typeName: PROBLEM_TYPE_NAMES[group.type] || ('题型 ' + group.type),
     switchedType: true,
@@ -1505,6 +1525,9 @@ return {
   reason: '已经是最后一题了（题型分组：' + (typeGroups.map((group) => group.type + ' ' + group.answered + '/' + group.total).join('，') || '没读到') + '）',
   total: grid.length,
   done: grid.length,
+  totalAll: totalAll,
+  remainingAll: remainingAll,
+  answeredAll: answeredAll,
 };
 `;
 

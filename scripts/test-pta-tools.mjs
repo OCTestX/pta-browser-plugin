@@ -490,6 +490,30 @@ check(
   acceptedResult,
 );
 
+// PTA 是单页应用：提交之后侧栏不刷新，网格里的标记还是旧的（这里三道题都是 NO_ANSWER）。
+// 插件把自己提交过的题（doneIds）告诉脚本，脚本才知道该跳过哪些题。
+const staleMarksPage = createProblemListPage(
+  ['2092326321552957459', '2092326321552957460', '2092326321552957461'],
+  { noAnswer: ['2092326321552957459', '2092326321552957460', '2092326321552957461'] },
+);
+staleMarksPage.document.querySelectorAll('a')[2].addEventListener('click', (event) => {
+  event.preventDefault();
+  staleMarksPage.history.pushState({}, '', '/problem-sets/2092326321452294144/exam/problems/type/7?problemSetProblemId=2092326321552957461');
+});
+const staleMarksResult = await runScript(staleMarksPage, NEXT_PROBLEM_SCRIPT, {
+  timeoutMs: 3000,
+  pollMs: 20,
+  doneIds: ['2092326321552957459', '2092326321552957460'],
+});
+check(
+  '插件报上来的已提交题（页面标记还是旧的）也会被跳过',
+  staleMarksResult.ok === true && String(staleMarksResult.url).includes('problemSetProblemId=2092326321552957461'),
+  staleMarksResult,
+);
+// 侧栏的计数是旧的（0），但网格里能数出两道已经做过（插件报上来的）——取大的那个
+check('已答数取网格里数出来的（侧栏计数是旧数时）', staleMarksResult.answeredAll === 2, staleMarksResult);
+check('没读到题型分组时整份题单的题数是 0（页面没给分组就不硬编）', staleMarksResult.totalAll === 0, staleMarksResult);
+
 // 题目列表总览：同时给出题型分组与网格里的已提交状态
 const listOut = await runScript(submittedPage, LIST_PROBLEMS_SCRIPT, {});
 check('list_problems 列出当前题型的题目网格', listOut.includes('题目网格') && listOut.includes('已提交'));

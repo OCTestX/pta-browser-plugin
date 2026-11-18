@@ -8,6 +8,7 @@
 
 import type { BatchProblemItem, BatchSnapshot } from '../shared/batch.ts';
 import { emptyBatchSnapshot } from '../shared/batch.ts';
+import { submittedProblems } from './submitted-problems.ts';
 
 export interface BatchProblemRecord {
   /** 题目 ID 或地址：同一道题重复读题/重复看判题只算一条 */
@@ -93,6 +94,11 @@ export function batchActive(tabId: number): boolean {
   return states.has(tabId);
 }
 
+/** 现在在做哪道题（题目 ID）；没有就空串 */
+export function currentProblemKey(tabId: number): string {
+  return states.get(tabId)?.currentKey ?? '';
+}
+
 /** 记下「现在在做哪道题」；读题、换题、提交都会用到 */
 export function setCurrentProblem(
   tabId: number,
@@ -125,7 +131,10 @@ export function recordVerdict(tabId: number, verdict: string): void {
   const normalized = String(verdict || '').trim().toUpperCase();
   if (!normalized) return;
   const state = stateFor(tabId);
-  const key = state.currentKey || '（当前题）';
+  const key = state.currentKey;
+  // 没有当前题就不记：造一道「（当前题）」的假题会污染总览卡
+  // （多出一行、已做题数多一个、题型分组里冒出「其它」）。
+  if (!key) return;
   const existing = state.problems.get(key);
   if (existing) {
     existing.verdict = normalized;
@@ -202,6 +211,8 @@ export function batchSnapshot(tabId: number): BatchSnapshot {
   const failed = list.filter((item) => item.verdict !== '' && item.verdict !== 'AC').length;
   const unknown = list.filter((item) => item.verdict === '').length;
   const current = state.currentKey ? state.problems.get(state.currentKey) : undefined;
+  // 插件自己提交过的题：提交了却没拿到结论的，别写成「待做」
+  const done = new Set(submittedProblems(tabId));
 
   const problems: BatchProblemItem[] = list.map((item) => ({
     key: item.key,
@@ -216,7 +227,11 @@ export function batchSnapshot(tabId: number): BatchSnapshot {
           ? 'failed'
           : item.key === state.currentKey
             ? 'current'
-            : 'pending',
+            : // 提交过了却没拿到判题结论（判题慢、弹窗被关掉）：
+              // 别写「待做」——它明明做过了，只是没结论
+              done.has(item.key)
+              ? 'unknown'
+              : 'pending',
   }));
 
   return {

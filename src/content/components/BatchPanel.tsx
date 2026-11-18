@@ -234,7 +234,9 @@ const ProblemRow = memo(function ProblemRow({
         ? { text: problem.verdict || '未过', className: 'bad' }
         : problem.status === 'current'
           ? { text: '进行中', className: 'now' }
-          : { text: '待做', className: 'todo' };
+          : problem.status === 'unknown'
+            ? { text: '没结论', className: 'todo' }
+            : { text: '待做', className: 'todo' };
   const clickable = Boolean(onOpen && problem.url);
   return (
     <li className={`batch__row batch__row--${problem.status}`}>

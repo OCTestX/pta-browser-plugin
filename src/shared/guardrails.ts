@@ -174,3 +174,24 @@ export function whyToolBlockReason(toolName: string): string | null {
     + '只用 read_editor_code、read_problem 和 compile_and_run_* 本地验证；'
     + '代码没有明显错误就直接说“代码没有发现错误”，不要为了找错误去翻判题历史。';
 }
+
+/**
+ * 赶题模式（/fuck）里不该用的工具。
+ *
+ * 主要是 js_inject：它在页面的主线程里跑，模型要是写出一个死循环或者
+ * 同步等待，整个页面就卡死了——插件的超时也救不回来（超时靠的是定时器，
+ * 主线程被占住时定时器根本不跑），用户连「停止」都按不到。
+ * 赶题模式是无人监管模式，更不能拿整个页面去赌。
+ */
+const FUCK_BLOCKED_TOOLS: Record<string, true> = {
+  js_inject: true,
+};
+
+/** `/fuck` 本轮是否应拦下某个工具；返回 null 表示放行 */
+export function fuckToolBlockReason(toolName: string): string | null {
+  if (!FUCK_BLOCKED_TOOLS[toolName]) return null;
+  return '⛔ 赶题模式不要用 js_inject：它在页面主线程里跑，写出死循环或同步等待就会把整个页面卡死，'
+    + '插件的超时也救不回来（用户连「停止」都按不到）。'
+    + '读题用 read_problem，看作答区用 read_editor_code，跑代码用 compile_and_run_*，'
+    + '提交用 submit_answer，看结论用 read_judge_result，换题用 next_problem。';
+}
