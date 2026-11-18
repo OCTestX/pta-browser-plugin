@@ -1396,15 +1396,30 @@ const waitForSwitch = (beforeHref, describe) => new Promise((resolve) => {
   setTimeout(check, pollMs);
 });
 
+// 换题时页面会问「有未被提交的更改，确认离开？」
+// 那是浏览器原生的 confirm 弹窗：脚本点不掉，它会一直挡在页面上——
+// 换题等不到地址变化就超时，模型再重试又撞一次，整轮就卡死在这。
+// 所以换题这段时间里把 confirm 接管成「同意」，换完再放回去。
+const originalConfirm = typeof window.confirm === 'function' ? window.confirm : null;
+const takeOverConfirm = () => {
+  if (originalConfirm) window.confirm = () => true;
+};
+const restoreConfirm = () => {
+  if (originalConfirm) window.confirm = originalConfirm;
+};
+
 // 一、当前题型里还有没做过的题 → 直接切过去
 if (nextItem) {
   const beforeHref = String(location.href || '');
+  takeOverConfirm();
   try {
     nextItem.anchor.click();
   } catch (error) {
+    restoreConfirm();
     return { ok: false, reason: '点下一题的链接时出错：' + (error && error.message ? error.message : String(error)) };
   }
   const switched = await waitForSwitch(beforeHref, '点了下一题的链接');
+  restoreConfirm();
   if (!switched.ok) return switched;
   // 地址一变路由就可能还没把题目内容渲染完：再等一小会儿让标题换成真题名，
   // 否则赶题统计里记下的会是「Programming - Problem List」这种列表页标题。
@@ -1448,12 +1463,15 @@ for (let index = groupIndex + 1; index < typeGroups.length; index += 1) {
   if (group.answered >= group.total) continue;   // 这一组全做过了
   const beforeHref = String(location.href || '');
   const beforeGridIds = grid.map((item) => item.id).join('|');
+  takeOverConfirm();
   try {
     group.node.click();
   } catch (error) {
+    restoreConfirm();
     return { ok: false, reason: '切换题型时出错：' + (error && error.message ? error.message : String(error)) };
   }
   const switched = await waitForSwitch(beforeHref, '点了题型「' + group.type + '」的分组链接');
+  restoreConfirm();
   if (!switched.ok) return switched;
 
   // 地址变了不等于网格已经换好（前端路由先换地址、再渲染侧栏）：

@@ -435,6 +435,26 @@ const jumpResult = await runScript(jumpPage, NEXT_PROBLEM_SCRIPT, { timeoutMs: 3
 check('切到下一题后报出新题的位置与剩余题数', jumpResult.ok === true && jumpResult.index === 1 && jumpResult.total === 3 && jumpResult.remaining === 2, jumpResult);
 check('切到下一题后报出新题的标题与地址', jumpResult.title === '7-13 另一道题' && String(jumpResult.url).includes('problemSetProblemId=2092326321552957460'), jumpResult);
 
+// PTA 换题前会弹原生确认框「有未被提交的更改，确认离开？」：
+// 那是浏览器原生的 confirm，脚本点不掉，弹窗开着时整页 JS 都停在那里，
+// 赶题模式就会卡死（模型看到的是「地址没变」，然后一遍遍重试）。
+// 脚本要在换题这段时间里把 confirm 接管成「同意」，换完再放回去。
+const confirmPage = createProblemListPage(['2092326321552957459', '2092326321552957460', '2092326321552957461']);
+const confirmCalls = [];
+confirmPage.document.querySelectorAll('a')[1].addEventListener('click', (event) => {
+  event.preventDefault();
+  const answer = confirmPage.window.confirm('有未被提交的更改，确认离开？');
+  confirmCalls.push(answer);
+  if (!answer) return;
+  confirmPage.history.pushState({}, '', '/problem-sets/2092326321452294144/exam/problems/type/7?problemSetProblemId=2092326321552957460');
+  confirmPage.document.title = '7-13 另一道题';
+});
+const originalConfirm = confirmPage.window.confirm;
+const confirmResult = await runScript(confirmPage, NEXT_PROBLEM_SCRIPT, { timeoutMs: 3000, pollMs: 20 });
+check('换题时遇到「有未被提交的更改」确认框也能换过去', confirmResult.ok === true && confirmResult.index === 1, confirmResult);
+check('确认框被同意而不是取消', confirmCalls.length === 1 && confirmCalls[0] === true, confirmCalls);
+check('换完题把 confirm 还给页面', confirmPage.window.confirm === originalConfirm);
+
 // 「还剩几题」要按整份题单算（所有题型加起来），不然跨题型切换时数字会跳
 const groupsPage = createProblemListPage(
   ['2092326321552957459', '2092326321552957460', '2092326321552957461'],
