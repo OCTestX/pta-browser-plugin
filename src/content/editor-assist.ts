@@ -17,13 +17,76 @@ import {
   isAssistMessage,
   type AgentCommand,
   type AgentEvent,
+  type EditorAssistFeatures,
 } from '../shared/editor-assist-protocol';
 import type { EditorAssistInstallResponse, EditorCheckResponse } from '../shared/messages';
+import type { SettingsView } from '../shared/settings';
 
 /** 装过一次就不再装：换题是前端路由，agent 会自己重新绑定编辑器 */
 let started = false;
 /** 没找到作答区之前每 2 秒试一次 */
 let retry: number | undefined;
+/** 当前安装用的 token：设置变化时要往页面里重发 configure */
+let installedToken = '';
+
+/** 补全项的历史使用次数（这个名字用过几次），键是补全的名字 */
+const HINT_FREQ_KEY = 'pta-assistant-hint-frequency';
+
+/** 同一份设置键：设置页保存的就是它，变化时把新开关推给页面 */
+const SETTINGS_STORAGE_KEY = 'pta-assistant-settings';
+
+/** 视图里的开关 → 页面脚本的功能位（format/rainbow/check/hover 恒开） */
+function featuresFromView(view: Partial<SettingsView> | null | undefined): Partial<EditorAssistFeatures> {
+  return {
+    format: true,
+    rainbow: true,
+    check: true,
+    hover: true,
+    hyphenate: view?.hyphenate === true,
+    indentGuides: view?.indentGuides === true,
+    codeHints: view?.codeHints === true,
+  };
+}
+
+async function readHintFrequency(): Promise<Record<string, number>> {
+  try {
+    const stored = await ext.storage.local.get(HINT_FREQ_KEY);
+    const value = stored[HINT_FREQ_KEY];
+    if (value && typeof value === 'object' && !Array.isArray(value)) {
+      const out: Record<string, number> = {};
+      for (const [label, count] of Object.entries(value as Record<string, unknown>)) {
+        if (typeof count === 'number' && Number.isFinite(count)) out[label] = count;
+      }
+      return out;
+    }
+  } catch {
+    /* 读不到就当没历史 */
+  }
+  return {};
+}
+
+/** 把运行中的开关与频率推给页面脚本：设置页一改就生效，不用刷新页面 */
+async function pushConfigure(token: string): Promise<void> {
+  try {
+    const view = (await ext.runtime.sendMessage({ type: 'settings/get' })) as SettingsView | undefined;
+    const freq = await readHintFrequency();
+    post(token, { kind: 'configure', features: featuresFromView(view), freq });
+  } catch {
+    /* 后台没醒：下一次 hello 还会再推一遍 */
+  }
+}
+
+/** 用户用了一次补全：给这个名字记一次，下次它排前面 */
+async function recordHintUse(label: string): Promise<void> {
+  if (!label) return;
+  try {
+    const freq = await readHintFrequency();
+    freq[label] = (freq[label] ?? 0) + 1;
+    await ext.storage.local.set({ [HINT_FREQ_KEY]: freq });
+  } catch {
+    /* 记不上不影响补全本身 */
+  }
+}
 
 const isProblemPage = (): boolean =>
   /(^|\.)pintia\.cn$/.test(location.hostname) && /\/problems\//.test(location.pathname);
@@ -72,6 +135,7 @@ async function install(): Promise<void> {
   started = true;
 
   const token = response.token;
+  installedToken = token;
   console.info('[PTA 助手] 编辑器增强已挂载（%s）', response.world ?? 'MAIN');
 
   window.addEventListener('message', (event: MessageEvent) => {
@@ -81,6 +145,23 @@ async function install(): Promise<void> {
     const message = event.data as AgentEvent;
     void handle(token, message);
   });
+
+  // 设置页可能在面板打开前就改过：先推一份当前开关，页面上立刻按新设置工作
+  await pushConfigure(token);
+
+  // 之后每次在设置页改动（开关 / 主题 / 提供商……）都重推一次
+  ext.storage.onChanged.addListener((changes, area) => {
+    if (area !== 'local') return;
+    if (!(SETTINGS_STORAGE_KEY in changes)) return;
+    if (installedToken) void pushConfigure(installedToken);
+  });
+
+  // 兜底：storage 事件可能在「页面还挂着旧 agent」或「后台刚醒」时丢掉，
+  // 那种情况下用户打开了开关却一点反应都没有。每 10 秒重推一次当前开关，
+  // 消息很小，代价可以忽略，但能把「设置不生效」这类问题直接消掉。
+  window.setInterval(() => {
+    if (installedToken) void pushConfigure(installedToken);
+  }, 10_000);
 }
 
 async function handle(token: string, message: AgentEvent): Promise<void> {
@@ -103,7 +184,13 @@ async function handle(token: string, message: AgentEvent): Promise<void> {
       return;
     }
     case 'hello':
+      // 页面脚本（重新）绑上编辑器了：把当前开关推给它，别按安装时的旧设置跑
+      void pushConfigure(token);
+      return;
     case 'editor-lost':
+      return;
+    case 'hint-used':
+      void recordHintUse(message.label);
       return;
     default:
       return;

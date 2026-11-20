@@ -119,48 +119,9 @@ export function subscribePanel(listener: Listener): () => void {
   };
 }
 
-// 专注题目模式：把页面上与题目无关的面板收起来，只留题面。
-// 存在 sessionStorage 里：按标签页隔离（跟草稿一样），刷新页面也还在——
-// 做题时中途刷一下页面，不该把「专注」这个工作状态也一起丢了。
-const FOCUS_MODE_KEY = 'pta-assistant-focus-mode';
-
-let focusMode = readFocusMode();
-
-function readFocusMode(): boolean {
-  if (!tabStorage) return false;
-  try {
-    return tabStorage.getItem(FOCUS_MODE_KEY) === '1';
-  } catch {
-    return false;
-  }
-}
-
-export function isFocusMode(): boolean {
-  return focusMode;
-}
-
-export function setFocusMode(next: boolean): void {
-  if (focusMode === next) return;
-  focusMode = next;
-  try {
-    if (next) tabStorage?.setItem(FOCUS_MODE_KEY, '1');
-    else tabStorage?.removeItem(FOCUS_MODE_KEY);
-  } catch {
-    // 存不下也不影响这次会话：内存里的状态照样生效
-  }
-  emit();
-}
-
-export function toggleFocusMode(): void {
-  setFocusMode(!focusMode);
-}
-
-export function subscribeFocusMode(listener: Listener): () => void {
-  listeners.add(listener);
-  return () => {
-    listeners.delete(listener);
-  };
-}
+// 专注题目模式已下线（v8 移除）：它把页面上的面板全收起来，
+// 但 PTA 改版后收起来的东西经常连题面一起没了，收益比不上风险。
+// 这里只保留面板开关、草稿、布局重置与聚焦计数。
 
 // 布局重置：双击插件图标 = 把位置与大小恢复默认。
 // 这是一个一次性的命令计数，只放内存——刷新后没有「待重置」这回事，

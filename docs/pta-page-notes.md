@@ -79,7 +79,7 @@
 - 同一题型做完后要切题型：点带「已答/总数」的分组链接会先落到该题型的列表页（地址里没有 `problemSetProblemId`），
   侧栏网格随后才换成新题型的。**地址变了不等于网格换好了**，要等网格里出现新题型的题目链接再点第一道未提交的题。
 
-## 1.2 考试页的整块结构（专注题目模式用）
+## 1.2 考试页的整块结构
 
 2026-11 实测（`pintia.cn/problem-sets/<id>/exam/problems/type/7?problemSetProblemId=<id>`），
 从题面往上数，页面是这样套的（类名带哈希后缀的会随版本变，别写死）：
@@ -107,13 +107,12 @@ body
                 └ div.sticky.bottom-0.z-10…              ← 「View last submission」浮条
 ```
 
-**专注题目模式**（`src/content/focus-mode.ts`）就是照这张图收的：
+这张图是排查「哪个面板属于谁」的底稿：作答区增强的浮层按它算坐标，提交记录页的表格也挂在
+同一套外壳里。**专注题目模式已在 v8 移除**（它照这张图把无关面板全收起来，但 PTA 改版后经常
+连题面一起收没了，收益比不上风险）；图本身留着，定位题面 / 分栏区仍然靠它。
 
-- 题面用 `.rendered-markdown` 找；找不到再按小标题找（跟 `read_problem` 同一套思路）；
-- 题面与**可写**的 `.cm-content` 的最近共同祖先就是分栏区，分栏区里另一个子节点就是作答区，收起来；
-- 从分栏区往上，每一层不在题面这条路上的兄弟都收起来——顶部标题栏、图标栏、题目列表侧栏、「Toggle Sidebar」条、顶部条、底部浮条就是这么没的；
-- 收起用「加 `data-pta-focus-hidden` 属性 + 挂一张样式表」，不碰页面自己的样式，关掉就把属性摘掉；
-- 换题是前端路由，DOM 会重渲染，所以要盯着 DOM 变化重新收一遍。
+另外记一笔：**题面的 `.rendered-markdown` 是「可写编辑器之外」最稳的锚点**，
+`read_problem`、缩进线与折线图的插入位置都基于同类结构判断，别写死哈希类名。
 
 ## 2. 定位作答区（编辑器）
 
@@ -250,6 +249,49 @@ PTA 的 `onpaste` 是平台防抄袭控制。插件的做法（`src/content/past
 - 抢不过页面时用 `Ctrl+M` 兜底（PTA 没占用这个键）。
 - 右键 / 中键粘贴走 `paste` 事件，同样接管。
 - **只在焦点落在可写作答区时接管**：`editableTarget` 先看是不是 `.cm-content`，否则只在 `pintia.cn` 上认 `contenteditable`；只读编辑器（`aria-readonly` / `contenteditable="false"`）不接管，所以别的网站、别的输入框照常。
+
+## 6.1 提交记录（运行时间折线图用）
+
+2026-11 实测：`/problem-sets/<id>/exam/submissions` 是**独立页**（不在 `/problems/` 下），
+表头是英文，提交列表就是标准 `table`：
+
+```
+Submit At | Status | Score | Problem | Compiler | Memory Usage | Time Usage | Submitter | Detail
+2026/11/18 21:25:08 | Accepted | 20 | 7-30 | C++ (g++) | 564 KB | 2 ms | 用户5552 | View
+```
+
+- 时间列是 `Time Usage`（**不是**「运行时间」），值形如 `2 ms` / `0.012 s`；
+- 内存列是 `564 KB`，单位认错就会把内存当时间画；
+- 行是「新的在上面」，画折线图前要反过来；
+- 题目页里点「Submission list」是另一套弹层，没有这张表 —— 折线图以独立页为准。
+
+解析在 `src/shared/submission-runtime.ts`（纯逻辑，有单测），找表与画图在
+`src/content/submission-chart.ts`。
+
+## 6.2 浮层截图：别用 CDP 的页面截图
+
+`Page.captureScreenshot`（Playwright 的 `page.screenshot`、CDP 直连都是它）**不会合成**
+`#pta-assist-editor-layer` 里动态创建的那些节点：悬停注释、代码提示下拉框在
+CDP 截图里全是空的，但 DOM 上 display / visibility / opacity / 尺寸全都正常。
+2026-11 排查时差点把它当成渲染 bug —— 用**真实窗口截图**（X11 抓窗口 / `computer.screenshot`）
+一看，提示框好端端地画在那里。
+
+结论：验证浮层「到底画没画」一律用真实窗口截图；CDP 页面截图只能用来看页面主体和
+Shadow DOM 里的面板。写自动化断言时看 DOM（display/位置/文本），别指望截图。
+
+## 6.3 真机验证：改了代码要先换掉缓存的 service worker
+
+MV3 的 service worker 脚本由浏览器**按扩展版本缓存**：同样 `manifest.version` 下改了
+`background.js`（包括注入用的 `EDITOR_AGENT_SOURCE` 字符串），重启浏览器也还是跑旧脚本。
+症状是「改了注入到页面的脚本，页面上一点变化都没有」，非常像代码没生效。
+
+验证时二选一：
+
+- 关掉浏览器后删 `testDir/browser-data-dir/Default/Service Worker`，再启动；
+- 或者 `chrome://extensions` 里点该扩展的「重新加载」（然后**再刷新页面**，
+  否则页面上还是旧 content script）。
+
+内容脚本（`content.js`）改动同样要刷新页面才生效。
 
 ## 7. 坑位清单
 

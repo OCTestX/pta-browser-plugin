@@ -74,7 +74,13 @@ check('README 写的是最近 8 份', readme.includes('最近 8 份'));
 
 check('更新检查缓存 1 小时（代码）', backgroundSettings.includes('CACHE_TTL = 1000 * 60 * 60'));
 check('README 写的是 1 小时内缓存一次', readme.includes('1 小时内缓存一次'));
-check('版本号解析与比较放在 shared（代码）', read('src/shared/update-check.ts').includes('export function isNewerVersion'));
+check('发版次数解析与比较放在 shared（代码）', read('src/shared/update-check.ts').includes('export function hasNewerRelease'));
+check(
+  '清单里带发版次数（更新检测按它比）',
+  typeof manifest.release_count === 'number' && manifest.release_count > 0,
+  manifest.release_count,
+);
+check('README 说明按发版次数比对', readme.includes('按发版次数'));
 check('background 不再自带一份版本号解析（代码）', !backgroundSettings.includes('parseSemver'));
 check(
   '更新检查打的是真实仓库地址（代码）',
@@ -268,9 +274,17 @@ check('括号上色同时加粗（代码）', agentSource.includes("fontWeight =
 check('按子节点逐字符累加下标（代码）', agentSource.includes('line.childNodes') && !agentSource.includes('for (const span of line.querySelectorAll(\'span\'))'));
 check('监听编辑器 DOM 变动同帧补色（代码）', agentSource.includes('paintObserver') && agentSource.includes('characterData: true'));
 check('适配笔记记录了 CM6 清内联样式这件事', notes.includes('CM6 会清掉我们写的内联样式'));
-check('只有 error 画波浪线（代码）', agentSource.includes("if (box.severity !== 'error') continue;"));
+check('error 画波浪线、warning 画虚线（代码）', agentSource.includes("if (diag.severity !== 'error' && diag.severity !== 'warning') continue;"));
+check('波浪线坐标用编辑器矩形换算（代码）', agentSource.includes('- editorRect.left') && agentSource.includes('- editorRect.top'));
+const squiggleBody = agentSource.slice(agentSource.indexOf('const renderSquiggles ='), agentSource.indexOf('const renderIndentGuides ='));
+check('坐标变量不被诊断遮蔽（代码）', squiggleBody.includes('for (const diag of state.boxes)') && !squiggleBody.includes('box.from'));
+check('等 CodeMirror 量完再重画（代码）', agentSource.includes('scheduleMeasureRepaint'));
+check('警告用虚线区分（代码）', agentSource.includes('1px dashed'));
+check('缺头文件提示 Alt+Enter（代码）', agentSource.includes('Alt+Enter 一键导入'));
+check('折叠槽被隐藏（代码）', agentSource.includes('cm-foldGutter{display:none'));
 check('行尾报错往回退到非空白字符（代码）', read('src/background/compile.ts').includes("/[\\s]/.test(source[start])"));
-check('README 写明只有 error 画波浪线', readme.includes('只有 error 画波浪线'));
+check('README 写明警告用虚线画', readme.includes('警告是琥珀色虚线'));
+check('README 记录了一键导入', readme.includes('Alt+Enter'));
 check('README 记录了运算符补空格规则', readme.includes('`7*2` → `7 * 2`'));
 check('README 记录了无花括号控制体缩进', readme.includes('无花括号的 `if`/`for`/`while` 体缩进一层'));
 check('适配笔记记录了展开 Test Case 后的第二个编辑器', notes.includes('测试输入框'));

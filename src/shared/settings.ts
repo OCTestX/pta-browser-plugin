@@ -3,6 +3,9 @@
 import { modelSupportsVision } from './model-capabilities.ts';
 import type { VlmMode } from './model-capabilities.ts';
 
+/** 接口协议：OpenAI 的两种（Claude 以后再说） */
+export type ApiProtocol = 'chat' | 'responses';
+
 export interface Settings {
   apiKey: string;
   baseURL: string;
@@ -20,13 +23,41 @@ export interface Settings {
    * 查不到就不写这一项，content script 会退回按模型名估算。
    */
   contextWindow?: number;
+  /** 用户自己加的接口地址（除内置 preset 之外的），设置页「＋」加进来的都在这 */
+  providers: ProviderPreset[];
+  /** 当前生效的接口协议：Chat Completions 还是 Responses */
+  protocol: ApiProtocol;
+  /** 连字符：输入 >= 自动变成 ⩾（默认关） */
+  hyphenate: boolean;
+  /** 缩进线：按缩进层级画竖线（默认关） */
+  indentGuides: boolean;
+  /** 代码提示：C/C++ 自动补全 + 自动 import（默认关） */
+  codeHints: boolean;
+  /** 页面与面板配色（off 表示保持原样） */
+  theme: PtaTheme;
 }
+
+/** 面板与 PTA 站点的配色方案；off 表示不重染 */
+export type PtaTheme = 'off' | 'green' | 'red' | 'pink' | 'yellow';
+
+/**
+ * 主题配色表：accent 是主强调色，accentSoft 是它的浅底（选中态、标签底色）。
+ * 面板直接改 CSS 变量，站点主题按同一组颜色生成一张样式表。
+ */
+export const PTA_THEMES: Record<Exclude<PtaTheme, 'off'>, { name: string; accent: string; accentSoft: string }> = {
+  green: { name: '绿色', accent: '#2f9e44', accentSoft: '#e6f7ef' },
+  red: { name: '红色', accent: '#d64545', accentSoft: '#fdeeee' },
+  pink: { name: '粉色', accent: '#d6336c', accentSoft: '#fce7f3' },
+  yellow: { name: '黄色', accent: '#f08c00', accentSoft: '#fff3cd' },
+};
 
 /** 内置的模型提供商：设置页点一下就把接口地址填上，省得手打 */
 export interface ProviderPreset {
   id: string;
   label: string;
   baseURL: string;
+  /** 这家默认用哪种协议；不写按 chat 算 */
+  protocol?: ApiProtocol;
 }
 
 /**
@@ -52,6 +83,18 @@ export interface SettingsView {
    * 没有这一项说明没查到，content script 会按模型名估算并在 tooltip 里说明。
    */
   contextWindow?: number;
+  /** 用户自己加的接口地址（没有敏感信息，可以透出） */
+  providers?: ProviderPreset[];
+  /** 当前生效的接口协议 */
+  protocol?: ApiProtocol;
+  /** 连字符开关 */
+  hyphenate?: boolean;
+  /** 缩进线开关 */
+  indentGuides?: boolean;
+  /** 代码提示开关 */
+  codeHints?: boolean;
+  /** 配色主题 */
+  theme?: PtaTheme;
 }
 
 export const DEFAULT_SETTINGS: Settings = {
@@ -62,6 +105,16 @@ export const DEFAULT_SETTINGS: Settings = {
   vlmMode: 'auto',
   // 默认不强制：还是用插件内置的编译器（PTA 自己的运行环境留给没有内置编译器的语言）
   forcePtaRun: false,
+  // 默认没有自定义提供商：内置的两家已经够用
+  providers: [],
+  // 默认 Chat Completions：兼容面最广
+  protocol: 'chat',
+  // 下面三个页面增强默认全关：用户要手动在设置里打开，免得突然改掉输入习惯
+  hyphenate: false,
+  indentGuides: false,
+  codeHints: false,
+  // 默认不改配色
+  theme: 'off',
 };
 
 /** 设置页「教程」按钮跳到的地址（作者自己的站点，讲清楚怎么配 Key 怎么用） */

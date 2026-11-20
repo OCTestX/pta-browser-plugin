@@ -26,6 +26,24 @@ check(
 );
 
 // 用户报过的两个例子：无花括号的控制体要缩进一层；乘号两侧要空格
+// 语句后面直接跟收尾花括号：必须换行，否则缩进与缩进线全歪
+const inlineBrace = formatCode('if(a==b) {\n    printf("i");} else {\n    x=1;\n}', 'c');
+check(
+  '整理代码：语句后的 } 自动换行',
+  inlineBrace === 'if(a == b) {\n    printf("i");\n} else {\n    x = 1;\n}',
+  inlineBrace,
+);
+check(
+  '整理代码：初始化列表里的 } 不拆行',
+  formatCode('int a[] = {1,2};', 'c') === 'int a[] = {1, 2};',
+  formatCode('int a[] = {1,2};', 'c'),
+);
+check(
+  '整理代码：字符串里的 ;} 不拆行',
+  formatCode('printf("a;}b");', 'c') === 'printf("a;}b");',
+  formatCode('printf("a;}b");', 'c'),
+);
+
 const ifBody = formatCode('if(n==1)\nreturn 1;', 'c');
 check(
   '无花括号的 if 体缩进一层，== 两侧补空格',

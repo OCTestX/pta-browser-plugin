@@ -488,8 +488,50 @@ function spaceTokens(tokens: Token[], python: boolean): string {
  *   · case/default 标签少一层（Java 模式只认带冒号的 default，免得误伤接口默认方法）
  *   · 预处理指令顶格；反斜杠续行保持顶格
  */
+/**
+ * 把「语句后面直接跟收尾花括号」的情况改成换行：
+ *
+ *   printf("i");} else {        →    printf("i");
+ *                                   } else {
+ *
+ * 只在 `}` 前面紧跟着 `;`（中间允许空格）时才拆：那一定是「一条语句结束了，
+ * 块收尾」；`int a[] = {1, 2};` 这种初始化列表里的 `}` 前面不是分号，不会被拆。
+ * 字符串和注释里的 `;}` 也不会误拆——判断用的是剥掉字面量之后的代码。
+ */
+export function splitBeforeClosingBrace(lines: string[]): string[] {
+  const out: string[] = [];
+  let inBlock = false;
+  for (const raw of lines) {
+    let rest = raw;
+    let guard = 0;
+    // 一行里可能有不止一处：`a();}b();}` 这种也拆干净
+    while (guard < 50) {
+      guard += 1;
+      const stripped = stripLiteralsAndComments(rest, inBlock);
+      const code = stripped.code;
+      let cut = -1;
+      for (let i = 0; i < code.length; i += 1) {
+        if (code[i] !== '}') continue;
+        // 往前跳过空格，看是不是分号收尾
+        let j = i - 1;
+        while (j >= 0 && (code[j] === ' ' || code[j] === '\t')) j -= 1;
+        if (j >= 0 && code[j] === ';') { cut = i; break; }
+      }
+      if (cut <= 0) { inBlock = stripped.inBlockComment; break; }
+      const head = rest.slice(0, cut).replace(/[ \t]+$/, '');
+      if (head.trim() === '') { inBlock = stripped.inBlockComment; break; }
+      out.push(head);
+      rest = rest.slice(cut);
+    }
+    out.push(rest.replace(/[ \t]+$/, ''));
+  }
+  return out;
+}
+
 export function reindentByBraces(code: string, options: { java?: boolean } = {}): string {
-  const lines = code.replace(/\r\n?/g, '\n').split('\n');
+  // 先拆「语句 ; 紧跟 }」的行：不拆的话 `printf("i");}` 会被当成一行收尾，
+  // 后面的缩进和缩进线全都跟着错
+  const lines = splitBeforeClosingBrace(code.replace(/\r\n?/g, '\n').split('\n'));
   const out: string[] = [];
   let depth = 0;
   let paren = 0;

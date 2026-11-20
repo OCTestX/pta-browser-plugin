@@ -5,15 +5,10 @@ import { katexStyles } from './katexStyles';
 import { runPageTool } from './pageTools';
 import { installPasteBridge } from './paste';
 import { startEditorAssist } from './editor-assist';
-import { applyFocusMode, clearFocusMode } from './focus-mode';
+import { startSubmissionChart } from './submission-chart';
+import { startSiteTheme } from './site-theme';
 import { installPanelShortcuts } from './shortcuts';
-import {
-  initState,
-  isFocusMode,
-  requestLayoutReset,
-  subscribeFocusMode,
-  togglePanel,
-} from './panelStore';
+import { initState, requestLayoutReset, togglePanel } from './panelStore';
 import { ext } from '../shared/browser';
 import { isResetPanelLayoutMessage, isRunToolRequest, isTogglePanelMessage } from '../shared/messages';
 import diffStyles from '../shared/diff.css?inline';
@@ -88,21 +83,16 @@ function bootPanel(): void {
   startEditorAssist();
   // Alt+G 打开悬浮窗并聚焦输入框，Esc 关闭悬浮窗
   installPanelShortcuts();
-  // 专注题目模式：管的是页面，跟悬浮窗开不开没关系（悬浮窗关着，页面也该是专注的样子）
-  syncFocusMode();
-  subscribeFocusMode(syncFocusMode);
+  // 提交列表顶部的运行时间折线图（不在题目页就什么都不做）
+  startSubmissionChart();
+  // 站点配色：跟面板共用同一份主题设置
+  startSiteTheme();
 
   if (document.readyState === 'loading') {
     document.addEventListener('DOMContentLoaded', mount, { once: true });
   } else {
     mount();
   }
-}
-
-/** 专注题目模式：开着就把页面上的无关面板收起来，只留题面 */
-function syncFocusMode(): void {
-  if (isFocusMode()) applyFocusMode();
-  else clearFocusMode();
 }
 
 start();

@@ -13,6 +13,7 @@ import type {
   ToolRunResponse,
 } from '../shared/messages';
 import { isCompleteBaseURL, normalizeBaseURL } from '../shared/settings';
+import { decodeSettingsBackup, encodeSettingsBackup } from '../shared/backup';
 import { createId, type ApiMessage } from '../shared/types';
 import { runAgent, type ToolOutcome } from './agent';
 import { batchActive, batchSnapshot, finishBatch } from './batch-progress';
@@ -27,10 +28,98 @@ import { EDITOR_ASSIST_VERSION, type EditorAssistInstallArgs } from '../shared/e
 import { C_LIBRARY_DOCS } from '../shared/c-library-docs';
 import { CPP_LIBRARY_DOCS } from '../shared/cpp-library-docs';
 import { checkCode } from './compile';
+import { completionsFor, constantEntries } from '../shared/code-hints';
 import { checkForUpdates, loadSettings, saveSettings, toSettingsView } from './settings';
 
 const TOGGLE_PANEL: BackgroundEvent = { type: 'toggle-panel' };
 const RESET_PANEL_LAYOUT: BackgroundEvent = { type: 'panel/reset-layout' };
+
+/**
+ * 首次安装时自动打开欢迎页：那里有用法说明、仓库地址，以及「粘贴备份导入设置」。
+ * 更新时不打扰（只在 reason === 'install' 时开）。
+ */
+const WELCOME_FLAG = 'pta-assistant-welcome-shown';
+let welcomeTask: Promise<void> | null = null;
+
+/**
+ * 打开欢迎页；开过就不再开。
+ *
+ * Firefox 通过 about:debugging「临时载入」时 onInstalled 不一定触发（Chrome 一定会），
+ * 所以除了 onInstalled，后台一启动也走一次这里——用存储里的标记保证只开一次。
+ */
+async function openWelcomeOnce(foreground: boolean): Promise<void> {
+  try {
+    const stored = await ext.storage.local.get(WELCOME_FLAG);
+    if (stored[WELCOME_FLAG]) return;
+    await ext.tabs.create({ url: ext.runtime.getURL('welcome.html'), active: foreground });
+    await ext.storage.local.set({ [WELCOME_FLAG]: true });
+  } catch (error) {
+    // 打不开欢迎页不能连带后台起不来；下次启动还会再试
+  }
+}
+
+/** 首次安装/首次启动都走这里：靠存储里的标记保证一辈子只开一次 */
+function ensureWelcome(foreground = true): Promise<void> {
+  if (!welcomeTask) welcomeTask = openWelcomeOnce(foreground);
+  return welcomeTask;
+}
+
+ext.runtime.onInstalled?.addListener?.((details) => {
+  if (details.reason !== 'install') return;
+  void ensureWelcome(true);
+});
+
+/**
+ * Firefox 的重点：从 `extensions/` 目录旁加载的扩展，浏览器**不会**派发 onInstalled，
+ * 而且非持久化后台页要等一个事件才会醒——所以只挂 onInstalled 时，用户装完什么都不会发生。
+ * onStartup 在每次启动浏览器时都会派发，正好把那一次补上。
+ */
+ext.runtime.onStartup?.addListener?.(() => {
+  void ensureWelcome(true);
+});
+
+// 兜底：事件页被别的事件唤醒时（比如用户一打开 PTA，内容脚本问设置）也补一次，
+// 这时不抢焦点，开在后台标签页里
+void ensureWelcome(false);
+
+/**
+ * 自定义接口地址的访问权限。
+ *
+ * manifest 里只放行了内置两家的域名；用户自己加的地址要先拿到它的 origin 权限，
+ * 后台才发得出请求。已经授权过就直接过（contains 不需要用户手势），
+ * 没授权就现问一次——这一步必须在用户手势链里（点「添加」/「保存」时），
+ * 否则 Chrome 会直接拒掉。
+ */
+async function ensureHostPermission(baseURL: string): Promise<boolean> {
+  let origin = '';
+  let protocol = '';
+  try {
+    const parsed = new URL(baseURL);
+    origin = parsed.origin;
+    protocol = parsed.protocol;
+  } catch {
+    return false;
+  }
+  if (protocol !== 'http:' && protocol !== 'https:') return false;
+
+  // 没有 permissions API（很老的浏览器、或者跑在单测的假 chrome 里）：
+  // 没法问也没法申请，直接放行——真浏览器一定有这个 API。
+  const permissions = ext.permissions as typeof chrome.permissions | undefined;
+  if (!permissions || typeof permissions.contains !== 'function') return true;
+
+  const origins = [`${origin}/*`];
+  try {
+    if (await permissions.contains({ origins })) return true;
+  } catch {
+    /* contains 不受支持时下面再试 request */
+  }
+  try {
+    if (typeof permissions.request !== 'function') return true;
+    return await permissions.request({ origins });
+  } catch {
+    return false;
+  }
+}
 
 /** requestId -> AbortController，用于「停止生成」 */
 const runningRequests = new Map<string, AbortController>();
@@ -166,12 +255,29 @@ ext.runtime.onMessage.addListener((message: unknown, sender, sendResponse) => {
           return;
         }
         const token = createId();
+        // 页面侧的功能开关来自设置：四个新增强默认关，用户打开才装监听器
+        const current = await loadSettings();
         const args: EditorAssistInstallArgs = {
           token,
           version: EDITOR_ASSIST_VERSION,
-          docs: { ...C_LIBRARY_DOCS, ...CPP_LIBRARY_DOCS },
-          // 四个增强全开：整理代码、彩虹括号、实时语法检查、标准库函数注释
-          features: { format: true, rainbow: true, check: true, hover: true },
+          // 按语言分开给：C 的文件里不该出现 C++ 的名字（用户报过 C 里提示 std::map）
+          docs: { c: C_LIBRARY_DOCS, cpp: CPP_LIBRARY_DOCS },
+          features: {
+            format: true,
+            rainbow: true,
+            check: true,
+            hover: true,
+            hyphenate: current.hyphenate,
+            indentGuides: current.indentGuides,
+            codeHints: current.codeHints,
+          },
+          completions: {
+            c: completionsFor('c'),
+            cpp: completionsFor('cpp'),
+            // 各头文件里的常量：选中后会自动补上对应的 #include
+            constants: constantEntries(),
+          },
+          fontUrl: ext.runtime.getURL('fonts/JetBrainsMono-Regular.woff2'),
         };
         const injected = await injectScript(tabId, EDITOR_AGENT_SOURCE, args);
         // 页面里已经装过时它会把**自己那份** token 交回来，两边必须用同一个
@@ -206,6 +312,20 @@ ext.runtime.onMessage.addListener((message: unknown, sender, sendResponse) => {
       case 'settings/save':
         sendResponse(toSettingsView(await saveSettings(message.patch)));
         return;
+      case 'settings/backup': {
+        sendResponse({ ok: true, hex: encodeSettingsBackup(await loadSettings()) });
+        return;
+      }
+      case 'settings/import': {
+        const imported = decodeSettingsBackup(message.hex);
+        if (!imported) {
+          sendResponse({ ok: false, message: '备份内容无效，请确认整串都抄全了' });
+          return;
+        }
+        await saveSettings(imported);
+        sendResponse({ ok: true });
+        return;
+      }
       case 'ui/open-url': {
         // 设置页的「教程」按钮：只放行 http(s)，避免变成任意开页面的入口
         if (!/^https?:\/\//.test(message.url)) {
@@ -409,6 +529,9 @@ async function listModels(baseURL: string, draftApiKey?: string): Promise<Models
   if (!isCompleteBaseURL(base)) {
     return { ok: false, models: [], message: '接口地址还没填完整（要写成 https://…/v1 这样的完整地址）' };
   }
+  if (!(await ensureHostPermission(base))) {
+    return { ok: false, models: [], message: '需要授权该接口地址的访问权限（弹窗里点允许后重试）' };
+  }
 
   try {
     const response = await fetch(`${base}/models`, {
@@ -450,6 +573,10 @@ async function startChat(
   }
   if (runningRequests.has(requestId)) {
     return { ok: false, message: '这个消息已经在生成中了' };
+  }
+  // 自己加的接口地址要先拿到该 origin 的权限，否则请求会被浏览器拦掉
+  if (!(await ensureHostPermission(settings.baseURL))) {
+    return { ok: false, message: '需要授权该接口地址的访问权限（设置页点一下保存，弹窗里点允许）' };
   }
 
   // 同一个页面只保留一轮：面板点了「新会话」再发消息时，上一轮即使还没收完尾也强制停掉，

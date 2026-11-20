@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from 'react';
 import { ext } from '../shared/browser';
-import { pickContextWindow } from '../shared/settings';
+import { pickContextWindow, PTA_THEMES } from '../shared/settings';
 import { Composer } from './components/Composer';
 import { BatchPanel } from './components/BatchPanel';
 import { MessageList } from './components/MessageList';
@@ -14,17 +14,14 @@ import { buildRedoCommand } from '../shared/batch';
 import {
   composerFocusRequest,
   getDraft,
-  isFocusMode,
   isPanelOpen,
   layoutResetCount,
   setDraft,
   setPanelOpen,
   subscribeComposerFocus,
   subscribeDraft,
-  subscribeFocusMode,
   subscribeLayoutReset,
   subscribePanel,
-  toggleFocusMode,
 } from './panelStore';
 
 type View = 'chat' | 'settings';
@@ -38,8 +35,6 @@ export function App() {
   const draft = useSyncExternalStore(subscribeDraft, getDraft, getDraft);
   // Alt+G 的聚焦请求：面板打开后由 Composer 消费
   const focusSignal = useSyncExternalStore(subscribeComposerFocus, composerFocusRequest, composerFocusRequest);
-  // 专注题目模式：开着时把页面上与题目无关的面板收起来（页面上的事，浮窗照常）
-  const focusMode = useSyncExternalStore(subscribeFocusMode, isFocusMode, isFocusMode);
   const [view, setView] = useState<View>('chat');
   const settings = useSettings();
   const chat = useChat(settings.hasApiKey);
@@ -50,6 +45,22 @@ export function App() {
   useEffect(() => {
     if (layoutReset > 0) panel.reset();
   }, [layoutReset, panel.reset]);
+
+  // 配色主题：改面板上的两个 CSS 变量就够了，里面所有东西都引用它们。
+  // 选「默认」时把变量摘掉，回到样式表里的蓝。
+  const theme = settings.view?.theme ?? 'off';
+  useEffect(() => {
+    const el = panelRef.current;
+    if (!el) return;
+    const palette = theme === 'off' ? null : PTA_THEMES[theme];
+    if (!palette) {
+      el.style.removeProperty('--pta-accent');
+      el.style.removeProperty('--pta-accent-soft');
+      return;
+    }
+    el.style.setProperty('--pta-accent', palette.accent);
+    el.style.setProperty('--pta-accent-soft', palette.accentSoft);
+  }, [theme, open]);
 
   // diff 卡片的「全屏查看」：content script 没有 chrome.tabs，让后台存一份并开标签页
   const openDiffFullscreen = useCallback(
@@ -125,6 +136,9 @@ export function App() {
     <div
       className="panel"
       ref={panelRef}
+      // 整块面板都能拖：标题栏、聊天区/设置页的空白、四周内边距都算，
+      // 按钮/输入框/气泡/工具卡片这些会被 hook 里的规则挡掉
+      onPointerDown={panel.startDrag}
       style={
         panel.layout
           ? {
@@ -140,7 +154,6 @@ export function App() {
     >
       <header
         className="panel__header"
-        onPointerDown={panel.startDrag}
         onDoubleClick={panel.reset}
         title="拖动可以移动面板，拉右下角可以改大小，双击这里（或双击插件图标）恢复默认"
       >
@@ -158,14 +171,10 @@ export function App() {
             {/* 当前用哪个模型：等一次长回答之前，用户得知道自己在跟谁说话。
                 名字可能很长，挤成一行 + 省略号，完整名字放在 title 里。 */}
             {settings.view?.model && (
-              <button
-                type="button"
-                className="panel__model"
-                title={`当前模型：${settings.view.model}\n点一下去设置里换`}
-                onClick={() => setView('settings')}
-              >
+              // 只展示、不响应点击：换模型统一走设置页，顶栏这里点一下会误触
+              <span className="panel__model" title={`当前模型：${settings.view.model}`}>
                 {settings.view.model}
-              </button>
+              </span>
             )}
             <ContextRing
               usage={chat.usage}
@@ -257,8 +266,6 @@ export function App() {
             streaming={chat.streaming}
             focusSignal={focusSignal}
             onReset={chat.reset}
-            focusMode={focusMode}
-            onToggleFocus={toggleFocusMode}
             onSendText={(text) => {
               setDraft('');
               void chat.send(text);

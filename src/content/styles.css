@@ -119,6 +119,15 @@
   background: linear-gradient(180deg, var(--pta-surface-raised), var(--pta-surface-alt));
 }
 
+/* 头部右侧的按钮组：靠 margin-left:auto 顶到最右边，关闭按钮才真的在右上角 */
+.panel__actions {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: 6px;
+  margin-left: auto;
+}
+
 .panel__title {
   font-size: 15px;
   font-weight: 600;
@@ -133,43 +142,17 @@
   font-size: 11px;
 }
 
-/* 当前模型：模型名可能很长，挤成一行 + 省略号，点一下进设置换模型 */
+/* 当前模型：只展示（不可点），太长就省略号；换模型统一走设置页 */
 .panel__model {
+  display: inline-block;
   max-width: 96px;
   overflow: hidden;
-  padding: 1px 0;
-  border: 0;
-  background: none;
   color: var(--pta-text-muted);
   font: inherit;
   font-size: 11px;
-  text-align: left;
   text-overflow: ellipsis;
   white-space: nowrap;
-  cursor: pointer;
-}
-
-.panel__model:hover {
-  color: var(--pta-accent);
-  text-decoration: underline;
-}
-
-.panel__usage {
-  flex: 1;
-  min-width: 0;
-  overflow: hidden;
-  color: var(--pta-text-muted);
-  font-size: 11px;
-  font-variant-numeric: tabular-nums;
-  text-align: right;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.panel__actions {
-  display: flex;
-  gap: 2px;
-  margin-left: auto;
+  user-select: none;
 }
 
 /* 上下文填充进度的小圆环：token 明细藏在 title 里，鼠标停上去才看得到 */
@@ -222,6 +205,10 @@
 }
 
 .panel__close {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  box-sizing: border-box;
   width: 24px;
   height: 24px;
   padding: 0;
@@ -240,6 +227,10 @@
 }
 
 .panel__maximize {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  box-sizing: border-box;
   width: 24px;
   height: 24px;
   padding: 0;
@@ -258,6 +249,10 @@
 }
 
 .panel__back {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  box-sizing: border-box;
   width: 24px;
   height: 24px;
   padding: 0;
@@ -306,6 +301,14 @@
   font-size: 12px;
 }
 
+/* 这一轮用了多久：跟在「助手」后面，浅一点，不抢内容 */
+.bubble__time {
+  margin-left: 6px;
+  color: var(--pta-text-muted);
+  font-size: 11px;
+  opacity: 0.85;
+}
+
 .bubble__content {
   padding: 9px 13px;
   border: 1px solid var(--pta-border);
@@ -333,7 +336,6 @@
 }
 
 .bubble--system .bubble__content {
-  margin-right: 32px;
   border-style: dashed;
   background: transparent;
   color: var(--pta-text-muted);
@@ -724,10 +726,12 @@
 
 /* ---------- 内置模型提供商 + 模型下拉框 ---------- */
 
+/* 整块竖着排：标题在上面、列表在中间、注释在下面 */
 .providers {
   display: flex;
-  align-items: center;
-  gap: 8px;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 6px;
   margin-bottom: 10px;
 }
 
@@ -763,6 +767,198 @@
   border-color: var(--pta-accent);
   background: var(--pta-accent);
   color: #ffffff;
+}
+
+/* 提供商表单：名称+协议一行，下面接口地址 / Key / 模型各一行 */
+.provider-form {
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+  margin-top: 6px;
+}
+
+.provider-form .field {
+  margin-bottom: 10px;
+}
+
+.provider-form__row {
+  display: flex;
+  gap: 8px;
+}
+
+.provider-form__row .field {
+  flex: 1 1 0;
+  min-width: 0;
+}
+
+.provider-form__row .field + .field {
+  flex: 0 0 46%;
+}
+
+.provider-form__actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+
+.provider-form__actions .field__hint {
+  flex: 1 1 180px;
+  margin-top: 0;
+}
+
+/* select 跟输入框长得一样 */
+select.field__input {
+  appearance: none;
+  padding-right: 26px;
+  background-image: linear-gradient(45deg, transparent 50%, var(--pta-text-muted) 50%),
+    linear-gradient(135deg, var(--pta-text-muted) 50%, transparent 50%);
+  background-position: calc(100% - 15px) 50%, calc(100% - 10px) 50%;
+  background-size: 5px 5px, 5px 5px;
+  background-repeat: no-repeat;
+  cursor: pointer;
+}
+
+/* 用户自己加的提供商：名字和删除键拼在同一个圆角框里（别用 .provider：那个类专指内置的，测试按它数个数） */
+.custom-provider {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 0 4px 0 0;
+  border: 1px solid var(--pta-border);
+  border-radius: 999px;
+  background: transparent;
+  color: var(--pta-text);
+  font: inherit;
+  font-size: 12px;
+  cursor: default;
+}
+
+.custom-provider:hover {
+  border-color: var(--pta-accent);
+}
+
+.custom-provider--on {
+  background: var(--pta-accent);
+  border-color: var(--pta-accent);
+  color: #ffffff;
+}
+
+.custom-provider__pick {
+  padding: 4px 6px 4px 10px;
+  border: none;
+  background: none;
+  color: inherit;
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.custom-provider--on .custom-provider__pick,
+.custom-provider--on .custom-provider__remove {
+  color: #ffffff;
+}
+
+.custom-provider__remove {
+  padding: 0 4px;
+  border: none;
+  background: none;
+  color: var(--pta-text-muted);
+  font-size: 13px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.custom-provider__remove:hover {
+  color: var(--pta-danger);
+}
+
+.add-provider {
+  padding: 4px 12px;
+  border: 1px solid var(--pta-border);
+  border-radius: 999px;
+  background: transparent;
+  color: var(--pta-text);
+  font: inherit;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.add-provider:hover {
+  border-color: var(--pta-accent);
+  color: var(--pta-accent);
+}
+
+/* 「＋」展开的两个输入框 */
+.provider-add {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 8px;
+}
+
+.provider-add .field__input {
+  flex: 1 1 180px;
+}
+
+/* ---------- 作答区增强开关 ---------- */
+
+.switches {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.switch {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 12px;
+  border: 1px solid var(--pta-border);
+  border-radius: 999px;
+  background: transparent;
+  color: var(--pta-text);
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.switch:hover {
+  border-color: var(--pta-accent);
+  color: var(--pta-accent);
+}
+
+.switch__dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--pta-border-strong);
+}
+
+.switch--on {
+  border-color: var(--pta-accent);
+  background: var(--pta-accent);
+  color: #ffffff;
+}
+
+.switch--on .switch__dot {
+  background: #ffffff;
+}
+
+/* ---------- 设置备份 ---------- */
+
+.settings__backup {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+
+.backup__hex {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 11px;
+  margin-bottom: 8px;
 }
 
 /* ---------- 分段选择器（视觉模式这类几选一的设置） ---------- */
@@ -939,32 +1135,6 @@
 .composer__hint {
   color: var(--pta-text-muted);
   font-size: 12px;
-}
-
-/* 左下角：专注题目模式开关 */
-.composer__focus {
-  flex: none;
-  padding: 3px 10px;
-  border: 1px solid var(--pta-border);
-  border-radius: 999px;
-  background: transparent;
-  color: var(--pta-text-muted);
-  font: inherit;
-  font-size: 12px;
-  cursor: pointer;
-  white-space: nowrap;
-  transition: border-color 0.15s ease, color 0.15s ease, background 0.15s ease;
-}
-
-.composer__focus:hover {
-  border-color: var(--pta-accent);
-  color: var(--pta-accent);
-}
-
-.composer__focus--on {
-  border-color: var(--pta-accent);
-  background: var(--pta-accent-soft);
-  color: var(--pta-accent);
 }
 
 /* 右下角：发送 / 停止 */
@@ -1410,13 +1580,16 @@
   padding: 1px 8px;
   border-radius: 999px;
   background: var(--pta-accent-soft);
-  color: var(--pta-accent);
+  /* 主题色当文字压在主题色浅底上分不清（黄/绿主题尤其明显），文字用正文色，主题色只做描边 */
+  box-shadow: inset 0 0 0 1px var(--pta-accent);
+  color: var(--pta-text);
   font-size: 11px;
 }
 
 .batch__state--done {
   background: var(--pta-ok-soft);
-  color: var(--pta-ok);
+  box-shadow: inset 0 0 0 1px var(--pta-ok);
+  color: var(--pta-text);
 }
 
 .batch__elapsed {
@@ -1637,7 +1810,8 @@
 
 .batch__mark--now {
   background: var(--pta-accent-soft);
-  color: var(--pta-accent);
+  box-shadow: inset 0 0 0 1px var(--pta-accent);
+  color: var(--pta-text);
 }
 
 .batch__mark--todo {
@@ -1686,7 +1860,6 @@
 
   .panel__ring-fg,
   .composer__input,
-  .composer__focus,
   .composer__send,
   .batch__seg {
     transition: none;
@@ -1830,4 +2003,14 @@
 
 .md-code__copy:hover {
   color: var(--pta-accent);
+}
+
+/* 已选中项的 hover 必须保持白字：它们的底色就是强调色，
+   如果 hover 把字色也换成强调色，字和底就糊成一片（切主题后尤其明显） */
+.provider--on:hover,
+.segment__item--on:hover,
+.switch--on:hover,
+.custom-provider--on:hover .custom-provider__pick,
+.custom-provider--on:hover .custom-provider__remove {
+  color: #ffffff;
 }

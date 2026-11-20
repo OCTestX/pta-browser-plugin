@@ -106,6 +106,57 @@ const ADVICE_RULES: ReadonlyArray<{ readonly match: string; readonly advice: str
   { match: 'stray', advice: '代码里有无法识别的字符，检查是不是输入法打错了' },
 ];
 
+/** 常见类型对应的 printf / scanf 格式化符 */
+const TYPE_SPECIFIER: Readonly<Record<string, string>> = {
+  int: '%d',
+  'unsigned int': '%u',
+  long: '%ld',
+  'unsigned long': '%lu',
+  'long long': '%lld',
+  'unsigned long long': '%llu',
+  short: '%hd',
+  'unsigned short': '%hu',
+  float: '%f',
+  double: '%lf',
+  'long double': '%Lf',
+  char: '%c',
+  _Bool: '%d',
+};
+
+/** 把一个 C 类型名换算成它该用的格式化符（认不出来的返回空串） */
+function specifierForType(raw: string): string {
+  const type = String(raw ?? '').replace(/\bconst\b/g, '').replace(/\s+/g, ' ').trim();
+  if (type.endsWith('*')) {
+    const base = type.slice(0, -1).trim();
+    if (base === 'char') return '%s';
+    if (base === 'void') return '%p';
+    // scanf 要的是地址：`&x` 的类型是 `int *`，对应的格式化符跟 int 一样
+    return TYPE_SPECIFIER[base] ?? '';
+  }
+  return TYPE_SPECIFIER[type] ?? '';
+}
+
+/**
+ * 格式化符写错的专门提示。
+ *
+ * clang 的原话是
+ *   format specifies type 'double *' but the argument has type 'int *'
+ * ——英文、而且不告诉你**应该**写什么。这里换成「现在的 %lf 是给 double 的，
+ * 实参是 int，改成 %d」这种能直接照做的说法。
+ */
+export function formatSpecifierAdvice(message: string): string {
+  const match = /format specifies type '([^']*)' but the argument has type '([^']*)'/i.exec(String(message ?? ''));
+  if (!match) return '';
+  const wanted = specifierForType(match[1]);
+  const isScanf = /\*$/.test(match[2].trim());
+  let actual = specifierForType(match[2]);
+  // printf 输出 double 用 %f（%lf 在 printf 里也一样，但别教人写怪东西）
+  if (!isScanf && match[2].trim() === 'double') actual = '%f';
+  if (!wanted || !actual || wanted === actual) return '';
+  const note = isScanf ? '（scanf 读 double 用 %lf、读 float 用 %f）' : '';
+  return `格式化符对不上：现在是 ${wanted}（对应 ${match[1].trim()}），实参是 ${match[2].trim()}，应该改成 ${actual}${note}`;
+}
+
 /** 没匹配到具体规则时的兜底建议 */
 const DEFAULT_ADVICE = '按报错给出的行号列号找到那一处，对照上面的英文说明检查';
 
@@ -115,6 +166,9 @@ const DEFAULT_ADVICE = '按报错给出的行号列号找到那一处，对照�
  * 单独抽出来是因为页面上画波浪号和写建议是两条线：前者要位置，后者要内容。
  */
 export function adviceForMessage(message: string): string {
+  // 格式化符这类「能直接说出改法」的，优先给具体建议
+  const formatAdvice = formatSpecifierAdvice(message);
+  if (formatAdvice) return formatAdvice;
   const lower = message.toLowerCase();
   for (const rule of ADVICE_RULES) {
     if (lower.includes(rule.match)) return rule.advice;

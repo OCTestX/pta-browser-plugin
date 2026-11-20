@@ -20,12 +20,14 @@ import type { CFunctionDoc } from './c-library-docs';
 export const ASSIST_MESSAGE_KEY = '__ptaEditorAssist';
 
 /** 协议版本：页面脚本与 content script 对不上就重建 agent */
-export const EDITOR_ASSIST_VERSION = 1;
+export const EDITOR_ASSIST_VERSION = 6;
 
 /**
- * 功能开关。分两批上线：
+ * 功能开关。分几批上线：
  *   · v4.2 只开 format / rainbow；
- *   · v5.0 再打开 check（内置编译器实时检查）与 hover（标准库中文注释）。
+ *   · v5.0 再打开 check（内置编译器实时检查）与 hover（标准库中文注释）；
+ *   · v8 加四个页面增强（连字符 / 参数提示 / 缩进线 / 代码提示），默认全关，
+ *     用户在设置里打开才装监听器。
  * 关掉的功能，页面脚本连监听器都不装，不白费 CPU。
  */
 export interface EditorAssistFeatures {
@@ -33,15 +35,30 @@ export interface EditorAssistFeatures {
   rainbow: boolean;
   check: boolean;
   hover: boolean;
+  /** 输入 >= 自动变成 ⩾（斜等号 U+2A7E） */
+  hyphenate: boolean;
+  /** 按缩进层级画竖直引导线 */
+  indentGuides: boolean;
+  /** C/C++ 自动补全（含自动 #include） */
+  codeHints: boolean;
 }
 
 /** 注入 MAIN world 脚本时塞进 `__args` 的参数 */
 export interface EditorAssistInstallArgs {
   token: string;
   version: number;
-  /** 标准库函数中文说明表（页面脚本直接查，不必每次回来问） */
-  docs: Record<string, CFunctionDoc>;
+  /** 标准库函数中文说明表，按语言分开（C 的页面里不能查 C++ 的名字） */
+  docs: { c: Record<string, CFunctionDoc>; cpp: Record<string, CFunctionDoc> };
   features: EditorAssistFeatures;
+  /** 连字符合字字体的地址（扩展内的 web-accessible 资源） */
+  fontUrl?: string;
+  /** 代码提示的候选表（C 与 C++ 两份都在里面，页面脚本按当前语言挑） */
+  completions?: {
+    c: Array<{ label: string; header: string | null; kind?: string; snippet?: { text: string; caret: number } }>;
+    cpp: Array<{ label: string; header: string | null; kind?: string; snippet?: { text: string; caret: number } }>;
+    /** 各头文件里的常量：选中后自动补对应的 #include */
+    constants: Array<{ label: string; header: string | null; kind?: string; snippet?: { text: string; caret: number } }>;
+  };
 }
 
 /** 一个括号：绝对字符下标 + 层级（层级已对颜色表取模） */
@@ -73,7 +90,12 @@ export type AgentEvent =
   /** 正文变了。content script 据此算彩虹括号 / 触发编译检查（已防抖） */
   | { kind: 'doc'; text: string; language: string; check?: boolean; fragment?: boolean }
   /** 用户点了「整理代码」 */
-  | { kind: 'format-request'; text: string; language: string };
+  | { kind: 'format-request'; text: string; language: string }
+  /**
+   * 用户用代码提示补全了某个名字：隔离世界负责把它的使用次数记进 storage，
+   * 下次补全时高频的排前面。
+   */
+  | { kind: 'hint-used'; label: string };
 
 /** 隔离世界 → MAIN world 的 agent */
 export type AgentCommand =
@@ -84,7 +106,16 @@ export type AgentCommand =
    */
   | { kind: 'format-apply'; source: string; text: string; summary: string }
   /** `note` 有值表示这次没检查（比如语言不是 C），只更新提示文案 */
-  | { kind: 'diagnostics'; text: string; boxes: DiagnosticBox[]; note?: string };
+  | { kind: 'diagnostics'; text: string; boxes: DiagnosticBox[]; note?: string }
+  /**
+   * 运行中改设置：把新开关与补全表推给页面脚本，不必重新加载页面。
+   * `freq` 是补全项的历史使用次数，用来把常用的排前面。
+   */
+  | {
+      kind: 'configure';
+      features: Partial<EditorAssistFeatures>;
+      freq?: Record<string, number>;
+    };
 
 /**
  * 是不是我们自己的消息。

@@ -1,18 +1,27 @@
-import { useEffect, useState } from 'react';
-import { ext } from '../../shared/browser';
+import {useEffect, useState} from 'react';
+import {ext} from '../../shared/browser';
 import {
-  DEFAULT_SETTINGS,
-  PROVIDER_PRESETS,
-  TUTORIAL_URL,
-  isCompleteBaseURL,
-  normalizeBaseURL,
-  type Settings,
-  type SettingsView,
+    DEFAULT_SETTINGS,
+    PROVIDER_PRESETS,
+    PTA_THEMES,
+    TUTORIAL_URL,
+    isCompleteBaseURL,
+    normalizeBaseURL,
+    type ApiProtocol,
+    type PtaTheme,
+    type ProviderPreset,
+    type Settings,
+    type SettingsView,
 } from '../../shared/settings';
-import { INPUT_METHODS, INPUT_METHOD_GROUPS, inputMethodIndex } from '../../shared/input-methods';
-import { modelSupportsVision, modelVisionTitle } from '../../shared/model-capabilities';
-import { SYSTEM_PROMPT } from '../../shared/tools';
-import type { ModelsListResponse, TestInputResponse, UpdateCheckResponse } from '../../shared/messages';
+import {INPUT_METHODS, INPUT_METHOD_GROUPS, inputMethodIndex} from '../../shared/input-methods';
+import {modelSupportsVision, modelVisionTitle} from '../../shared/model-capabilities';
+import {SYSTEM_PROMPT} from '../../shared/tools';
+import type {
+    ModelsListResponse,
+    SettingsBackupResponse,
+    TestInputResponse,
+    UpdateCheckResponse,
+} from '../../shared/messages';
 
 const METHOD_OK_KEY = 'pta-assistant-input-method-ok';
 
@@ -32,472 +41,811 @@ const SHOW_INPUT_METHOD_TESTS = false;
 
 /** 这次测试算不算「成功」：内容回读一致，而且页面没弹「禁止粘贴」这类提示 */
 export function isMethodTestSuccess(ok: boolean, result: string): boolean {
-  return ok && result.includes('回读比对：与目标一致') && !/禁止粘贴|不允许粘贴|不能粘贴|请勿粘贴/.test(result);
+    return ok && result.includes('回读比对：与目标一致') && !/禁止粘贴|不允许粘贴|不能粘贴|请勿粘贴/.test(result);
 }
 
 /** 视觉模式的三个选项 */
 const VLM_MODES: { id: Settings['vlmMode']; label: string; hint: string }[] = [
-  { id: 'auto', label: '自动', hint: '题面里有图片才切视觉模式（默认）' },
-  { id: 'on', label: '开', hint: '始终按视觉模式工作' },
-  { id: 'off', label: '关', hint: '始终按纯文本模式工作，不看图' },
+    {id: 'auto', label: '自动', hint: '题面里有图片才切视觉模式（默认）'},
+    {id: 'on', label: '开', hint: '始终按视觉模式工作'},
+    {id: 'off', label: '关', hint: '始终按纯文本模式工作，不看图'},
 ];
 
 const VLM_MODE_HINTS: Record<Settings['vlmMode'], string> = {
-  auto: '题面里有图片才切视觉模式（默认）',
-  on: '始终按视觉模式工作',
-  off: '始终按纯文本模式工作，不看图',
+    auto: '题面里有图片才切视觉模式（默认）',
+    on: '始终按视觉模式工作',
+    off: '始终按纯文本模式工作，不看图',
 };
 
 /** 运行环境：内置编译器 vs 强制用 PTA 自己的编译器 */
 const PTA_RUN_MODES: { id: 'builtin' | 'pta'; label: string; hint: string }[] = [
-  {
-    id: 'builtin',
-    label: '内置',
-    hint: '用插件内置的编译器（C / Python / JavaScript）在本机跑，不联网（默认）',
-  },
-  {
-    id: 'pta',
-    label: 'PTA',
-    hint: '强制用 PTA 自己的编译器与机器跑：代码会写进作答区再点「运行测试」，编译错误也从 PTA 的「编译器输出」里读',
-  },
+    {
+        id: 'builtin',
+        label: '内置',
+        hint: '用插件内置的编译器（C / Python / JavaScript）在本机跑，不联网（默认）',
+    },
+    {
+        id: 'pta',
+        label: 'PTA',
+        hint: '强制用 PTA 自己的编译器与机器跑：代码会写进作答区再点「运行测试」，编译错误也从 PTA 的「编译器输出」里读',
+    },
+];
+
+/**
+ * 作答区的四个增强开关：都默认关，用户手动打开。
+ *
+ * `key` 同时是 Settings 的字段名与 SettingsView 的字段名，省一份映射表。
+ */
+const EDITOR_SWITCHES: {
+    key: 'hyphenate' | 'indentGuides' | 'codeHints';
+    label: string;
+    hint: string
+}[] = [
+    {
+        key: 'hyphenate',
+        label: '连字符',
+        hint: '用合字字体把 >= 画成 ⩾、!= 画成 ≠、== / -> / => / && / || 同理；代码本身仍是 ASCII'
+    },
+    {key: 'indentGuides', label: '缩进线', hint: '按缩进层级画竖直引导线，层级不同颜色不同'},
+    {key: 'codeHints', label: '代码提示', hint: '输 C / C++ 名字时弹补全（含自动补 #include），常用名字排前面'},
+];
+
+/** 接口协议：现在只做 OpenAI 的两种，Claude 以后再说 */
+const PROTOCOLS: { id: ApiProtocol; label: string; hint: string }[] = [
+    {id: 'chat', label: 'Chat Completions', hint: 'OpenAI 兼容的 /chat/completions（大多数中转都支持）'},
+    {id: 'responses', label: 'Responses', hint: 'OpenAI 的 /responses 接口（新协议，工具调用也支持）'},
+];
+
+/** 配色主题的可选项：off 放在最前面 */
+const THEME_OPTIONS: { id: PtaTheme; label: string }[] = [
+    {id: 'off', label: '默认'},
+    ...(Object.keys(PTA_THEMES) as Array<Exclude<PtaTheme, 'off'>>).map((id) => ({
+        id: id as PtaTheme,
+        label: PTA_THEMES[id].name,
+    })),
 ];
 
 interface SettingsPanelProps {
-  view: SettingsView | null;
-  onSave: (patch: Partial<Settings>) => Promise<unknown>;
-  onBack: () => void;
+    view: SettingsView | null;
+    onSave: (patch: Partial<Settings>) => Promise<unknown>;
+    onBack: () => void;
 }
 
 /**
  * 模型能力标记：支持看图的模型在名字后面挂一只眼睛。
  * 显示与否只看 shared/model-capabilities.ts 的能力表，别在这里另写前缀判断。
  */
-function VisionIcon({ model }: { model: string }) {
-  return (
-    <span className="model-vision" role="img" title={modelVisionTitle(model)} aria-label="支持看图">
+function VisionIcon({model}: { model: string }) {
+    return (
+        <span className="model-vision" role="img" title={modelVisionTitle(model)} aria-label="支持看图">
       <svg viewBox="0 0 16 16" width="13" height="13" aria-hidden="true" focusable="false">
         <path
-          d="M8 3.2C4.7 3.2 2 5.4 1.2 8c.8 2.6 3.5 4.8 6.8 4.8s6-2.2 6.8-4.8C14 5.4 11.3 3.2 8 3.2Z"
-          fill="none"
-          stroke="currentColor"
-          strokeWidth="1.3"
-          strokeLinejoin="round"
+            d="M8 3.2C4.7 3.2 2 5.4 1.2 8c.8 2.6 3.5 4.8 6.8 4.8s6-2.2 6.8-4.8C14 5.4 11.3 3.2 8 3.2Z"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="1.3"
+            strokeLinejoin="round"
         />
-        <circle cx="8" cy="8" r="2.1" fill="currentColor" />
+        <circle cx="8" cy="8" r="2.1" fill="currentColor"/>
       </svg>
     </span>
-  );
+    );
 }
 
-export function SettingsPanel({ view, onSave, onBack }: SettingsPanelProps) {
-  const [apiKey, setApiKey] = useState('');
-  const [baseURL, setBaseURL] = useState(view?.baseURL ?? DEFAULT_SETTINGS.baseURL);
-  const [model, setModel] = useState(view?.model ?? DEFAULT_SETTINGS.model);
-  const [vlmMode, setVlmMode] = useState<Settings['vlmMode']>(view?.vlmMode ?? DEFAULT_SETTINGS.vlmMode);
-  const [forcePtaRun, setForcePtaRun] = useState(view?.forcePtaRun ?? DEFAULT_SETTINGS.forcePtaRun);
-  const [status, setStatus] = useState<string | null>(null);
-  const [saving, setSaving] = useState(false);
-  // 模拟输入测试：默认拿系统提示词当测试文本，方便对照回读结果是不是一字不差
-  const [testText, setTestText] = useState(SYSTEM_PROMPT);
-  const [testing, setTesting] = useState<string | null>(null);
-  const [testResult, setTestResult] = useState<string | null>(null);
-  // 已经实测哪种方法能用，记下来标个 ✅
-  const [workingMethod, setWorkingMethod] = useState<string | null>(null);
-  // 模型下拉框：Key 与接口地址都齐了才出现，点了才去问接口要模型列表
-  const [modelsOpen, setModelsOpen] = useState(false);
-  const [models, setModels] = useState<string[]>([]);
-  const [modelsLoading, setModelsLoading] = useState(false);
-  const [modelsError, setModelsError] = useState<string | null>(null);
-  // 更新检查：只有打开设置页才查一次（后台缓存 1 小时），用户点「检查更新」可以强制刷新
-  const [update, setUpdate] = useState<UpdateCheckResponse | null>(null);
-  const [checking, setChecking] = useState(false);
-  // 检查完了但没有新版本时，在「检查更新」按钮旁边说一句（不占用保存设置的 status）
-  const [updateNote, setUpdateNote] = useState<string | null>(null);
+export function SettingsPanel({view, onSave, onBack}: SettingsPanelProps) {
+    const [apiKey, setApiKey] = useState('');
+    const [baseURL, setBaseURL] = useState(view?.baseURL ?? DEFAULT_SETTINGS.baseURL);
+    const [model, setModel] = useState(view?.model ?? DEFAULT_SETTINGS.model);
+    const [vlmMode, setVlmMode] = useState<Settings['vlmMode']>(view?.vlmMode ?? DEFAULT_SETTINGS.vlmMode);
+    const [forcePtaRun, setForcePtaRun] = useState(view?.forcePtaRun ?? DEFAULT_SETTINGS.forcePtaRun);
+    // 自定义提供商：内置 preset 之外的那些
+    const [providers, setProviders] = useState<ProviderPreset[]>(view?.providers ?? []);
+    // 提供商表单：名称（只在「添加」时用）+ 接口协议
+    const [providerLabel, setProviderLabel] = useState('');
+    const [protocol, setProtocol] = useState<ApiProtocol>(view?.protocol ?? DEFAULT_SETTINGS.protocol);
+    // 配色主题
+    const [theme, setTheme] = useState<PtaTheme>(view?.theme ?? DEFAULT_SETTINGS.theme);
+    // 作答区四个增强开关
+    const [editorSwitches, setEditorSwitches] = useState({
+        hyphenate: view?.hyphenate ?? DEFAULT_SETTINGS.hyphenate,
+            indentGuides: view?.indentGuides ?? DEFAULT_SETTINGS.indentGuides,
+        codeHints: view?.codeHints ?? DEFAULT_SETTINGS.codeHints,
+    });
+    // 设置备份：exported 是刚导出来的那串十六进制，importText 是用户粘进来准备导入的
+    const [exported, setExported] = useState('');
+    const [importText, setImportText] = useState('');
+    const [backupNote, setBackupNote] = useState<string | null>(null);
+    const [status, setStatus] = useState<string | null>(null);
+    const [saving, setSaving] = useState(false);
+    // 模拟输入测试：默认拿系统提示词当测试文本，方便对照回读结果是不是一字不差
+    const [testText, setTestText] = useState(SYSTEM_PROMPT);
+    const [testing, setTesting] = useState<string | null>(null);
+    const [testResult, setTestResult] = useState<string | null>(null);
+    // 已经实测哪种方法能用，记下来标个 ✅
+    const [workingMethod, setWorkingMethod] = useState<string | null>(null);
+    // 模型下拉框：Key 与接口地址都齐了才出现，点了才去问接口要模型列表
+    const [modelsOpen, setModelsOpen] = useState(false);
+    const [models, setModels] = useState<string[]>([]);
+    const [modelsLoading, setModelsLoading] = useState(false);
+    const [modelsError, setModelsError] = useState<string | null>(null);
+    // 更新检查：只有打开设置页才查一次（后台缓存 1 小时），用户点「检查更新」可以强制刷新
+    const [update, setUpdate] = useState<UpdateCheckResponse | null>(null);
+    const [checking, setChecking] = useState(false);
+    // 检查完了但没有新版本时，在「检查更新」按钮旁边说一句（不占用保存设置的 status）
+    const [updateNote, setUpdateNote] = useState<string | null>(null);
 
-  useEffect(() => {
-    void (async () => {
-      const stored = await ext.storage.local.get(METHOD_OK_KEY);
-      const known = stored[METHOD_OK_KEY];
-      if (typeof known === 'string' && INPUT_METHODS.some((item) => item.id === known)) {
-        setWorkingMethod(known);
-      }
-    })();
-  }, []);
+    useEffect(() => {
+        void (async () => {
+            const stored = await ext.storage.local.get(METHOD_OK_KEY);
+            const known = stored[METHOD_OK_KEY];
+            if (typeof known === 'string' && INPUT_METHODS.some((item) => item.id === known)) {
+                setWorkingMethod(known);
+            }
+        })();
+    }, []);
 
-  // 设置是异步取回来的：view 到了之后把已保存的视觉模式同步回来
-  // （面板可能比 view 先打开，只靠 useState 的初值会显示成默认值）
-  useEffect(() => {
-    if (view?.vlmMode) setVlmMode(view.vlmMode);
-  }, [view?.vlmMode]);
+    // 设置是异步取回来的：view 到了之后把已保存的视觉模式同步回来
+    // （面板可能比 view 先打开，只靠 useState 的初值会显示成默认值）
+    useEffect(() => {
+        if (view?.vlmMode) setVlmMode(view.vlmMode);
+    }, [view?.vlmMode]);
 
-  // 模型/接口地址也可能在别处更新；不跟着 view 同步会显示旧模型，
-  // 并在 hasApiKey 刚变 true 时仍然看不到「选模型」按钮。
-  useEffect(() => {
-    if (view?.baseURL) setBaseURL(view.baseURL);
-  }, [view?.baseURL]);
+    // 模型/接口地址也可能在别处更新；不跟着 view 同步会显示旧模型，
+    // 并在 hasApiKey 刚变 true 时仍然看不到「选模型」按钮。
+    useEffect(() => {
+        if (view?.baseURL) setBaseURL(view.baseURL);
+    }, [view?.baseURL]);
 
-  useEffect(() => {
-    if (view?.model) setModel(view.model);
-  }, [view?.model]);
+    useEffect(() => {
+        if (view?.model) setModel(view.model);
+    }, [view?.model]);
 
-  useEffect(() => {
-    if (typeof view?.forcePtaRun === 'boolean') setForcePtaRun(view.forcePtaRun);
-  }, [view?.forcePtaRun]);
+    useEffect(() => {
+        if (typeof view?.forcePtaRun === 'boolean') setForcePtaRun(view.forcePtaRun);
+    }, [view?.forcePtaRun]);
+
+    useEffect(() => {
+        if (Array.isArray(view?.providers)) setProviders(view.providers);
+    }, [view?.providers]);
+
+    useEffect(() => {
+        if (view?.theme) setTheme(view.theme);
+    }, [view?.theme]);
+
+    useEffect(() => {
+        if (view?.protocol) setProtocol(view.protocol);
+    }, [view?.protocol]);
+
+    useEffect(() => {
+        if (!view) return;
+        setEditorSwitches({
+            hyphenate: view.hyphenate === true,
+                  indentGuides: view.indentGuides === true,
+            codeHints: view.codeHints === true,
+        });
+    }, [view?.hyphenate, view?.indentGuides, view?.codeHints]);
 
 
-  const runTest = async (methodId: string) => {
-    const method = INPUT_METHODS.find((item) => item.id === methodId) ?? INPUT_METHODS[0];
-    setTesting(method.id);
-    setTestResult(null);
-    try {
-      const response = (await ext.runtime.sendMessage({
-        type: 'tool/test-input',
-        text: testText,
-        method: method.id,
-      })) as TestInputResponse | undefined;
-      const result = response?.result ?? '后台没有响应';
-      setTestResult(result);
-      // 记下哪种方法在真页面上真的能用
-      if (isMethodTestSuccess(response?.ok === true, result)) {
-        setWorkingMethod(method.id);
-        void ext.storage.local.set({ [METHOD_OK_KEY]: method.id });
-      }
-    } catch (error) {
-      setTestResult(`测试失败：${error instanceof Error ? error.message : String(error)}`);
-    } finally {
-      setTesting(null);
-    }
-  };
+    const runTest = async (methodId: string) => {
+        const method = INPUT_METHODS.find((item) => item.id === methodId) ?? INPUT_METHODS[0];
+        setTesting(method.id);
+        setTestResult(null);
+        try {
+            const response = (await ext.runtime.sendMessage({
+                type: 'tool/test-input',
+                text: testText,
+                method: method.id,
+            })) as TestInputResponse | undefined;
+            const result = response?.result ?? '后台没有响应';
+            setTestResult(result);
+            // 记下哪种方法在真页面上真的能用
+            if (isMethodTestSuccess(response?.ok === true, result)) {
+                setWorkingMethod(method.id);
+                void ext.storage.local.set({[METHOD_OK_KEY]: method.id});
+            }
+        } catch (error) {
+            setTestResult(`测试失败：${error instanceof Error ? error.message : String(error)}`);
+        } finally {
+            setTesting(null);
+        }
+    };
 
-  // Key（填的或已存的）与接口地址都齐了，模型旁边才出现下拉框
-  const canListModels = (apiKey.trim().length > 0 || Boolean(view?.hasApiKey)) && isCompleteBaseURL(baseURL);
+    // Key（填的或已存的）与接口地址都齐了，模型旁边才出现下拉框
+    const canListModels = (apiKey.trim().length > 0 || Boolean(view?.hasApiKey)) && isCompleteBaseURL(baseURL);
 
-  // 打开下拉框时才去加载：把面板上刚填的 Key 一起给后台（它那边才有权限发请求）
-  const toggleModelList = async () => {
-    if (modelsOpen) {
-      setModelsOpen(false);
-      return;
-    }
-    setModelsOpen(true);
-    setModelsLoading(true);
-    setModelsError(null);
-    try {
-      const response = (await ext.runtime.sendMessage({
-        type: 'models/list',
-        baseURL,
-        apiKey: apiKey.trim() || undefined,
-      })) as ModelsListResponse | undefined;
-      if (!response?.ok) {
-        setModels([]);
-        setModelsError(response?.message ?? '后台没有响应');
-        return;
-      }
-      setModels(response.models);
-    } catch {
-      setModels([]);
-      setModelsError('插件后台没有响应，请在扩展管理页重新加载插件');
-    } finally {
-      setModelsLoading(false);
-    }
-  };
-
-  const save = async (patch: Partial<Settings>, done: string) => {
-    setSaving(true);
-    try {
-      await onSave(patch);
-      setApiKey('');
-      setStatus(done);
-    } catch {
-      setStatus('保存失败，请重试');
-    } finally {
-      setSaving(false);
-    }
-  };
-
-  // 输入框留空表示不修改已保存的 Key
-  const saveCurrent = () => {
-    const patch: Partial<Settings> = { baseURL, model, vlmMode, forcePtaRun };
-    if (apiKey.trim()) patch.apiKey = apiKey.trim();
-    return save(patch, '已保存');
-  };
-
-  // 跳转链接（硅基流动邀请页、作者网站）：开新标签页必须由后台来，content script 没这个权限
-  const openLink = async (url: string) => {
-    try {
-      await ext.runtime.sendMessage({ type: 'ui/open-url', url });
-    } catch {
-      setStatus(`没能打开浏览器，请手动访问 ${url}`);
-    }
-  };
-
-  // 检查更新：force=true 时后台跳过缓存重新查（用户点了「检查更新」按钮）
-  const loadUpdate = async (force = false) => {
-    setChecking(true);
-    try {
-      const response = (await ext.runtime.sendMessage({ type: 'update/check', force })) as
-        | UpdateCheckResponse
-        | undefined;
-      setUpdate(response ?? null);
-      if (!response) {
-        setUpdateNote('后台没有响应，没能查到新版本');
-      } else if (response.available) {
-        setUpdateNote(null);
-      } else if (response.latest) {
-        setUpdateNote(`已是最新（当前 ${response.current}）`);
-      } else {
-        setUpdateNote('没查到新版本（可能网络不通）');
-      }
-    } catch {
-      setUpdate(null);
-      setUpdateNote('后台没有响应，没能查到新版本');
-    } finally {
-      setChecking(false);
-    }
-  };
-
-  // 设置页一打开就查一次（后台缓存 1 小时，之后再开就很快）
-  useEffect(() => {
-    void loadUpdate();
-  }, []);
-
-  return (
-    <div className="settings">
-      <section className="author">
-        <img className="author__avatar" src={AVATAR_URL} alt={`${AUTHOR_NAME} 的头像`} width={64} height={64} />
-        <div className="author__info">
-          <span className="author__name">{AUTHOR_NAME}</span>
-          <span className="author__email">{AUTHOR_EMAIL}</span>
-          <button
-            type="button"
-            className="author__site"
-            title={AUTHOR_SITE_URL}
-            onClick={() => void openLink(AUTHOR_SITE_URL)}
-          >
-            {AUTHOR_SITE_LABEL}
-          </button>
-        </div>
-      </section>
-
-      {update?.available && (
-        <div className="settings__banner settings__banner--update">
-          发现新版本 <b>{update.latest}</b>（当前 {update.current}）。
-          {update.packageUrl && (
-            <button type="button" className="settings__banner-link" onClick={() => void openLink(update.packageUrl)}>
-              下载新版
-            </button>
-          )}
-        </div>
-      )}
-
-      <div className="settings__update">
-        <button type="button" className="button button--ghost" disabled={checking} onClick={() => void loadUpdate(true)}>
-          {checking ? '检查中…' : '检查更新'}
-        </button>
-        {updateNote && <span className="settings__update-note">{updateNote}</span>}
-      </div>
-
-      <label className="field">
-        <span className="field__label">API Key</span>
-        <input
-          className="field__input"
-          type="password"
-          autoComplete="off"
-          data-lpignore="true"
-          value={apiKey}
-          placeholder={view?.hasApiKey ? '已保存，留空表示不修改' : '填硅基流动的 API Key'}
-          onChange={(event) => setApiKey(event.target.value)}
-        />
-      </label>
-
-      <div className="providers">
-        <span className="providers__label">模型提供商</span>
-        <span className="providers__list">
-          {PROVIDER_PRESETS.map((provider) => (
-            <button
-              key={provider.id}
-              type="button"
-              className={`provider${normalizeBaseURL(baseURL) === provider.baseURL ? ' provider--on' : ''}`}
-              title={provider.baseURL}
-              onClick={() => {
-                setBaseURL(provider.baseURL);
-                setModelsOpen(false);
+    // 打开下拉框时才去加载：把面板上刚填的 Key 一起给后台（它那边才有权限发请求）
+    const toggleModelList = async () => {
+        if (modelsOpen) {
+            setModelsOpen(false);
+            return;
+        }
+        setModelsOpen(true);
+        setModelsLoading(true);
+        setModelsError(null);
+        try {
+            const response = (await ext.runtime.sendMessage({
+                type: 'models/list',
+                baseURL,
+                apiKey: apiKey.trim() || undefined,
+            })) as ModelsListResponse | undefined;
+            if (!response?.ok) {
                 setModels([]);
-              }}
-            >
-              {provider.label}
-            </button>
-          ))}
-        </span>
-      </div>
+                setModelsError(response?.message ?? '后台没有响应');
+                return;
+            }
+            setModels(response.models);
+        } catch {
+            setModels([]);
+            setModelsError('插件后台没有响应，请在扩展管理页重新加载插件');
+        } finally {
+            setModelsLoading(false);
+        }
+    };
 
-      <div className="field">
-        <span className="field__label">运行环境</span>
-        <div className="segment" role="group" aria-label="运行环境">
-          {PTA_RUN_MODES.map((item) => (
-            <button
-              key={item.id}
-              type="button"
-              className={`segment__item${(item.id === 'pta') === forcePtaRun ? ' segment__item--on' : ''}`}
-              title={item.hint}
-              onClick={() => setForcePtaRun(item.id === 'pta')}
-            >
-              {item.label}
-            </button>
-          ))}
-        </div>
-        <span className="field__hint">{PTA_RUN_MODES.find((m) => (m.id === 'pta') === forcePtaRun)?.hint}</span>
-      </div>
+    const save = async (patch: Partial<Settings>, done: string) => {
+        setSaving(true);
+        try {
+            await onSave(patch);
+            setApiKey('');
+            setStatus(done);
+        } catch {
+            setStatus('保存失败，请重试');
+        } finally {
+            setSaving(false);
+        }
+    };
 
-      <div className="field">
-        <span className="field__label">视觉模式</span>
-        <div className="segment" role="group" aria-label="视觉模式">
-          {VLM_MODES.map((item) => (
-            <button
-              key={item.id}
-              type="button"
-              className={`segment__item${vlmMode === item.id ? ' segment__item--on' : ''}`}
-              title={item.hint}
-              onClick={() => setVlmMode(item.id)}
-            >
-              {item.label}
-            </button>
-          ))}
-        </div>
-        <span className="field__hint">{VLM_MODE_HINTS[vlmMode]}</span>
-      </div>
+    // 输入框留空表示不修改已保存的 Key
+    const saveCurrent = () => {
+        const patch: Partial<Settings> = {
+            baseURL,
+            model,
+            vlmMode,
+            forcePtaRun,
+            providers,
+            theme,
+            protocol,
+            ...editorSwitches,
+        };
+        if (apiKey.trim()) patch.apiKey = apiKey.trim();
+        return save(patch, '已保存');
+    };
 
-      <label className="field">
-        <span className="field__label">接口地址</span>
-        <span className="field__row">
-          <input
-            className="field__input"
-            type="text"
-            value={baseURL}
-            onChange={(event) => setBaseURL(event.target.value)}
-          />
-          <button type="button" className="button button--ghost field__jump" onClick={() => void openLink(TUTORIAL_URL)}>
-            教程
-          </button>
-        </span>
-        <span className="field__hint">怎么配 Key、怎么用，看教程</span>
-      </label>
+    /**
+     * 开关立刻生效：点一下就落盘，不等「保存」。
+     * 之前是攒到「保存」才写，用户点完开关直接去敲代码，会觉得「功能没反应」。
+     */
+    const toggleSwitch = (key: 'hyphenate' | 'indentGuides' | 'codeHints') => {
+        const next = !editorSwitches[key];
+        setEditorSwitches((current) => ({...current, [key]: next}));
+        void onSave({[key]: next})
+            .then(() => setStatus(next ? '已开启' : '已关闭'))
+            .catch(() => setStatus('保存失败，请重试'));
+    };
 
-      <label className="field">
-        <span className="field__label">模型</span>
-        <span className="field__row">
-          <input
-            className="field__input"
-            type="text"
-            value={model}
-            onChange={(event) => setModel(event.target.value)}
-          />
-          {modelSupportsVision(model) && <VisionIcon model={model} />}
-          {canListModels && (
-            <button
-              type="button"
-              className={`button button--ghost field__jump field__models${modelsOpen ? ' field__jump--on' : ''}`}
-              title="从这个接口加载可用模型列表"
-              onClick={() => void toggleModelList()}
-            >
-              {modelsLoading ? '加载中…' : '选模型 ▾'}
-            </button>
-          )}
-        </span>
-        {modelsOpen && (
-          <span className="model-list">
-            {modelsLoading && <span className="model-list__hint">正在问接口要模型列表…</span>}
-            {!modelsLoading && modelsError && <span className="model-list__hint model-list__hint--error">{modelsError}</span>}
-            {!modelsLoading && !modelsError && models.length === 0 && (
-              <span className="model-list__hint">没有模型可选</span>
+    /** 加一个自定义提供商：把表单里的名称/接口/协议一起存下来，并切过去 */
+    const addProvider = () => {
+        const label = providerLabel.trim();
+        const url = normalizeBaseURL(baseURL);
+        if (!label || !url) {
+            setBackupNote('提供商名字和接口地址都要填');
+            return;
+        }
+        if (!isCompleteBaseURL(url)) {
+            setBackupNote(`接口地址要写成完整地址，例如 https://api.example.com/v1（现在是 ${url || '空'}）`);
+            return;
+        }
+        const next = [
+            ...providers,
+            {id: `provider-${Date.now().toString(36)}`, label, baseURL: url, protocol},
+        ];
+        setProviders(next);
+        setBackupNote(null);
+        void save(
+            {
+                providers: next,
+                baseURL: url,
+                protocol,
+                model: model.trim() || view?.model || DEFAULT_SETTINGS.model,
+                ...(apiKey.trim() ? {apiKey: apiKey.trim()} : {}),
+            },
+            `已添加「${label}」`,
+        );
+    };
+
+    const removeProvider = (id: string) => {
+        const next = providers.filter((provider) => provider.id !== id);
+        setProviders(next);
+        void save({providers: next}, '已删除提供商');
+    };
+
+    /** 导出：后台把整份设置编成一串十六进制，这里摊在只读框里让用户自己抄 */
+    const exportBackup = async () => {
+        try {
+            const response = (await ext.runtime.sendMessage({type: 'settings/backup'})) as
+                | SettingsBackupResponse
+                | undefined;
+            if (response?.ok && response.hex) {
+                setExported(response.hex);
+                setBackupNote('已生成备份串，整串抄走就能在别的电脑上还原（含 API Key，别外传）');
+            } else {
+                setBackupNote(response?.message ?? '导出失败，请重试');
+            }
+        } catch {
+            setBackupNote('插件后台没有响应，请在扩展管理页重新加载插件');
+        }
+    };
+
+    /** 导入：把用户粘进来的那串交给后台还原（失败时后台会说清是哪里不对） */
+    const importBackup = async () => {
+        const hex = importText.trim();
+        if (!hex) {
+            setBackupNote('先把备份串粘贴进来');
+            return;
+        }
+        try {
+            const response = (await ext.runtime.sendMessage({type: 'settings/import', hex})) as
+                | SettingsBackupResponse
+                | undefined;
+            if (response?.ok) {
+                setBackupNote('导入成功，设置已还原');
+                setImportText('');
+            } else {
+                setBackupNote(response?.message ?? '导入失败，请重试');
+            }
+        } catch {
+            setBackupNote('插件后台没有响应，请在扩展管理页重新加载插件');
+        }
+    };
+
+    // 跳转链接（硅基流动邀请页、作者网站）：开新标签页必须由后台来，content script 没这个权限
+    const openLink = async (url: string) => {
+        try {
+            await ext.runtime.sendMessage({type: 'ui/open-url', url});
+        } catch {
+            setStatus(`没能打开浏览器，请手动访问 ${url}`);
+        }
+    };
+
+    // 检查更新：force=true 时后台跳过缓存重新查（用户点了「检查更新」按钮）
+    const loadUpdate = async (force = false) => {
+        setChecking(true);
+        try {
+            const response = (await ext.runtime.sendMessage({type: 'update/check', force})) as
+                | UpdateCheckResponse
+                | undefined;
+            setUpdate(response ?? null);
+            if (!response) {
+                setUpdateNote('后台没有响应，没能查到新版本');
+            } else if (response.available) {
+                setUpdateNote(null);
+            } else if (response.latest) {
+                setUpdateNote(`已是最新（当前 ${response.current}）`);
+            } else {
+                setUpdateNote('没查到新版本（可能网络不通）');
+            }
+        } catch {
+            setUpdate(null);
+            setUpdateNote('后台没有响应，没能查到新版本');
+        } finally {
+            setChecking(false);
+        }
+    };
+
+    // 设置页一打开就查一次（后台缓存 1 小时，之后再开就很快）
+    useEffect(() => {
+        void loadUpdate();
+    }, []);
+
+    return (
+        <div className="settings">
+            <section className="author">
+                <img className="author__avatar" src={AVATAR_URL} alt={`${AUTHOR_NAME} 的头像`} width={64} height={64}/>
+                <div className="author__info">
+                    <span className="author__name">{AUTHOR_NAME}</span>
+                    <span className="author__email">{AUTHOR_EMAIL}</span>
+                    <button
+                        type="button"
+                        className="author__site"
+                        title={AUTHOR_SITE_URL}
+                        onClick={() => void openLink(AUTHOR_SITE_URL)}
+                    >
+                        {AUTHOR_SITE_LABEL}
+                    </button>
+                </div>
+            </section>
+
+            {update?.available && (
+                <div className="settings__banner settings__banner--update">
+                    发现新版本 <b>{update.latest}</b>（当前 {update.current}）。
+                    {update.packageUrl && (
+                        <button type="button" className="settings__banner-link"
+                                onClick={() => void openLink(update.packageUrl)}>
+                            下载新版
+                        </button>
+                    )}
+                </div>
             )}
-            {!modelsLoading &&
-              models.map((id) => (
-                <button
-                  key={id}
-                  type="button"
-                  className={`model-list__item${id === model ? ' model-list__item--on' : ''}`}
-                  title={modelVisionTitle(id)}
-                  onClick={() => {
-                    setModel(id);
-                    setModelsOpen(false);
-                  }}
-                >
-                  <span className="model-list__name">{id}</span>
-                  {modelSupportsVision(id) && <VisionIcon model={id} />}
-                </button>
-              ))}
-          </span>
-        )}
-      </label>
 
-      {SHOW_INPUT_METHOD_TESTS && (
-        <label className="field">
-          <span className="field__label">模拟输入测试（一种方法一个按钮）</span>
-          <textarea
-            className="field__input field__input--area"
-            rows={3}
-            value={testText}
-            onChange={(event) => setTestText(event.target.value)}
-          />
-          <span className="field__hint">
+            <div className="settings__update">
+                <button type="button" className="button button--ghost" disabled={checking}
+                        onClick={() => void loadUpdate(true)}>
+                    {checking ? '检查中…' : '检查更新'}
+                </button>
+                {updateNote && <span className="settings__update-note">{updateNote}</span>}
+            </div>
+
+            <div className="providers">
+                <span className="providers__label">模型提供商</span>
+                <span className="providers__list">
+                    {PROVIDER_PRESETS.map((provider) => (
+                        <button
+                            key={provider.id}
+                            type="button"
+                            className={`provider${normalizeBaseURL(baseURL) === provider.baseURL ? ' provider--on' : ''}`}
+                            title={provider.baseURL}
+                            onClick={() => {
+                                setBaseURL(provider.baseURL);
+                                setProviderLabel(provider.label);
+                                setProtocol(provider.protocol ?? 'chat');
+                                setModelsOpen(false);
+                                setModels([]);
+                            }}
+                        >
+                            {provider.label}
+                        </button>
+                    ))}
+                    {providers.map((provider) => (
+                        <span
+                            key={provider.id}
+                            className={`custom-provider${normalizeBaseURL(baseURL) === normalizeBaseURL(provider.baseURL) ? ' custom-provider--on' : ''}`}
+                        >
+                            <button
+                                type="button"
+                                className="custom-provider__pick"
+                                title={provider.baseURL}
+                                onClick={() => {
+                                    setBaseURL(provider.baseURL);
+                                    setProviderLabel(provider.label);
+                                    setProtocol(provider.protocol ?? 'chat');
+                                    setModelsOpen(false);
+                                    setModels([]);
+                                }}
+                            >{provider.label}</button>
+                            <button
+                                type="button"
+                                className="custom-provider__remove"
+                                title={`删除「${provider.label}」`}
+                                onClick={() => removeProvider(provider.id)}>×</button>
+                        </span>
+                    ))}
+                    <button
+                        type="button"
+                        className="add-provider"
+                        title="加一个自己的接口地址"
+                        onClick={() => {
+                            setProviderLabel('');
+                            setBaseURL('');
+                            setModelsOpen(false);
+                            setModels([]);
+                        }}
+                    >＋</button>
+                </span>
+
+                <div className="provider-form">
+                    <div className="provider-form__row">
+                        <label className="field">
+                            <span className="field__label">提供商名称</span>
+                            <input
+                                className="field__input"
+                                type="text"
+                                data-role="provider-name"
+                                value={providerLabel}
+                                placeholder="例如 我的中转"
+                                onChange={(event) => setProviderLabel(event.target.value)}
+                            />
+                        </label>
+                        <label className="field">
+                            <span className="field__label">接口协议</span>
+                            <select
+                                className="field__input"
+                                data-role="provider-protocol"
+                                title={PROTOCOLS.find((item) => item.id === protocol)?.hint}
+                                value={protocol}
+                                onChange={(event) => {
+                                    const next = event.target.value as ApiProtocol;
+                                    setProtocol(next);
+                                    // 协议是「当前生效的配置」的一部分，换了立刻存
+                                    void save({protocol: next}, '已切换接口协议');
+                                }}
+                            >
+                                {PROTOCOLS.map((item) => (
+                                    <option key={item.id} value={item.id}>
+                                        {item.label}
+                                    </option>
+                                ))}
+                            </select>
+                        </label>
+                    </div>
+
+                    <label className="field">
+                        <span className="field__label">接口地址</span>
+                        <span className="field__row">
+                    <input
+                        className="field__input"
+                        type="text"
+                        data-role="provider-base-url"
+                        value={baseURL}
+                        placeholder="https://api.example.com/v1"
+                        onChange={(event) => setBaseURL(event.target.value)}
+                    />
+                    <button type="button" className="button button--ghost field__jump"
+                            onClick={() => void openLink(TUTORIAL_URL)}>教程</button>
+                    </span>
+                        <span className="field__hint">怎么配 Key、怎么用，看教程</span>
+                    </label>
+
+                    <label className="field">
+                        <span className="field__label">API Key</span>
+                        <input
+                            className="field__input"
+                            type="password"
+                            autoComplete="off"
+                            data-lpignore="true"
+                            data-role="provider-api-key"
+                            value={apiKey}
+                            placeholder={view?.hasApiKey ? '已保存，留空表示不修改' : '填这个接口的 API Key'}
+                            onChange={(event) => setApiKey(event.target.value)}
+                        />
+                    </label>
+
+                    <label className="field">
+                        <span className="field__label">模型名称</span>
+                        <span className="field__row">
+                <input
+                    className="field__input"
+                    type="text"
+                    data-role="provider-model"
+                    value={model}
+                    onChange={(event) => setModel(event.target.value)}
+                />
+                            {modelSupportsVision(model) && <VisionIcon model={model}/>}
+                            {canListModels && (
+                                <button
+                                    type="button"
+                                    className={`button button--ghost field__jump field__models${modelsOpen ? ' field__jump--on' : ''}`}
+                                    title="从这个接口加载可用模型列表"
+                                    onClick={() => void toggleModelList()}
+                                >
+                                    {modelsLoading ? '加载中…' : '选模型 ▾'}
+                                </button>
+                            )}
+            </span>
+                        {modelsOpen && (
+                            <span className="model-list">
+                {modelsLoading && <span className="model-list__hint">正在问接口要模型列表…</span>}
+                                {!modelsLoading && modelsError && (
+                                    <span className="model-list__hint model-list__hint--error">{modelsError}</span>
+                                )}
+                                {!modelsLoading && !modelsError && models.length === 0 && (
+                                    <span className="model-list__hint">没有模型可选</span>
+                                )}
+                                {!modelsLoading &&
+                                    models.map((id) => (
+                                        <button
+                                            key={id}
+                                            type="button"
+                                            className={`model-list__item${id === model ? ' model-list__item--on' : ''}`}
+                                            title={modelVisionTitle(id)}
+                                            onClick={() => {
+                                                setModel(id);
+                                                setModelsOpen(false);
+                                            }}
+                                        >
+                                            <span className="model-list__name">{id}</span>
+                                            {modelSupportsVision(id) && <VisionIcon model={id}/>}
+                                        </button>
+                                    ))}
+                </span>
+                        )}
+                    </label>
+
+                    <div className="provider-form__actions">
+                        <button type="button" className="button" onClick={addProvider}>
+                            添加为新的提供商
+                        </button>
+                        <span className="field__hint">
+                想多存一份就改上面四项再点这里；只改当前这家的配置，直接点最下面的「保存」。
+            </span>
+                    </div>
+                </div>
+
+                <span className="field__hint">
+            自定义地址的域名第一次用到时会问你要一次访问权限（浏览器的弹窗），允许后才发得出请求。
+        </span>
+            </div>
+
+            <div className="field">
+                <span className="field__label">运行环境</span>
+                <div className="segment" role="group" aria-label="运行环境">
+                    {PTA_RUN_MODES.map((item) => (
+                        <button
+                            key={item.id}
+                            type="button"
+                            className={`segment__item${(item.id === 'pta') === forcePtaRun ? ' segment__item--on' : ''}`}
+                            title={item.hint}
+                            onClick={() => setForcePtaRun(item.id === 'pta')}
+                        >
+                            {item.label}
+                        </button>
+                    ))}
+                </div>
+                <span className="field__hint">{PTA_RUN_MODES.find((m) => (m.id === 'pta') === forcePtaRun)?.hint}</span>
+            </div>
+
+            <div className="field">
+                <span className="field__label">作答区增强</span>
+                <div className="switches">
+                    {EDITOR_SWITCHES.map((item) => (
+                        <button
+                            key={item.key}
+                            type="button"
+                            className={`switch${editorSwitches[item.key] ? ' switch--on' : ''}`}
+                            aria-pressed={editorSwitches[item.key]}
+                            title={item.hint}
+                            onClick={() => toggleSwitch(item.key)}
+                        >
+                            <span className="switch__dot" aria-hidden="true"/>
+                            {item.label}
+                        </button>
+                    ))}
+                </div>
+                <span className="field__hint">
+                    {EDITOR_SWITCHES.filter((item) => editorSwitches[item.key]).map((item) => item.hint).join('；')
+                        || '三个都关着：点一下立刻生效，不用再点「保存」'}
+                </span>
+            </div>
+
+            <div className="field">
+                <span className="field__label">配色主题</span>
+                <div className="segment" role="group" aria-label="配色主题">
+                    {THEME_OPTIONS.map((item) => (
+                        <button
+                            key={item.id}
+                            type="button"
+                            className={`segment__item${theme === item.id ? ' segment__item--on' : ''}`}
+                            onClick={() => {
+                                setTheme(item.id);
+                                // 配色也是「点了就生效」，跟四个增强开关一致，不等「保存」
+                                void save({theme: item.id}, '已应用配色');
+                            }}
+                        >
+                            {item.label}
+                        </button>
+                    ))}
+                </div>
+                <span className="field__hint">同时改面板和 PTA 页面的主强调色；选「默认」保持原样</span>
+            </div>
+
+            <div className="field">
+                <span className="field__label">视觉模式</span>
+                <div className="segment" role="group" aria-label="视觉模式">
+                    {VLM_MODES.map((item) => (
+                        <button
+                            key={item.id}
+                            type="button"
+                            className={`segment__item${vlmMode === item.id ? ' segment__item--on' : ''}`}
+                            title={item.hint}
+                            onClick={() => setVlmMode(item.id)}
+                        >
+                            {item.label}
+                        </button>
+                    ))}
+                </div>
+                <span className="field__hint">{VLM_MODE_HINTS[vlmMode]}</span>
+            </div>
+
+            {SHOW_INPUT_METHOD_TESTS && (
+                <label className="field">
+                    <span className="field__label">模拟输入测试（一种方法一个按钮）</span>
+                    <textarea
+                        className="field__input field__input--area"
+                        rows={3}
+                        value={testText}
+                        onChange={(event) => setTestText(event.target.value)}
+                    />
+                    <span className="field__hint">
             用下面的文本逐个试每种写入方法（会覆盖作答区内容、不提交）。CDP 那几个方法要调试器权限，一律直接试；
             哪个成功就会标上 ✅ 并记下来。实测结论：只有 <b>整段 dispatch</b> 能写进去，其余都被页面拦。
-          </span>
-          {workingMethod && (
-            <span className="field__hint">
-              当前可用方法：<b>{INPUT_METHODS[inputMethodIndex(workingMethod)].label}</b>
-              （`write_editor_code` 工具走的正是这一种）
             </span>
-          )}
+                    {workingMethod && (
+                        <span className="field__hint">
+                            当前可用方法：<b>{INPUT_METHODS[inputMethodIndex(workingMethod)].label}</b>
+                            （`write_editor_code` 工具走的正是这一种）
+                        </span>
+                    )}
 
-          {INPUT_METHOD_GROUPS.map((group) => (
-            <div className="method-group" key={group}>
-              <span className="method-group__title">{group}</span>
-              <div className="method-buttons">
-                {INPUT_METHODS.filter((item) => item.group === group).map((item) => (
-                  <button
-                    key={item.id}
-                    type="button"
-                    className={`method-button${workingMethod === item.id ? ' method-button--ok' : ''}`}
-                    title={item.hint}
-                    disabled={testing !== null}
-                    onClick={() => void runTest(item.id)}
-                  >
-                    {testing === item.id ? '输入中…' : item.label}
-                    {workingMethod === item.id ? ' ✅' : ''}
-                  </button>
-                ))}
-              </div>
+                    {INPUT_METHOD_GROUPS.map((group) => (
+                        <div className="method-group" key={group}>
+                            <span className="method-group__title">{group}</span>
+                            <div className="method-buttons">
+                                {INPUT_METHODS.filter((item) => item.group === group).map((item) => (
+                                    <button
+                                        key={item.id}
+                                        type="button"
+                                        className={`method-button${workingMethod === item.id ? ' method-button--ok' : ''}`}
+                                        title={item.hint}
+                                        disabled={testing !== null}
+                                        onClick={() => void runTest(item.id)}
+                                    >
+                                        {testing === item.id ? '输入中…' : item.label}
+                                        {workingMethod === item.id ? ' ✅' : ''}
+                                    </button>
+                                ))}
+                            </div>
+                        </div>
+                    ))}
+
+                    {testResult && <pre className="settings__result">{testResult}</pre>}
+                </label>
+            )}
+
+            <div className="field">
+                <span className="field__label">设置备份</span>
+                <div className="settings__backup">
+                    <button type="button" className="button button--ghost" onClick={() => void exportBackup()}>
+                        导出备份
+                    </button>
+                    <button type="button" className="button button--ghost" onClick={() => void importBackup()}>
+                        导入备份
+                    </button>
+                </div>
+                {exported && (
+                    <textarea
+                        className="field__input field__input--area backup__hex"
+                        rows={3}
+                        readOnly
+                        value={exported}
+                        onFocus={(event) => event.currentTarget.select()}
+                    />
+                )}
+                <textarea
+                    className="field__input field__input--area"
+                    rows={2}
+                    spellCheck={false}
+                    placeholder="把备份串粘贴到这里，再点「导入备份」"
+                    value={importText}
+                    onChange={(event) => setImportText(event.target.value)}
+                />
+                <span className="field__hint">
+            备份串含 API Key，抄走时别外传；换电脑/重装后粘进来就能还原全部设置。
+        </span>
+                {backupNote && <span className="field__hint">{backupNote}</span>}
             </div>
-          ))}
 
-          {testResult && <pre className="settings__result">{testResult}</pre>}
-        </label>
-      )}
+            <div className="settings__actions">
+                <button type="button" className="button button--ghost" onClick={onBack}>
+                    返回对话
+                </button>
+                {view?.hasApiKey && (
+                    <button
+                        type="button"
+                        className="button button--ghost"
+                        disabled={saving}
+                        onClick={() => void save({apiKey: ''}, '已清除 API Key')}
+                    >
+                        清除 Key
+                    </button>
+                )}
+                <button type="button" className="button" disabled={saving} onClick={() => void saveCurrent()}>
+                    保存
+                </button>
+            </div>
 
-      <div className="settings__actions">
-        <button type="button" className="button button--ghost" onClick={onBack}>
-          返回对话
-        </button>
-        {view?.hasApiKey && (
-          <button
-            type="button"
-            className="button button--ghost"
-            disabled={saving}
-            onClick={() => void save({ apiKey: '' }, '已清除 API Key')}
-          >
-            清除 Key
-          </button>
-        )}
-        <button type="button" className="button" disabled={saving} onClick={() => void saveCurrent()}>
-          保存
-        </button>
-      </div>
-
-      {status && <div className="settings__status">{status}</div>}
-      <div className="settings__note">
-        API Key 只保存在本机的插件存储里，不会发送到除接口地址以外的任何地方。
-      </div>
-    </div>
-  );
+            {status && <div className="settings__status">{status}</div>}
+            <div className="settings__note">
+                API Key 只保存在本机的插件存储里，不会发送到除接口地址以外的任何地方。
+            </div>
+        </div>
+    );
 }

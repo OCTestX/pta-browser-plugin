@@ -38,7 +38,8 @@ globalThis.chrome = {
   runtime: {
     onMessage: { addListener: (fn) => state.channels.message.push(fn) },
     // 检查更新那套逻辑在模块加载时就读一次清单版本（MANIFEST_VERSION），mock 里得给上
-    getManifest: () => ({ version: '3.4.0' }),
+    // 更新检测比的是「发版次数」，清单里得有 release_count
+    getManifest: () => ({ version: '3.4.0', release_count: 3 }),
     // 判「跑在哪个浏览器」看的是扩展页 URL 的协议头（moz-extension:// 还是 chrome-extension://）
     getURL: (path) => `${target === 'firefox' ? 'moz-extension' : 'chrome-extension'}://test/${path}`,
   },
@@ -143,6 +144,8 @@ globalThis.fetch = async (url, init) => {
     if (isGithub) {
       return new Response(
         JSON.stringify({
+          // 标题里带发版次数：比标签号大小更可靠
+          name: 'V9.9.9@4',
           tag_name: 'v9.9.9',
           assets: [
             {
@@ -163,6 +166,7 @@ globalThis.fetch = async (url, init) => {
     // Gitee 上除了安装包还挂着源码包（v5.1.0.zip / v5.1.0.tar.gz），挑错就成 bug
     return new Response(
       JSON.stringify({
+        name: 'V8.8.8@2',
         tag_name: 'v8.8.8',
         assets: [
           {
@@ -269,7 +273,7 @@ check('settings/save 落盘且视图不含 Key', state.storage['pta-assistant-se
 state.releaseCalls.length = 0;
 const update = await respond2({ type: 'update/check' });
 check(
-  'update/check 报出远端最新标签与本地版本',
+  'update/check 按发版次数报出新版本',
   update.latest === 'v9.9.9' && update.current === '3.4.0' && update.available === true,
   update,
 );
@@ -307,6 +311,7 @@ check(
   state.releaseCalls,
 );
 check('退到 Gitee 时用的是 Gitee 的标签', fallback.latest === 'v8.8.8', fallback);
+check('Gitee 的发版次数更旧时不算有新版本', fallback.available === false, fallback);
 check(
   'Gitee 上挑的是安装包，不是同名的源码包',
   fallback.packageUrl.includes('pta-assistant-v8.8.8') &&

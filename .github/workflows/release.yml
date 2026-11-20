@@ -69,10 +69,18 @@ jobs:
             test "$size" -gt 20000000 || { echo "✗ $f 太小，内置编译器资源没进去"; exit 1; }
           done
 
+      - name: 计算发版标题
+        id: meta
+        run: |
+          # 标题形如 V7.1.12@133：@ 后面是「发版次数」，更新检测比的就是它（每次发版 +1）
+          VER="${GITHUB_REF_NAME#v}"
+          COUNT="$(node -p "require('./manifest/manifest.json').release_count")"
+          echo "title=V${VER}@${COUNT}" >> "$GITHUB_OUTPUT"
+
       - name: 创建 Release
         uses: softprops/action-gh-release@v2
         with:
-          name: PTA 助手 ${{ github.ref_name }}
+          name: ${{ steps.meta.outputs.title }}
           files: |
             dist/pta-assistant-${{ github.ref_name }}.xpi
             dist/pta-assistant-${{ github.ref_name }}.zip

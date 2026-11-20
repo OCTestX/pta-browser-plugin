@@ -1,7 +1,8 @@
 {
   "manifest_version": 3,
   "name": "PTA 助手",
-  "version": "7.0.0",
+  "version": "8.0.0",
+  "release_count": 27,
   "description": "帮助学生完成 PTA 题目的 AI 助手插件",
   "icons": {
     "16": "icons/icon-16.png",
@@ -37,6 +38,9 @@
     "https://models.dev/*",
     "https://pintia.cn/*"
   ],
+  "optional_host_permissions": [
+    "https://*/*"
+  ],
   "content_security_policy": {
     "extension_pages": "script-src 'self' 'wasm-unsafe-eval'; object-src 'self'"
   },
@@ -58,6 +62,7 @@
     {
       "resources": [
         "katex-fonts/*",
+        "fonts/*",
         "avata.jpg"
       ],
       "matches": [

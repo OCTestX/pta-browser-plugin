@@ -55,6 +55,7 @@ const DEFAULT_PER_CHAR_DELAY_MS = 8;
  */
 const FUCK_MAX_TOOL_ROUNDS = 300;
 import { streamChat } from './deepseek';
+import { streamResponses } from './responses';
 import { injectScript } from './js-inject';
 import { loadSettings } from './settings';
 import { statementHasImages } from '../shared/settings';
@@ -272,7 +273,9 @@ export async function runAgent(options: RunAgentOptions): Promise<void> {
     throwIfAborted(signal);
     // 赶题模式一跑几十题，旧工具结果会把上下文撑爆；只保留系统提示 + 最近一段
     compactConversation(conversation);
-    const { content, toolCalls, usage: roundUsage } = await streamChat({
+    // 两种协议的消息/流事件形状不一样，其余（工具循环、护栏）完全共用
+    const call = settings.protocol === 'responses' ? streamResponses : streamChat;
+    const { content, toolCalls, usage: roundUsage } = await call({
       apiKey: settings.apiKey,
       baseURL: settings.baseURL,
       model: settings.model,

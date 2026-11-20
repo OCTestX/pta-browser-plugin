@@ -75,6 +75,11 @@ finishBatch(998);
 check('没开过赶题模式的标签页不会被 finishBatch 造出统计', batchActive(998) === false);
 check('没开过赶题模式的标签页快照仍然不激活', batchSnapshot(998).active === false);
 
+// 单道题做题：读题会记统计，但面板不该因此冒出一张「赶题模式」卡
+setCurrentProblem(501, { key: 's1', title: '单题', type: '7' });
+check('单题做题不激活赶题模式卡', batchSnapshot(501).active === false, batchSnapshot(501).active);
+check('单题做题时 batchActive 也是 false', batchActive(501) === false);
+
 resetBatch(7);
 check('开一轮后快照激活', batchSnapshot(7).active === true);
 

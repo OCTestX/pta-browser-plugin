@@ -118,6 +118,10 @@ export type ContentRequest =
   | { type: 'editor/check'; code: string; language: string; fragment?: boolean }
   | { type: 'settings/get' }
   | { type: 'settings/save'; patch: Partial<Settings> }
+  /** 导出一份设置备份（一串小写十六进制，欢迎页/设置页都用） */
+  | { type: 'settings/backup' }
+  /** 导入一份设置备份：hex 是用户抄来的那串十六进制 */
+  | { type: 'settings/import'; hex: string }
   /**
    * 检查有没有新版本（比对 GitHub / Gitee 的 release 标签）。
    * force=true 时跳过缓存重新查：设置页的「检查更新」按钮用。
@@ -151,6 +155,8 @@ export function isContentRequest(message: unknown): message is ContentRequest {
       message.type === 'editor/check' ||
       message.type === 'settings/get' ||
       message.type === 'settings/save' ||
+      message.type === 'settings/backup' ||
+      message.type === 'settings/import' ||
       message.type === 'update/check' ||
       message.type === 'tool/test-input' ||
       message.type === 'models/list' ||
@@ -210,6 +216,14 @@ export interface ModelsListResponse {
 }
 
 export type SettingsResponse = SettingsView;
+
+/** 设置备份的导出 / 导入结果 */
+export interface SettingsBackupResponse {
+  ok: boolean;
+  /** 导出时带回来的一串小写十六进制 */
+  hex?: string;
+  message?: string;
+}
 
 /** 检查更新的结果 */
 export interface UpdateCheckResponse {

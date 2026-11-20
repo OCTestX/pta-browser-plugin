@@ -44,8 +44,8 @@ export function usePanelLayout(panelRef: React.RefObject<HTMLElement | null>) {
 
   const startDrag = useCallback(
     (event: React.PointerEvent<HTMLElement>) => {
-      // 标题栏上的按钮照常点击，不触发拖动
-      if ((event.target as HTMLElement).closest('button')) return;
+      // 按钮、输入框、可选中文字的区域照常工作，不触发拖动
+      if (isDragBlocker(event.target as HTMLElement)) return;
       const rect = panelRef.current?.getBoundingClientRect();
       if (!rect) return;
       const offset = { x: event.clientX - rect.left, y: event.clientY - rect.top };
@@ -113,6 +113,25 @@ export function usePanelLayout(panelRef: React.RefObject<HTMLElement | null>) {
   }, [apply]);
 
   return { layout, startDrag, startResize, reset, dragging };
+}
+
+/**
+ * 哪些地方不能作为拖动起点。
+ *
+ * 除了按钮和输入框，气泡、工具卡片、设置里的字段都不能拖：
+ * 那些地方要能选中文字、要能点链接。反过来，聊天区的空白、设置页下方的留白、
+ * 面板四周的内边距都是可以拖的（用户反馈过「底部一大片空白拖不动」）。
+ */
+const DRAG_BLOCKERS = [
+  'button', 'a', 'input', 'textarea', 'select', 'label', '[contenteditable="true"]',
+  '.bubble', '.welcome', '.tool-card', '.batch', '.notice', '.composer',
+  '.field', '.providers', '.segment', '.switches', '.settings__backup', '.settings__actions',
+  '.author', '.settings__banner', '.settings__update', '.model-list', '.cmds',
+  '.panel__resize', 'pre', 'code',
+].join(',');
+
+function isDragBlocker(target: HTMLElement): boolean {
+  return target.closest(DRAG_BLOCKERS) !== null;
 }
 
 /** 还没记住布局时，用屏幕上实际的位置与尺寸当起点（CSS 默认在右上角） */

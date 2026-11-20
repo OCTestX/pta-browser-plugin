@@ -745,7 +745,7 @@ const PYTHON_INDENT_DIAGNOSTIC =
 function engineCheckResult(
   source: string,
   raw: EngineRunResult,
-  skip: (item: CodeDiagnostic) => boolean,
+  adjust: (item: CodeDiagnostic) => CodeDiagnostic | null,
 ): CodeCheckResult {
   // clang 的原文可能一条都解析不出来（位置越界、日志被截断），那时才用「第一句原文」兜底；
   // 解析出来但被 fragment 过滤掉的假「未声明」不能以此为由再露出来
@@ -755,17 +755,19 @@ function engineCheckResult(
     // note 是编译器跟在报错后面、指在同一位置的补充说明（「include 这个头文件」之类），
     // 它和那条报错算同一件事，单独算一条只会让「N 个错误」翻倍
     if (item.severity === 'note') continue;
-    if (skip(item)) continue;
+    // 允许按语言/场景改写这一条（比如代码填空片段里的「未声明」降级成警告）
+    const fixed = adjust(item);
+    if (!fixed) continue;
     // 列号是 UTF-8 字节偏移，offsetOfPosition 负责换算成字符下标
-    const offset = offsetOfPosition(source, item.line, item.column);
+    const offset = offsetOfPosition(source, fixed.line, fixed.column);
     if (offset < 0) continue;
     const range = diagnosticRange(source, offset);
     diagnostics.push({
       from: range.from,
       to: range.to,
-      severity: item.severity,
-      message: item.message,
-      advice: item.advice,
+      severity: fixed.severity,
+      message: fixed.message,
+      advice: fixed.advice,
     });
   }
   const errorCount = diagnostics.filter((item) => item.severity === 'error').length;
@@ -850,14 +852,20 @@ export async function checkCode(
   }
 
   return engineCheckResult(source, raw, (item) => {
-    // 代码填空片段依赖题面/裁判提供的类型、常量、宏：独立编译的「未声明」是假报错，
-    // 直接丢掉；真正的语法错误（少分号、括号不配对等）继续上报
-    if ((lang === 'c' || lang === 'cpp') && fragment && item.severity === 'error') {
-      return isFragmentContextDiagnostic(item.message);
+    // 代码填空片段依赖题面/裁判提供的类型、常量、宏：独立编译的「未声明」多半是假报错。
+    // 但直接丢掉会漏掉真问题（`brak` 拼错、`INT_MIN` 忘了 include 都会被吞），
+    // 所以只**降级成警告**：照样画出来、照样计数，只是不判成硬错误。
+    if ((lang === 'c' || lang === 'cpp') && fragment && item.severity === 'error'
+      && isFragmentContextDiagnostic(item.message)) {
+      return {
+        ...item,
+        severity: 'warning',
+        advice: item.advice + '（代码填空时这个名字可能由题面/裁判程序提供；先检查拼写与 include）',
+      };
     }
     // Python 片段：缩进取决于插入位置，unexpected indent 这类报错不算学生的错
-    if (lang === 'python' && fragment) return PYTHON_INDENT_DIAGNOSTIC.test(item.message);
-    return false;
+    if (lang === 'python' && fragment && PYTHON_INDENT_DIAGNOSTIC.test(item.message)) return null;
+    return item;
   });
 }
 

@@ -1,0 +1,192 @@
+/* 欢迎页：独立的扩展页，不跟面板共用样式（面板那套是挂在 shadow root 里的） */
+
+:root {
+  color-scheme: light dark;
+  --w-bg: #f4f6fb;
+  --w-surface: #ffffff;
+  --w-border: #e2e6f0;
+  --w-text: #1f2430;
+  --w-muted: #6b7387;
+  --w-accent: #2f6bff;
+  --w-accent-soft: #eaf0ff;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --w-bg: #171b24;
+    --w-surface: #1e2430;
+    --w-border: #2c3444;
+    --w-text: #e6eaf2;
+    --w-muted: #939db1;
+    --w-accent: #6b9bff;
+    --w-accent-soft: #1e2b47;
+  }
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  padding: 0;
+  background: var(--w-bg);
+  color: var(--w-text);
+  font: 14px/1.7 -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
+}
+
+.page {
+  max-width: 720px;
+  margin: 0 auto;
+  padding: 48px 24px 64px;
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+}
+
+.hero__title {
+  margin: 0 0 8px;
+  font-size: 32px;
+  letter-spacing: 0.5px;
+}
+
+.hero__subtitle {
+  margin: 0;
+  color: var(--w-muted);
+}
+
+.card {
+  background: var(--w-surface);
+  border: 1px solid var(--w-border);
+  border-radius: 12px;
+  padding: 20px 22px;
+  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.05);
+}
+
+.card__title {
+  margin: 0 0 10px;
+  font-size: 15px;
+  font-weight: 600;
+}
+
+.steps {
+  margin: 0;
+  padding-left: 20px;
+  color: var(--w-text);
+}
+
+.steps li + li {
+  margin-top: 4px;
+}
+
+.hint {
+  margin: 10px 0 0;
+  color: var(--w-muted);
+  font-size: 13px;
+}
+
+code {
+  padding: 1px 5px;
+  border-radius: 4px;
+  background: var(--w-accent-soft);
+  color: var(--w-accent);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+
+.backup__input {
+  width: 100%;
+  margin-top: 10px;
+  padding: 10px 12px;
+  border: 1px solid var(--w-border);
+  border-radius: 8px;
+  background: var(--w-bg);
+  color: var(--w-text);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 12px;
+  resize: vertical;
+}
+
+.backup__actions {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-top: 12px;
+}
+
+.backup__status {
+  font-size: 13px;
+  color: #d64545;
+}
+
+.backup__status--ok {
+  color: #1a9e63;
+}
+
+.button {
+  padding: 7px 18px;
+  border: none;
+  border-radius: 8px;
+  background: var(--w-accent);
+  color: #fff;
+  font: inherit;
+  cursor: pointer;
+}
+
+.button:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+
+.links {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+.link {
+  padding: 7px 14px;
+  border: 1px solid var(--w-border);
+  border-radius: 8px;
+  background: var(--w-bg);
+  color: var(--w-accent);
+  font: inherit;
+  cursor: pointer;
+}
+
+.link:hover {
+  border-color: var(--w-accent);
+}
+
+.footer {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 12px;
+  padding-top: 8px;
+  border-top: 1px solid var(--w-border);
+  color: var(--w-muted);
+  font-size: 13px;
+}
+
+.footer__author {
+  font-weight: 600;
+  color: var(--w-text);
+}
+
+.footer__mail {
+  color: var(--w-muted);
+  text-decoration: none;
+}
+
+.footer__mail:hover {
+  color: var(--w-accent);
+}
+
+.footer__site {
+  padding: 0;
+  border: none;
+  background: none;
+  color: var(--w-accent);
+  font: inherit;
+  cursor: pointer;
+}

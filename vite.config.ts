@@ -15,12 +15,16 @@ const ENTRY_FILES: Record<string, string> = {
   background: 'src/background/index.ts',
   content: 'src/content/index.tsx',
   diff: 'src/diff/main.tsx',
+  welcome: 'src/welcome/main.tsx',
 };
 
 // manifest/manifest.json 是手写的基础清单（Chrome 用），Firefox 的差异在这里补
 function applyFirefoxPatch(manifest: Record<string, unknown>): Record<string, unknown> {
-  return {
-    ...manifest,
+  // 可选的主机权限：Chrome 用 optional_host_permissions，Firefox 把源放进 optional_permissions。
+  // 两个键不能同时出现（Firefox 不认 optional_host_permissions），所以先摘掉再合并。
+  const { optional_host_permissions: chromeOptionalHosts, ...base } = manifest;
+  const patched: Record<string, unknown> = {
+    ...base,
     // Firefox 的 MV3 用非持久化的 event page，而不是 service worker
     background: { scripts: ['background.js'] },
     browser_specific_settings: {
@@ -35,6 +39,13 @@ function applyFirefoxPatch(manifest: Record<string, unknown>): Record<string, un
     // 两个浏览器都需要在扩展页 CSP 里放行 wasm，否则 Worker 里 WebAssembly.compile 会被拦
     content_security_policy: manifest.content_security_policy,
   };
+  if (Array.isArray(chromeOptionalHosts) && chromeOptionalHosts.length > 0) {
+    patched.optional_permissions = [
+      ...((manifest.optional_permissions as string[] | undefined) ?? []),
+      ...(chromeOptionalHosts as string[]),
+    ];
+  }
+  return patched;
 }
 
 // Chrome 用 base::IsStringUTF8 校验内容脚本，Unicode 非字符（U+FFFE/U+FFFF 之类）会被判成

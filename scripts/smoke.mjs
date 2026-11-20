@@ -243,9 +243,14 @@ check('没聊过时圆环没有 token 明细', (withKey.find('.panel__ctx')?.get
 // 顶栏显示当前模型：等一次长回答之前，用户得知道自己在跟谁说话
 await tick();
 check('顶栏显示当前模型', (withKey.find('.panel__model')?.textContent ?? '').includes('DeepSeek'), withKey.find('.panel__model')?.textContent);
+// 模型名只展示：点它不该进设置页（换模型统一走齿轮）
+check('模型名不是按钮（点不动）', withKey.find('.panel__model').tagName !== 'BUTTON', withKey.find('.panel__model').tagName);
 withKey.find('.panel__model').click();
 await tick();
-check('点模型名进设置页', withKey.find('.panel__back') !== null);
+check('点模型名不会跳进设置页', withKey.find('.panel__back') === null);
+withKey.shadow().querySelector('button[title="设置"]').click();
+await tick();
+check('点齿轮能进设置页', withKey.find('.panel__back') !== null);
 withKey.find('.panel__back').click();
 await tick();
 check('从设置页能退回聊天', withKey.find('.panel__back') === null);
@@ -371,8 +376,8 @@ check('输入框恢复可用', !withKey.find('.composer__input').disabled);
 withKey.find('.panel__close[title="设置"]').click();
 await tick();
 check('齿轮进入设置页', Boolean(withKey.find('.settings')));
-check('设置页带上了已保存的接口地址', withKey.find('.field__input[type="text"]').value === 'https://api.siliconflow.cn/v1');
-check('设置页显示的是硅基流动的模型名', [...withKey.shadow().querySelectorAll('.field__input[type="text"]')][1].value === 'deepseek-ai/DeepSeek-V4.1-Flash');
+check('设置页带上了已保存的接口地址', withKey.find('[data-role="provider-base-url"]').value === 'https://api.siliconflow.cn/v1');
+check('设置页显示的是硅基流动的模型名', withKey.find('[data-role="provider-model"]').value === 'deepseek-ai/DeepSeek-V4.1-Flash');
 check('设置页里有 OCTest 署名', withKey.find('.settings').textContent.includes('OCTest'));
 check('「用调试器发送真实按键」开关已移除', !withKey.find('.settings').textContent.includes('用调试器发送真实按键'));
 check('接口地址不再提示改 host_permissions', !withKey.find('.settings').textContent.includes('host_permissions'));
@@ -459,11 +464,11 @@ check('内置提供商是硅基流动与深度求索', providerChips.map((el) =>
 check('当前接口地址对应的提供商是高亮的', providerChips[0].className.includes('provider--on'));
 providerChips[1].click();
 await tick();
-check('点「深度求索」把接口地址换成它的', withKey.find('.field__input[type="text"]').value === 'https://api.deepseek.com/v1');
+check('点「深度求索」把接口地址换成它的', withKey.find('[data-role="provider-base-url"]').value === 'https://api.deepseek.com/v1');
 check('换过之后高亮跟着换', providerChips[1].className.includes('provider--on') && !providerChips[0].className.includes('provider--on'));
 providerChips[0].click();
 await tick();
-check('点「硅基流动」把接口地址换回来', withKey.find('.field__input[type="text"]').value === 'https://api.siliconflow.cn/v1');
+check('点「硅基流动」把接口地址换回来', withKey.find('[data-role="provider-base-url"]').value === 'https://api.siliconflow.cn/v1');
 
 // 视觉模式：几选一的分段选择器，保存时跟着走
 const vlmField = [...withKey.shadow().querySelectorAll('.field')].find((f) => f.textContent.includes('视觉模式'));
@@ -507,7 +512,7 @@ const modelItems = [...withKey.shadow().querySelectorAll('.model-list__item')];
 check('模型列表列出来了', modelItems.length === 3 && modelItems[0].textContent === 'deepseek-ai/DeepSeek-V4.1-Flash');
 modelItems[1].click();
 await tick();
-check('点模型就把模型名填进输入框', [...withKey.shadow().querySelectorAll('.field__input[type="text"]')][1].value === 'Qwen/Qwen3-8B');
+check('点模型就把模型名填进输入框', withKey.find('[data-role="provider-model"]').value === 'Qwen/Qwen3-8B');
 check('选完下拉框收起', !withKey.find('.model-list'));
 
 // 没填 Key 时不该出现下拉框
@@ -521,7 +526,7 @@ check('没有 Key 时模型旁边没有下拉框', !noKeyPanel.find('.field__mod
 noKeyPanel.setValue(noKeyPanel.find('.field__input[type="password"]'), 'sk-x');
 await tick();
 check('填了 Key 之后下拉框出现', Boolean(noKeyPanel.find('.field__models')));
-noKeyPanel.setValue(noKeyPanel.find('.field__input[type="text"]'), 'api.siliconflow.cn');
+noKeyPanel.setValue(noKeyPanel.find('[data-role="provider-base-url"]'), 'api.siliconflow.cn');
 await tick();
 check('接口地址不完整时还是没有下拉框', !noKeyPanel.find('.field__models'));
 
@@ -540,7 +545,7 @@ await tick();
 check('后台 Key 变化后模型下拉框刷新出现', Boolean(lateKeyPanel.find('.field__models')));
 
 // 还没保存的 Key 也要能带着去问模型列表
-noKeyPanel.setValue(noKeyPanel.find('.field__input[type="text"]'), 'https://api.siliconflow.cn/v1');
+noKeyPanel.setValue(noKeyPanel.find('[data-role="provider-base-url"]'), 'https://api.siliconflow.cn/v1');
 await tick();
 noKeyPanel.find('.field__models').click();
 await tick();
@@ -636,6 +641,31 @@ await tick();
 check('工具之后的文字另起一个回答气泡', tools.shadow().querySelectorAll('.bubble--assistant').length === 1);
 tools.emit({ type: 'chat/done', requestId: toolRequestId, aborted: false });
 await tick();
+check('收尾之后气泡里不留闪烁光标', !tools.find('.bubble__cursor'));
+
+// 工具调用之后模型接着说话时，那段文字是「续写」进已有气泡的（不新起气泡）。
+// 之前收尾找不到「当前气泡」，streaming 永远停在 true——气泡里光标一直闪。
+const caret = boot({ hasApiKey: true });
+await tick();
+caret.toggle();
+await tick();
+caret.setValue(caret.find('.composer__input'), '做这道题');
+await tick();
+caret.find('.composer__send').click();
+await tick();
+const caretRequestId = caret.requests.find((r) => r.type === 'chat/start')?.requestId;
+caret.emit({ type: 'chat/delta', requestId: caretRequestId, text: '先读题面。' });
+await tick();
+caret.emit({ type: 'chat/tool-start', requestId: caretRequestId, callId: 'call_caret', name: 'read_problem', args: '{}' });
+await tick();
+caret.emit({ type: 'chat/delta', requestId: caretRequestId, text: '题目读完了。' });
+await tick();
+caret.emit({ type: 'chat/tool-end', requestId: caretRequestId, callId: 'call_caret', result: 'ok', isError: false });
+await tick();
+caret.emit({ type: 'chat/done', requestId: caretRequestId, aborted: false });
+await tick();
+check('续写工具气泡那种收尾也不留光标', !caret.find('.bubble__cursor'));
+check('续写的文字确实进了那个气泡', (caret.find('.bubble--assistant')?.textContent ?? '').includes('题目读完了。'));
 
 tools.setValue(tools.find('.composer__input'), '继续');
 await tick();
@@ -982,12 +1012,13 @@ shortcut.toggle();
 await tick();
 check('面板不再有「输入」按钮（改用 Ctrl+V / Ctrl+M）', shortcut.find('.composer__write') === null);
 const footerButtons = [...shortcut.find('.composer__footer').querySelectorAll('button')];
-check('输入区只有「专注题目」开关和发送按钮', footerButtons.length === 2, footerButtons.length);
+check('输入区只剩发送按钮（专注题目开关已下线）', footerButtons.length === 1, footerButtons.length);
 check(
-  '专注题目开关在发送按钮左边（面板左下角 / 右下角）',
-  footerButtons[0]?.classList.contains('composer__focus') && footerButtons[1]?.classList.contains('composer__send'),
+  '发送按钮在右下角',
+  footerButtons[0]?.classList.contains('composer__send'),
   footerButtons.map((b) => b.className).join(' | '),
 );
+check('左下角不再有专注题目按钮', shortcut.find('.composer__focus') === null);
 
 // 新会话：先聊一轮，再清空
 shortcut.setValue(shortcut.find('.composer__input'), '帮我看看这道题');
@@ -1463,127 +1494,6 @@ check(
 const ring = slash.shadow().querySelector('.panel__ring');
 check('顶栏有上下文进度圆环', Boolean(ring));
 check('token 明细不在顶栏直接显示', !slash.shadow().querySelector('.panel__usage'));
-
-/* ---------- 场景十三：专注题目模式（页面只留题面） ---------- */
-
-// 一个仿 PTA 考试页的页面：顶部标题栏、左侧图标栏、题目列表侧栏、题面、作答区
-const PTA_PAGE = `
-  <div id="exam-app">
-    <div class="grid">
-      <div class="top-bar">26级《程序设计基础》拓展题 第1套</div>
-      <div class="rail">Overview Problem List Submission list Rankings</div>
-      <div class="content">
-        <div class="sidebar">Problem Overview Answered / Problem Count</div>
-        <main>
-          <div class="toggle-strip">Toggle Sidebar</div>
-          <div class="split">
-            <div class="left-col">
-              <div class="tab">Problem Description</div>
-              <div class="rendered-markdown">请编写程序，输出杨辉三角形。 输入格式 行数（不超过20） 输出格式 指定行数的杨辉三角形</div>
-            </div>
-            <div class="right-col"><div class="cm-content" contenteditable="true">int main(void) { return 0; }</div></div>
-          </div>
-        </main>
-      </div>
-    </div>
-  </div>`;
-
-const focused = boot({ hasApiKey: true, pageHtml: PTA_PAGE });
-await tick();
-focused.toggle();
-await tick();
-
-const focusToggle = focused.find('.composer__focus');
-check('输入区左下角有专注题目开关', Boolean(focusToggle));
-check('开关默认是关的', focusToggle.getAttribute('aria-pressed') === 'false');
-check('发送按钮还在右下角', Boolean(focused.find('.composer__send')));
-
-const onPage = (selector) => focused.window.document.querySelector(selector);
-const hidden = (selector) => onPage(selector)?.hasAttribute('data-pta-focus-hidden') === true;
-
-focusToggle.click();
-await tick();
-check('专注模式打开后顶部的标题栏被收起来了', hidden('.top-bar'));
-check('专注模式打开后左侧图标栏被收起来了', hidden('.rail'));
-check('专注模式打开后题目列表侧栏被收起来了', hidden('.sidebar'));
-check('专注模式打开后作答区被收起来了', hidden('.right-col'));
-check('专注模式打开后「Toggle Sidebar」那条被收起来了', hidden('.toggle-strip'));
-check('题面那一列留着，还被标成居中用的那一列', onPage('.left-col')?.hasAttribute('data-pta-focus-column') === true);
-check('题面本身没被收起来', hidden('.rendered-markdown') === false);
-check('页面里挂上了专注模式的样式表', Boolean(onPage('#pta-assistant-focus-style')));
-check('专注模式记在 sessionStorage 里（刷新页面也还在）', focused.window.sessionStorage.getItem('pta-assistant-focus-mode') === '1');
-check('专注模式下聊天记录照常显示（模式只管页面）', focused.find('.messages') !== null);
-
-// 关掉：页面恢复原样
-focused.find('.composer__focus').click();
-await tick();
-check('关掉专注模式后页面恢复原样', hidden('.top-bar') === false && hidden('.rail') === false && hidden('.right-col') === false);
-check('关掉专注模式后样式表也撤了', onPage('#pta-assistant-focus-style') === null);
-check('关掉专注模式后 sessionStorage 也清了', focused.window.sessionStorage.getItem('pta-assistant-focus-mode') === null);
-
-// 页面不是题目页（找不到题面）：不该乱收东西
-const plain = boot({ hasApiKey: true });
-await tick();
-plain.toggle();
-await tick();
-plain.find('.composer__focus').click();
-await tick();
-check('页面不是题目页时不乱收元素', plain.window.document.querySelectorAll('[data-pta-focus-hidden]').length === 0);
-
-// 没有作答区的页面（选择题、判断题）：页面外壳照样收起来
-const focusNoEditor = boot({
-  hasApiKey: true,
-  pageHtml: PTA_PAGE.replace('<div class="right-col"><div class="cm-content" contenteditable="true">int main(void) { return 0; }</div></div>', ''),
-});
-await tick();
-focusNoEditor.toggle();
-await tick();
-focusNoEditor.find('.composer__focus').click();
-await tick();
-const focusNoEditorHidden = (selector) =>
-  focusNoEditor.window.document.querySelector(selector)?.hasAttribute('data-pta-focus-hidden') === true;
-check('没有作答区时页面外壳照样收起来', focusNoEditorHidden('.top-bar') && focusNoEditorHidden('.rail') && focusNoEditorHidden('.sidebar'));
-check('没有作答区时题面留着', focusNoEditorHidden('.rendered-markdown') === false);
-
-// 代码填空题那种「作答区就在题面里面」的页面：
-// 分栏区就是题面自己，这时候不能按分栏处理——题面的内容一根都不能收，收了页面直接白屏
-const focusFragment = boot({
-  hasApiKey: true,
-  pageHtml: `
-    <div id="exam-app">
-      <div class="grid">
-        <div class="top-bar">标题</div>
-        <div class="rail">图标栏</div>
-        <div class="content">
-          <div class="sidebar">题目列表</div>
-          <main>
-            <div class="toggle-strip">Toggle Sidebar</div>
-            <div class="left-col">
-              <div class="rendered-markdown">
-                <h3>7-2 阶乘计算升级版</h3>
-                <p>题目描述：给定一个正整数 n，请计算 n 的阶乘并输出。输入格式：一个正整数 n。输出格式：一个整数。样例输入：3。样例输出：6。这里再多写几个字，让题面够长、能被认出来。</p>
-                <div class="cm-content" contenteditable="true">int main(void) { return 0; }</div>
-              </div>
-            </div>
-          </main>
-        </div>
-      </div>
-    </div>`,
-});
-await tick();
-focusFragment.toggle();
-await tick();
-focusFragment.find('.composer__focus').click();
-await tick();
-const fragmentHidden = (selector) =>
-  focusFragment.window.document.querySelector(selector)?.hasAttribute('data-pta-focus-hidden') === true;
-check('作答区在题面里面时题面不会被收光', fragmentHidden('.rendered-markdown') === false);
-check(
-  '作答区在题面里面时题面的正文不会被收掉',
-  fragmentHidden('.rendered-markdown h3') === false && fragmentHidden('.rendered-markdown p') === false,
-);
-check('作答区在题面里面时题面那一列也不会被收掉', fragmentHidden('.left-col') === false);
-check('作答区在题面里面时页面外壳照样收起来', fragmentHidden('.top-bar') && fragmentHidden('.rail') && fragmentHidden('.sidebar'));
 
 /* ---------- 场景：赶题模式（/fuck）的总览卡 ---------- */
 

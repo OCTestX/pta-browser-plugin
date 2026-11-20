@@ -1,7 +1,7 @@
-// 更新检测的纯逻辑单测：版本号解析、比较、挑安装包。
+// 更新检测的纯逻辑单测：发版次数解析、比较、挑安装包。
 // 这三段不依赖浏览器，也不联网，Node 剥掉类型后直接导入 .ts 就能测。
 // 用法：node scripts/test-update-check.mjs
-const { isNewerVersion, parseVersion, pickPackageUrl } = await import('../src/shared/update-check.ts');
+const { hasNewerRelease, parseReleaseCount, pickPackageUrl } = await import('../src/shared/update-check.ts');
 
 const check = (label, ok, detail) => {
   if (!ok) {
@@ -11,41 +11,20 @@ const check = (label, ok, detail) => {
   console.log(`✓ ${label}`);
 };
 
-// ---- 1. 版本号解析 ----
-check(
-  'v6.9.0 解析成 6/9/0',
-  JSON.stringify(parseVersion('v6.9.0')) === JSON.stringify({ major: 6, minor: 9, patch: 0 }),
-  parseVersion('v6.9.0'),
-);
-check(
-  '没有 v 前缀也能解析',
-  JSON.stringify(parseVersion('6.9.0')) === JSON.stringify({ major: 6, minor: 9, patch: 0 }),
-  parseVersion('6.9.0'),
-);
-check(
-  '两段版本 v3.1 按 3.1.0 处理',
-  JSON.stringify(parseVersion('v3.1')) === JSON.stringify({ major: 3, minor: 1, patch: 0 }),
-  parseVersion('v3.1'),
-);
-check(
-  '两段版本 v2.0 按 2.0.0 处理',
-  JSON.stringify(parseVersion('v2.0')) === JSON.stringify({ major: 2, minor: 0, patch: 0 }),
-  parseVersion('v2.0'),
-);
-check('非版本号解析不出来', parseVersion('abc') === null, parseVersion('abc'));
-check('空串解析不出来', parseVersion('') === null, parseVersion(''));
-check('超过三段解析不出来', parseVersion('v1.2.3.4') === null, parseVersion('v1.2.3.4'));
-check('带非数字的段解析不出来', parseVersion('v1.2.beta') === null, parseVersion('v1.2.beta'));
+// ---- 1. 发版次数解析 ----
+check('标题里的发版次数解析出来', parseReleaseCount('V7.1.12@133') === 133, parseReleaseCount('V7.1.12@133'));
+check('只有版本号时没有次数', parseReleaseCount('v7.1.12') === null, parseReleaseCount('v7.1.12'));
+check('空标题没有次数', parseReleaseCount('') === null, parseReleaseCount(''));
+check('@ 后面不是数字没有次数', parseReleaseCount('v1.2.3@beta') === null, parseReleaseCount('v1.2.3@beta'));
+check('@ 后面是 0 不算有效次数', parseReleaseCount('v1.2.3@0') === null, parseReleaseCount('v1.2.3@0'));
+check('前后有空白也认', parseReleaseCount('  PTA 助手 V7.1.12@133  ') === 133, parseReleaseCount('  PTA 助手 V7.1.12@133  '));
 
-// ---- 2. 版本比较 ----
-check('补丁号更大算更新', isNewerVersion('v6.9.1', 'v6.9.0') === true);
-check('相同版本不算更新', isNewerVersion('v6.9.0', 'v6.9.0') === false);
-check('远端更旧不算更新', isNewerVersion('v6.8.8', 'v6.9.0') === false);
-check('次版本号更大算更新', isNewerVersion('v6.10.0', 'v6.9.0') === true);
-check('次版本号更小不算更新', isNewerVersion('v6.9.0', 'v6.10.0') === false);
-check('主版本号更大算更新', isNewerVersion('v7.0', 'v6.9.0') === true);
-check('解析不出来时不误报有更新', isNewerVersion('abc', 'v6.9.0') === false);
-check('本地版本解析不出来时也不误报', isNewerVersion('v6.9.0', 'abc') === false);
+// ---- 2. 按次数比新旧 ----
+check('远端次数更大算有更新', hasNewerRelease(132, 'V7.1.12@133') === true);
+check('次数相同不算更新', hasNewerRelease(133, 'V7.1.12@133') === false);
+check('本地次数更大不算更新', hasNewerRelease(134, 'V7.1.12@133') === false);
+check('远端标题解析不出次数时不误报', hasNewerRelease(1, 'v7.1.12') === false);
+check('内置次数缺失（0）时能识别出任何带次数的发版', hasNewerRelease(0, 'V1.0@1') === true);
 
 // ---- 3. 从 release 资产里挑安装包 ----
 // Gitee 上同时挂着安装包与源码包（v5.1.0.zip / v5.1.0.tar.gz），不能挑错

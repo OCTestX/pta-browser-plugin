@@ -1,7 +1,7 @@
 import { ext } from '../shared/browser';
 import { fetchModelContextWindow } from './model-context';
 import { DEFAULT_SETTINGS, normalizeBaseURL, type Settings, type SettingsView } from '../shared/settings';
-import { isNewerVersion, pickPackageUrl, type ReleaseAsset } from '../shared/update-check';
+import { hasNewerRelease, pickPackageUrl, type ReleaseAsset } from '../shared/update-check';
 import type { UpdateCheckResponse } from '../shared/messages';
 
 const STORAGE_KEY = 'pta-assistant-settings';
@@ -22,6 +22,10 @@ export async function saveSettings(patch: Partial<Settings>): Promise<Settings> 
   next.apiKey = next.apiKey.trim();
   next.baseURL = normalizeBaseURL(next.baseURL) || DEFAULT_SETTINGS.baseURL;
   next.model = next.model.trim() || DEFAULT_SETTINGS.model;
+  // 自定义提供商：缺 id / 名字 / 接口地址的整条丢掉，免得往列表里塞进点不动、也删不干净的项
+  next.providers = (Array.isArray(next.providers) ? next.providers : []).filter(
+    (provider) => Boolean(provider && provider.id && provider.label && provider.baseURL),
+  );
   // 换了模型或接口，之前查到的上下文长度就不作数了，先清掉，免得圆环按旧模型的窗口算
   if (next.model !== current.model || next.baseURL !== current.baseURL) {
     delete next.contextWindow;
@@ -52,10 +56,23 @@ export function toSettingsView(settings: Settings): SettingsView {
     vlmMode: settings.vlmMode,
     forcePtaRun: settings.forcePtaRun,
     contextWindow: settings.contextWindow,
+    providers: settings.providers,
+    protocol: settings.protocol,
+    hyphenate: settings.hyphenate,
+    indentGuides: settings.indentGuides,
+    codeHints: settings.codeHints,
+    theme: settings.theme,
   };
 }
 
 const MANIFEST_VERSION = ext.runtime.getManifest().version;
+/**
+ * 内置的「发版次数」：写在 manifest 顶层，每次发版跟着 +1。
+ * 更新检测比的就是它——比版本号大小更可靠（版本号会跳号、也有两段式的）。
+ */
+const BUILTIN_COUNT = Number(
+  (ext.runtime.getManifest() as unknown as Record<string, unknown>).release_count ?? 0,
+);
 
 /**
  * 跑在 Firefox 上吗？
@@ -76,8 +93,10 @@ const RELEASE_APIS = [
 /** 单个源的等待上限（毫秒）：接口卡住时别把设置页挂在那儿不动 */
 const RELEASE_TIMEOUT_MS = 8000;
 
-/** release 接口回来的东西：只要标签与资产列表 */
+/** release 接口回来的东西：只要标题、标签与资产列表 */
 interface ReleasePayload {
+  /** release 标题（形如 V7.1.12@133），发版次数就在这里面 */
+  name?: string;
   tag_name?: string;
   assets?: ReleaseAsset[];
 }
@@ -174,6 +193,7 @@ export async function checkForUpdates(force = false): Promise<UpdateCheckRespons
   }
 
   let latest = '';
+  let latestTitle = '';
   let assets: ReleaseAsset[] = [];
   let tagWithoutPackage = '';
   for (const url of RELEASE_APIS) {
@@ -189,10 +209,12 @@ export async function checkForUpdates(force = false): Promise<UpdateCheckRespons
     }
     latest = tag;
     assets = payload?.assets ?? [];
+    // 记下标题（发版次数在里面），下面按次数比新旧
+    latestTitle = (payload?.name || tag).trim();
     break;
   }
 
-  if (!latest && tagWithoutPackage && isNewerVersion(tagWithoutPackage, MANIFEST_VERSION)) {
+  if (!latest && tagWithoutPackage && hasNewerRelease(BUILTIN_COUNT, tagWithoutPackage)) {
     // 两个源都只有标签、没有能装的包：如实说「有新版但下不了」，
     // 装成「没有新版本」等于骗用户——版本确实发布了，只是作者还没传包。
     cached = {
@@ -216,7 +238,7 @@ export async function checkForUpdates(force = false): Promise<UpdateCheckRespons
   }
 
   cached = {
-    available: isNewerVersion(latest, MANIFEST_VERSION),
+    available: hasNewerRelease(BUILTIN_COUNT, latestTitle),
     latest,
     current: MANIFEST_VERSION,
     packageUrl: pickPackageUrl(assets, IS_FIREFOX ? 'xpi' : 'zip'),

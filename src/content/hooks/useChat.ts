@@ -252,6 +252,9 @@ export function useChat(hasApiKey: boolean) {
         .reverse()
         .find((message) => message.role === 'assistant' && (message.toolCalls ?? []).length > 0);
       if (lastAssistant && lastAssistant.content.trim()) {
+        // 续写的是那条带 tool_calls 的气泡：把「当前气泡」指回它。
+        // 否则收尾时找不到当前气泡，streaming 永远停在 true，光标就一直闪。
+        assistantRef.current = lastAssistant.id;
         return prev.map((message) =>
           message.id === lastAssistant.id
             ? { ...message, content: message.content + text, streaming: true }
@@ -376,9 +379,18 @@ export function useChat(hasApiKey: boolean) {
       // 这会儿往往还是空的（标签页在后台时 rAF 压根不跑）。
       const produced = producedRef.current.trim();
       setMessages((prev) =>
-        prev.map((message) =>
-          message.id === currentId ? { ...message, streaming: false } : message,
-        ),
+        prev.map((message) => {
+          if (message.id === currentId) {
+            return {
+              ...message,
+              streaming: false,
+              // 收尾时记一次耗时：气泡顶部显示，用户能看出这轮有多慢
+              elapsedMs: message.createdAt ? Date.now() - message.createdAt : undefined,
+            };
+          }
+          // 兜底：这一轮已经结束，任何还在 streaming 的气泡都不该再闪光标
+          return message.streaming ? { ...message, streaming: false } : message;
+        }),
       );
       if (!produced) {
         setNotice({
@@ -386,6 +398,14 @@ export function useChat(hasApiKey: boolean) {
           needsApiKey: false,
         });
       }
+    }
+    else {
+      // 没有「当前气泡」也不能留下闪个不停的收尾光标
+      setMessages((prev) =>
+        prev.some((message) => message.streaming)
+          ? prev.map((message) => (message.streaming ? { ...message, streaming: false } : message))
+          : prev,
+      );
     }
     assistantRef.current = null;
     requestRef.current = null;

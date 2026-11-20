@@ -6,6 +6,8 @@ export interface ChatMessage {
   createdAt: number;
   /** 正在流式输出 */
   streaming?: boolean;
+  /** 这一轮回答用了多久（毫秒，只在助手气泡上、收尾时写一次） */
+  elapsedMs?: number;
   /** 报错提示，红色展示 */
   error?: boolean;
   /** 这一轮回答里的工具调用 */

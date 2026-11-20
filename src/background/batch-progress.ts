@@ -22,6 +22,9 @@ export interface BatchProblemRecord {
 }
 
 export interface BatchState {
+  /** 这一轮是不是赶题模式（/fuck）开的。
+   *  普通对话里读题、提交也会记统计，但那不该在面板上冒出一张「赶题模式」卡。 */
+  rush: boolean;
   startedAt: number;
   currentKey: string;
   problems: Map<string, BatchProblemRecord>;
@@ -41,6 +44,7 @@ function stateFor(tabId: number): BatchState {
   let state = states.get(tabId);
   if (!state) {
     state = {
+      rush: false,
       startedAt: Date.now(),
       currentKey: '',
       problems: new Map(),
@@ -57,6 +61,7 @@ function stateFor(tabId: number): BatchState {
 /** 新开一轮 /fuck 时清空上一轮的统计 */
 export function resetBatch(tabId: number): void {
   states.set(tabId, {
+    rush: true,
     startedAt: Date.now(),
     currentKey: '',
     problems: new Map(),
@@ -89,9 +94,9 @@ export function finishBatch(tabId: number, reason: 'done' | 'stopped' | 'error' 
   }
 }
 
-/** 这个标签页上有没有正在跑的赶题模式 */
+/** 这个标签页上有没有正在跑的赶题模式（普通对话不显示那张卡） */
 export function batchActive(tabId: number): boolean {
-  return states.has(tabId);
+  return states.get(tabId)?.rush === true;
 }
 
 /** 现在在做哪道题（题目 ID）；没有就空串 */
@@ -205,7 +210,8 @@ export function batchSummary(tabId: number): string {
  */
 export function batchSnapshot(tabId: number): BatchSnapshot {
   const state = states.get(tabId);
-  if (!state) return emptyBatchSnapshot();
+  // 只承认赶题模式那一轮：单道题做题过程中也会记统计，但不该弹「赶题模式」卡
+  if (!state || !state.rush) return emptyBatchSnapshot();
   const list = [...state.problems.values()];
   const accepted = list.filter((item) => item.verdict === 'AC').length;
   const failed = list.filter((item) => item.verdict !== '' && item.verdict !== 'AC').length;

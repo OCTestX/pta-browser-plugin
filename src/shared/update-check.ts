@@ -18,41 +18,30 @@ export interface ReleaseAsset {
 }
 
 /**
- * 解析版本号：`v6.9.0` / `6.9.0` / `v3.1` / `v2.0` 都认。
+ * 从 release 标题里取「发版次数」：作者把标题写成 `V7.1.12@133` 这种形式。
  *
- * release 标签里确实有两段的（v3.1、v2.0），缺的那段按 0 补。
- * 不是数字、空串、超过三段（如 v1.2.3.4）一律返回 null——宁可说「不知道」，
- * 也不要把它当成 0.0.0 去和真实版本比。
+ * 为什么要按次数而不是版本号比：版本号是作者随手写的（有 v3.1 这种两段的、
+ * 也有跳号的），比大小容易漏版本；发版次数每次 +1，单调递增，比它更可靠。
+ *
+ * 不是 `@数字` 形式一律返回 null——宁可说「不知道」，也不误报有更新。
  */
-export function parseVersion(tag: string): ParsedVersion | null {
-  const raw = (tag ?? '').trim().replace(/^[vV]/, '');
-  if (!raw) return null;
-  const parts = raw.split('.');
-  if (parts.length < 1 || parts.length > 3) return null;
-  const numbers: number[] = [];
-  for (const part of parts) {
-    if (!/^\d+$/.test(part)) return null;
-    numbers.push(Number(part));
-  }
-  return {
-    major: numbers[0],
-    minor: numbers[1] ?? 0,
-    patch: numbers[2] ?? 0,
-  };
+export function parseReleaseCount(title: string): number | null {
+  const match = /@(\d+)/.exec((title ?? '').trim());
+  if (!match) return null;
+  const count = Number(match[1]);
+  return Number.isInteger(count) && count > 0 ? count : null;
 }
 
 /**
- * a 是否比 b 新：major → minor → patch 逐段比，缺段按 0 补。
+ * 远端是不是比内置的这份新：远端的发版次数更大才算。
  *
- * 任一边解析不出来就返回 false：查不到版本时宁可说「没有新版本」，绝不误报。
+ * 任一解析不出来就返回 false：查不到时宁可说「没有新版本」，绝不误报。
  */
-export function isNewerVersion(a: string, b: string): boolean {
-  const left = parseVersion(a);
-  const right = parseVersion(b);
-  if (!left || !right) return false;
-  if (left.major !== right.major) return left.major > right.major;
-  if (left.minor !== right.minor) return left.minor > right.minor;
-  return left.patch > right.patch;
+export function hasNewerRelease(builtinCount: number, remoteTitle: string): boolean {
+  const remote = parseReleaseCount(remoteTitle);
+  if (remote === null) return false;
+  const local = Number.isFinite(builtinCount) ? builtinCount : 0;
+  return local < remote;
 }
 
 /** 安装包的类型：Chrome 装 zip，Firefox 装 xpi */
