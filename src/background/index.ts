@@ -14,7 +14,7 @@ import type {
 } from '../shared/messages';
 import { isCompleteBaseURL, normalizeBaseURL } from '../shared/settings';
 import { decodeSettingsBackup, encodeSettingsBackup } from '../shared/backup';
-import { createId, type ApiMessage } from '../shared/types';
+import { createId, toApiContext, type ApiMessage } from '../shared/types';
 import { runAgent, type ToolOutcome } from './agent';
 import { batchActive, batchSnapshot, finishBatch } from './batch-progress';
 import { clearSubmitted } from './submitted-problems';
@@ -593,6 +593,8 @@ async function startChat(
   runningRequests.set(requestId, controller);
   runningRequestTabs.set(requestId, tabId);
   const stopKeepAlive = keepServiceWorkerAlive(() => runningRequests.has(requestId));
+  // 这一轮真正发给接口的对话：跑完交给面板，下一轮原样再发
+  const conversationOut: { messages: ApiMessage[] } = { messages: [] };
 
   void (async () => {
     try {
@@ -600,6 +602,7 @@ async function startChat(
         messages,
         tabId,
         signal: controller.signal,
+        conversationOut,
         events: {
           onDelta: (text) => sendToTab(tabId, { type: 'chat/delta', requestId, text }),
           onToolStart: (call) =>
@@ -619,11 +622,15 @@ async function startChat(
           askUser: (callId, question, options) => askUserInTab(requestId, tabId, callId, question, options, controller.signal),
         },
       });
+      // 先把上下文交给面板，再收尾：用户接着发下一条时，要能拿到这一轮的上下文
+      sendApiContext(tabId, requestId, conversationOut.messages);
       // 这一轮是「跑完了」还是「用户按了停止」：看中止标记。
       // agent loop 收到停止后可能正常收尾（不抛错），所以不能只看有没有进 catch。
       finishBatchIfRunning(tabId, requestId, controller.signal.aborted ? 'stopped' : 'done');
       sendToTab(tabId, { type: 'chat/done', requestId, aborted: controller.signal.aborted });
     } catch (error) {
+      // 出错或被停：这半截对话也交给面板（整理过的，工具调用与结果仍然配对）
+      sendApiContext(tabId, requestId, conversationOut.messages);
       // 各阶段（模型流 / 页面脚本 / 编译 / 逐字输入）都靠同一个 AbortError 收工，
       // 这里只认「这一轮被停掉了」，别把它当成出错报给用户
       if (isAbortError(error, controller.signal)) {
@@ -645,6 +652,18 @@ async function startChat(
   })();
 
   return { ok: true };
+}
+
+/**
+ * 把这一轮真正发给接口的对话交给面板。
+ *
+ * 面板存着它，下一轮原样再发：开了思考的接口要求上一轮 assistant 消息的
+ * reasoning_content 原样带回去，从面板气泡重建出来的消息序列没有这一段，会被拒。
+ */
+function sendApiContext(tabId: number, requestId: string, conversation: ApiMessage[]): void {
+  const context = toApiContext(conversation);
+  if (context.length === 0) return;
+  sendToTab(tabId, { type: 'chat/api-context', requestId, messages: context });
 }
 
 /**

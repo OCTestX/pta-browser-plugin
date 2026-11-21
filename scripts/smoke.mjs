@@ -639,6 +639,26 @@ check('工具结果展示在卡片里', tools.find('.tool__result')?.textContent
 tools.emit({ type: 'chat/delta', requestId: toolRequestId, text: '标题已经拿到了。' });
 await tick();
 check('工具之后的文字另起一个回答气泡', tools.shadow().querySelectorAll('.bubble--assistant').length === 1);
+// 后台在这一轮收尾时把「真正发给接口的对话」交过来：面板存着，下一轮原样再发
+// （思维链也在里面——面板上的气泡是渲染用的，还原不出这一段）
+tools.emit({
+  type: 'chat/api-context',
+  requestId: toolRequestId,
+  messages: [
+    { role: 'user', content: '看下这个页面' },
+    {
+      role: 'assistant',
+      content: null,
+      reasoning_content: '先看看页面',
+      tool_calls: [
+        { id: 'call_1', type: 'function', function: { name: 'js_inject', arguments: '{"code":"return document.title"}' } },
+      ],
+    },
+    { role: 'tool', tool_call_id: 'call_1', content: '题目 - PTA' },
+    { role: 'assistant', content: '标题已经拿到了。', reasoning_content: '拿到了' },
+  ],
+});
+await tick();
 tools.emit({ type: 'chat/done', requestId: toolRequestId, aborted: false });
 await tick();
 check('收尾之后气泡里不留闪烁光标', !tools.find('.bubble__cursor'));
@@ -674,6 +694,7 @@ await tick();
 const rebuilt = tools.requests.filter((r) => r.type === 'chat/start').at(-1).messages;
 const rebuiltAssistant = rebuilt.find((m) => m.tool_calls?.length > 0);
 const rebuiltTool = rebuilt.find((m) => m.role === 'tool');
+check('下一轮请求带上了后台交来的上下文', rebuilt.length === 5, rebuilt.map((m) => m.role));
 check('下一轮请求带上了 assistant 的 tool_calls', rebuiltAssistant?.tool_calls[0].id === 'call_1');
 check(
   '下一轮请求带上了工具执行结果',
@@ -682,6 +703,16 @@ check(
 check(
   '下一轮请求也带上了工具之后的回答',
   rebuilt.some((m) => m.role === 'assistant' && m.content === '标题已经拿到了。'),
+);
+check(
+  '下一轮请求里思维链原样带着（开了思考的接口缺了会直接 400）',
+  rebuiltAssistant?.reasoning_content === '先看看页面',
+  rebuiltAssistant,
+);
+check(
+  '新用户的消息接在上下文后面',
+  rebuilt.at(-1)?.role === 'user' && rebuilt.at(-1)?.content === '继续',
+  rebuilt.at(-1),
 );
 
 // 页面侧工具：url 与 write_document 由 background 通过 tool/run 交给页面执行

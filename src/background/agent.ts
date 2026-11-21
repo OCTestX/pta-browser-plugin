@@ -110,6 +110,13 @@ interface RunAgentOptions {
   tabId: number;
   signal: AbortSignal;
   events: AgentEvents;
+  /**
+   * 这一轮真正发给接口的对话会填进来（同一个数组，压缩历史时会被就地改写）。
+   *
+   * 后台拿它给面板当下一轮的上下文：面板上的气泡是渲染用的，从气泡重建出来的
+   * 消息序列没有思维链（reasoning_content），开了思考的接口会直接 400。
+   */
+  conversationOut?: { messages: ApiMessage[] };
 }
 
 /**
@@ -236,6 +243,8 @@ export async function runAgent(options: RunAgentOptions): Promise<void> {
   // 指令说明必须并进开头的 system；追加到 user/assistant 后面会被接口拒绝（HTTP 400）
   const instruction = command ? commandInstruction(command.id, command.rest) : '';
   const conversation: ApiMessage[] = buildConversation(SYSTEM_PROMPT, messages, instruction) as ApiMessage[];
+  // 把这一轮真正发给接口的对话交出去：后台要拿它给面板当下一轮的上下文
+  if (options.conversationOut) options.conversationOut.messages = conversation;
   // /fuck：极限赶时间无人监管模式——不问、不解释、直接提交、做完自动切下一题
   const fuckMode = command?.id === 'fuck';
   // 「重做没过的题」那一轮：用户把要重做的题连同地址列在消息里。
@@ -275,7 +284,7 @@ export async function runAgent(options: RunAgentOptions): Promise<void> {
     compactConversation(conversation);
     // 两种协议的消息/流事件形状不一样，其余（工具循环、护栏）完全共用
     const call = settings.protocol === 'responses' ? streamResponses : streamChat;
-    const { content, toolCalls, usage: roundUsage } = await call({
+    const result = await call({
       apiKey: settings.apiKey,
       baseURL: settings.baseURL,
       model: settings.model,
@@ -284,6 +293,11 @@ export async function runAgent(options: RunAgentOptions): Promise<void> {
       signal,
       onDelta: events.onDelta,
     });
+    const { content, toolCalls, usage: roundUsage } = result;
+    // 思考模式的思维链：下一轮请求里必须原样带回去，丢了接口会直接 400
+    // （Responses 协议把思维链放在单独的 reasoning item 里，这里拿不到）
+    const reasoning: string | undefined =
+      'reasoning' in result && typeof result.reasoning === 'string' ? result.reasoning : undefined;
 
     if (roundUsage) {
       usage.promptTokens += roundUsage.promptTokens;
@@ -309,6 +323,7 @@ export async function runAgent(options: RunAgentOptions): Promise<void> {
         conversation.push({
           role: 'assistant',
           content: content.trim() ? content : null,
+          ...(reasoning ? { reasoning_content: reasoning } : {}),
           tool_calls: [
             {
               id: autoAskId,
@@ -321,12 +336,20 @@ export async function runAgent(options: RunAgentOptions): Promise<void> {
         throwIfAborted(signal);
         continue;
       }
+      // 模型这一轮没再调工具：这就是它给用户的最终回答，也要记进对话
+      // （下一轮要拿这段上下文继续，思维链同样得带上）
+      conversation.push({
+        role: 'assistant',
+        content: content.trim() ? content : null,
+        ...(reasoning ? { reasoning_content: reasoning } : {}),
+      });
       return;
     }
 
     conversation.push({
       role: 'assistant',
       content: content.trim() ? content : null,
+      ...(reasoning ? { reasoning_content: reasoning } : {}),
       tool_calls: toolCalls,
     });
 

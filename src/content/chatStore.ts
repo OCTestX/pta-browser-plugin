@@ -15,11 +15,15 @@
  * 刷新、整页跳转后，后台按 requestId 把面板接回来时用它恢复。
  */
 
-import type { ChatMessage } from '../shared/types';
+import type { ApiMessage, ChatMessage } from '../shared/types';
+// 带上 .ts 后缀：scripts/test-tab-store.mjs 直接用 Node 导入本模块（Node 不做省略后缀解析）
+import { sanitizeApiMessages } from '../shared/types.ts';
 
 // 与 panelStore 用同一个键：同一个标签页里两个模块读到的是同一个标签页 id。
 const TAB_ID_KEY = 'pta-assistant-tab-id';
 const STORE_KEY_PREFIX = 'pta-assistant-chat';
+/** API 上下文（真正发给接口的消息序列）单独存一份，不跟显示用的气泡混在一起 */
+const API_CONTEXT_KEY_PREFIX = 'pta-assistant-api-context';
 
 /** 一次最多保留多少条消息：工具结果很长，全存会把配额撑爆 */
 const MAX_MESSAGES = 60;
@@ -165,6 +169,57 @@ export async function clearMessages(bucket?: string): Promise<void> {
   const next: Store = { ...store };
   delete next[bucket ?? conversationKey()];
   writeStore(next);
+}
+
+function apiContextKey(): string {
+  return `${API_CONTEXT_KEY_PREFIX}:${tabId()}`;
+}
+
+/**
+ * 取出这个标签页的 API 上下文（真正发给接口的那串消息）。
+ *
+ * 它跟面板上显示的气泡不是一回事：气泡是渲染用的，从气泡还原成消息序列会丢掉
+ * 思维链（reasoning_content），开了思考的接口要求原样带回去，会直接 400。
+ */
+export async function loadApiContext(): Promise<ApiMessage[]> {
+  if (!tabStorage) return [];
+  try {
+    const raw = tabStorage.getItem(apiContextKey());
+    if (!raw) return [];
+    const parsed = JSON.parse(raw) as ApiMessage[];
+    return Array.isArray(parsed) ? parsed : [];
+  } catch {
+    return [];
+  }
+}
+
+/** 把这个标签页的 API 上下文写回去 */
+export async function saveApiContext(context: ApiMessage[]): Promise<void> {
+  if (!tabStorage) return;
+  // 存之前再配对一次：工具调用与工具结果必须成对，不然下一次请求会被接口拒掉
+  const paired = sanitizeApiMessages(context);
+  try {
+    if (paired.length === 0) tabStorage.removeItem(apiContextKey());
+    else tabStorage.setItem(apiContextKey(), JSON.stringify(paired));
+  } catch {
+    // 配额满了：砍掉前面一半再存一次，总比每次都失败强
+    try {
+      const half = paired.slice(Math.floor(paired.length / 2));
+      tabStorage.setItem(apiContextKey(), JSON.stringify(sanitizeApiMessages(half)));
+    } catch {
+      /* 还是存不下就算了：内存里那份还在 */
+    }
+  }
+}
+
+/** 清掉这个标签页的 API 上下文（「新会话」按钮用） */
+export async function clearApiContext(): Promise<void> {
+  if (!tabStorage) return;
+  try {
+    tabStorage.removeItem(apiContextKey());
+  } catch {
+    /* 忽略 */
+  }
 }
 
 /**

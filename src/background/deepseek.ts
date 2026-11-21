@@ -7,6 +7,14 @@ import type { ApiMessage, ToolCall } from '../shared/types';
 export interface StreamChatResult {
   content: string;
   toolCalls: ToolCall[];
+  /**
+   * 思考模式（thinking）下模型这一轮吐出来的思维链。
+   *
+   * 开了思考的接口要求：下一轮请求里必须把这段原样带回去
+   * （assistant 消息的 reasoning_content），否则直接 400。
+   * 没开思考的模型这一项是空串。
+   */
+  reasoning?: string;
   /** 接口在最后一帧回传的 token 用量（有些兼容接口不回传，这时是 undefined） */
   usage?: TokenUsage;
 }
@@ -24,7 +32,7 @@ interface StreamChatOptions {
 /** 调用 OpenAI 兼容的 /chat/completions，按 SSE 增量回调，并把流式 tool_calls 拼接完整 */
 export async function streamChat(options: StreamChatOptions): Promise<StreamChatResult> {
   const { apiKey, baseURL, model, messages, tools, signal, onDelta } = options;
-  const state: StreamState = { content: '', calls: new Map() };
+  const state: StreamState = { content: '', reasoning: '', calls: new Map() };
 
   let response: Response;
   try {
@@ -93,6 +101,8 @@ export async function streamChat(options: StreamChatOptions): Promise<StreamChat
 
 interface StreamState {
   content: string;
+  /** 思考模式的思维链（DeepSeek / MiniMax 叫 reasoning_content，有的兼容接口叫 reasoning） */
+  reasoning: string;
   calls: Map<number, { id: string; name: string; args: string }>;
   usage?: TokenUsage;
 }
@@ -105,6 +115,10 @@ interface ChunkPayload {
   choices?: {
     delta?: {
       content?: unknown;
+      /** 思考模式的思维链：DeepSeek / MiniMax 用 reasoning_content */
+      reasoning_content?: unknown;
+      /** 有的兼容接口叫 reasoning */
+      reasoning?: unknown;
       tool_calls?: {
         index?: unknown;
         id?: unknown;
@@ -157,6 +171,14 @@ function consume(
     onDelta(delta.content);
   }
 
+  // 思维链要攒起来原样回传：下一轮请求里少了它，开了思考的接口会直接 400
+  const reasoning = typeof delta.reasoning_content === 'string'
+    ? delta.reasoning_content
+    : typeof delta.reasoning === 'string'
+      ? delta.reasoning
+      : '';
+  if (reasoning) state.reasoning += reasoning;
+
   // tool_calls 会被切成多个分片下发，按 index 累积，id / name 通常只在第一片里
   for (const call of delta.tool_calls ?? []) {
     const index = typeof call.index === 'number' ? call.index : 0;
@@ -178,7 +200,12 @@ function toResult(state: StreamState): StreamChatResult {
     }))
     .filter((call) => call.function.name);
 
-  return { content: state.content, toolCalls, usage: state.usage };
+  return {
+    content: state.content,
+    toolCalls,
+    ...(state.reasoning ? { reasoning: state.reasoning } : {}),
+    usage: state.usage,
+  };
 }
 
 /** 返回该行的 data 内容；空串表示这行没有内容，null 表示流结束 */

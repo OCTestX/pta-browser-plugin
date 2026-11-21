@@ -33,6 +33,16 @@ v5.0: 已发布
   它的行号槽（9 / 1 / 2 / ▸）和工具条会漏进题面，跟另一段「样例」小节自相矛盾。
   现在整块识别样例框，换成 [输入样例] / [输出样例] 加真实内容。
 
+4.使用 ask 功能，用户做出回应后报 HTTP 400：The `reasoning_content` in the thinking mode must be passed back to the API.
+  已完成：开了思考的模型（DeepSeek / MiniMax 等）要求后续请求里把上一轮 assistant 消息的
+  思维链（reasoning_content）原样带回去，否则接口直接 400。插件原来压根没采集这段思维链：
+  流里的 reasoning_content 被丢掉，面板上的气泡（渲染用的）还原成消息序列时也拼不出来，
+  于是「用户在 ask 卡片上选完、模型接着回答」的那次请求必然被拒。
+  现在：流里把思维链攒起来（reasoning_content，也认 reasoning 这个别名），每条 assistant
+  消息都带上它；这一轮真正发给接口的对话由后台在收尾时原样交给面板存着（chat/api-context），
+  面板下一轮直接原样再发，不再从气泡重建——气泡那份本来就还原不出思维链。
+  工具调用与工具结果仍要成对（sanitizeApiMessages / toApiContext），被打断的一轮也不会留下落单调用。
+
 检查：
 开新对话时原老对话如果还在运行，应该停止运行
   已完成：开新会话会发 chat/stop 掐断后台那一轮；另外页面被刷了之后重新挂载的悬浮窗

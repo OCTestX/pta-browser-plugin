@@ -51,6 +51,27 @@ check('跨 chunk 的半行能正确拼接', text === '第一段内容');
 
 check('忽略没有 choices 的行', (await collect(['data: {"id":"x"}\n\ndata: [DONE]\n\n'])) === '');
 
+// 1.5 思考模式：思维链要攒起来原样带回去（丢了接口会 400）
+const thinkingSse =
+  'data: {"choices":[{"delta":{"reasoning_content":"先想想"}}]}\n\n' +
+  'data: {"choices":[{"delta":{"reasoning_content":"怎么写"}}]}\n\n' +
+  'data: {"choices":[{"delta":{"content":"写好了"}}]}\n\n' +
+  'data: [DONE]\n\n';
+const thinking = await runStream([thinkingSse], 200);
+check('思考模式的思维链被攒起来', thinking.result.reasoning === '先想想怎么写', thinking.result.reasoning);
+check('思维链不算进正文', thinking.text === '写好了');
+
+// 有的兼容接口把思维链叫 reasoning
+const aliasThinking = await runStream(
+  ['data: {"choices":[{"delta":{"reasoning":"换个名字"}}]}\n\ndata: [DONE]\n\n'],
+  200,
+);
+check('叫 reasoning 的思维链也认', aliasThinking.result.reasoning === '换个名字', aliasThinking.result.reasoning);
+
+// 没开思考的模型没有这一项
+const plain = await runStream(['data: {"choices":[{"delta":{"content":"hi"}}]}\n\ndata: [DONE]\n\n'], 200);
+check('没开思考的模型没有思维链', plain.result.reasoning === undefined, plain.result.reasoning);
+
 // 2. HTTP 错误映射
 const expectError = async (chunks, status, keyword) => {
   global.fetch = async () =>

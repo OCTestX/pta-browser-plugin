@@ -6,10 +6,19 @@ import {
   type StartChatResponse,
   type TokenUsage,
 } from '../../shared/messages';
-import { createId, toApiMessages, type ChatMessage, type ToolCall } from '../../shared/types';
+import { createId, type ApiMessage, type ChatMessage, type ToolCall } from '../../shared/types';
 import type { BatchSnapshot } from '../../shared/batch';
 import { diffLines, diffStats } from '../../shared/diff';
-import { clearMessages, loadMessages, runConversationKey, saveMessages, takePendingCommand } from '../chatStore';
+import {
+  clearApiContext,
+  clearMessages,
+  loadApiContext,
+  loadMessages,
+  runConversationKey,
+  saveApiContext,
+  saveMessages,
+  takePendingCommand,
+} from '../chatStore';
 import { setPanelOpen } from '../panelStore';
 
 
@@ -30,6 +39,18 @@ export function useChat(hasApiKey: boolean) {
   // 收尾时要知道「这一轮到底吐没吐字」，state 更新是异步的，所以留一份同镜像
   const messagesRef = useRef<ChatMessage[]>(messages);
   messagesRef.current = messages;
+  /**
+   * 真正发给接口的那串消息（带思维链）。
+   *
+   * 面板上的气泡是渲染用的：把气泡还原成消息序列会丢掉 reasoning_content，
+   * 开了思考的接口要求上一轮 assistant 消息的思维链原样带回去，丢了直接 400。
+   * 所以上下文由后台每轮结束时原样交过来，面板只负责存着、下一轮再发出去。
+   */
+  const apiContextRef = useRef<ApiMessage[]>([]);
+  // 上下文还没从存储里接回来时不能发消息：否则第一句话就把前面的对话丢了
+  const contextRestoredRef = useRef(false);
+  // 「新会话」丢掉的那一轮：它收尾时交过来的上下文不要捡回来
+  const discardedRequestRef = useRef<string | null>(null);
   const [usage, setUsage] = useState<TokenUsage | null>(null);
   // 赶题模式（/fuck）的进度快照：面板据此画总览卡
   const [batch, setBatch] = useState<BatchSnapshot | null>(null);
@@ -54,6 +75,20 @@ export function useChat(hasApiKey: boolean) {
    * 这里同步累加，收尾时读它就是准的。
    */
   const producedRef = useRef('');
+
+  /** 收下后台交过来的这一轮上下文：存到内存，也存到磁盘（刷新不丢） */
+  const applyApiContext = useCallback((context: ApiMessage[]) => {
+    apiContextRef.current = context;
+    void saveApiContext(context);
+  }, []);
+
+  /** 页面重新挂载时把存好的上下文接回来 */
+  const restoreApiContext = useCallback(async () => {
+    const stored = await loadApiContext();
+    // 取完再置位：取的过程中发消息会等它，不会拿着半截上下文去请求
+    contextRestoredRef.current = true;
+    if (stored.length > 0) applyApiContext(stored);
+  }, [applyApiContext]);
 
   const flushDelta = useCallback(() => {
     if (deltaFrameRef.current !== null) {
@@ -113,6 +148,9 @@ export function useChat(hasApiKey: boolean) {
       } catch {
         // 后台没响应就当没有在跑的对话
       }
+      if (cancelled) return;
+      // 上下文：把存好的那份接回来（刷新、整页跳转都不丢）
+      await restoreApiContext();
       if (cancelled) return;
       // 赶题总览卡里点了「跳到那道题」：那边留了一条待发指令，这里取出来。
       // 先取出来再走下面的分支：万一这一页还有一轮在跑（用户手快），
@@ -178,6 +216,17 @@ export function useChat(hasApiKey: boolean) {
       // 卡片要照常定格在最终统计上。所以这里单独放行，只认更新的那份快照。
       if (message.type === 'chat/batch') {
         applyBatch(message.snapshot);
+        return;
+      }
+
+      // 这一轮真正发给接口的对话：存下来，下一轮原样再发。
+      // requestRef 对不上也照样收：面板重新挂载时那一轮已经收工了，
+      // 但上下文还是要接回来，不然用户下一句话接不上茬。
+      if (message.type === 'chat/api-context') {
+        // 「新会话」刚丢掉的那一轮：它收尾时交过来的上下文不要捡回来
+        if (message.requestId !== discardedRequestRef.current) {
+          applyApiContext(message.messages);
+        }
         return;
       }
 
@@ -430,10 +479,12 @@ export function useChat(hasApiKey: boolean) {
         createdAt: Date.now(),
         streaming: true,
       };
-      // 用面板里的会话重建上下文，工具卡片会变成 tool 消息，工具调用记录挂在 assistant 上。
-      // 读的是 messagesRef 而不是闭包里的 messages：页面刚挂载时要补发一条指令，
-      // 那时恢复出来的对话还没进 state，闭包里的那份是旧的。
-      const apiMessages = toApiMessages(messagesRef.current, content);
+      // 上下文用后台每轮结束时交回来的那份（真正发给接口的消息序列，带思维链）。
+      // 面板上的气泡是渲染用的，从气泡重建出来的序列没有 reasoning_content，
+      // 开了思考的接口会直接 400（「reasoning_content must be passed back」）。
+      // 存着的上下文还没接回来时先接回来，别把前面的对话丢了。
+      if (!contextRestoredRef.current) await restoreApiContext();
+      const apiMessages: ApiMessage[] = [...apiContextRef.current, { role: 'user', content }];
 
       // 第一次对话开始后，欢迎语就没用了：把它撤掉，面板上不再占地方
       setMessages((prev) => [
@@ -468,7 +519,7 @@ export function useChat(hasApiKey: boolean) {
         setNotice({ text: response?.message ?? '请求失败', needsApiKey: !hasApiKey });
       }
     },
-    [hasApiKey, streaming],
+    [hasApiKey, streaming, restoreApiContext],
   );
   sendRef.current = send;
 
@@ -547,6 +598,11 @@ export function useChat(hasApiKey: boolean) {
     setBatch(null);
     batchRef.current = null;
     setMessages([{ id: 'welcome', role: 'system', content: WELCOME, createdAt: 0 }]);
+    // 上下文也要清：新会话就是从头开始，别把上一段对话再发给接口
+    apiContextRef.current = [];
+    // 这一轮收尾时后台还会把它的上下文交过来：那一轮已经被丢掉了，别捡回来
+    discardedRequestRef.current = requestId;
+    void clearApiContext();
     // 存盘的那份也要清掉，否则刷新一下旧对话又回来了
     void clearMessages();
     // 这一轮自己那份（按 requestId 存的）也要清

@@ -58,6 +58,13 @@ export type BackgroundEvent =
       options: string[];
     }
   | { type: 'chat/notice'; requestId: string; text: string }
+  /**
+   * 这一轮真正发给接口的对话：面板存下来，下一轮原样再发。
+   *
+   * 面板上的气泡是渲染用的，从气泡重建出来的消息序列没有思维链
+   * （reasoning_content），开了思考的接口会直接 400。
+   */
+  | { type: 'chat/api-context'; requestId: string; messages: ApiMessage[] }
   /** 赶题模式（/fuck）的进度快照：面板靠它画总览卡 */
   | { type: 'chat/batch'; requestId: string; snapshot: BatchSnapshot }
   /** 每轮请求结束后上报的累计 token 用量，面板顶栏实时显示 */

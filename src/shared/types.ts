@@ -39,6 +39,15 @@ export interface ApiMessage {
   content: string | null;
   tool_calls?: ToolCall[];
   tool_call_id?: string;
+  /**
+   * 思考模式（thinking）下模型吐出来的思维链。
+   *
+   * 开了思考的模型（DeepSeek、MiniMax 等）要求：后续请求里必须把上一轮
+   * assistant 消息的 reasoning_content 原样带回去，否则接口直接 400
+   * （「The `reasoning_content` in the thinking mode must be passed back to the API.」）。
+   * 所以这一段要跟着一轮对话一起存、一起回传，不能在重建上下文时丢掉。
+   */
+  reasoning_content?: string;
 }
 
 export function createId(): string {
@@ -49,39 +58,71 @@ export function createId(): string {
 }
 
 /**
- * 把面板里的消息还原成接口要的消息序列。
- * 注意：带 tool_calls 的 assistant 消息后面必须紧跟对应的 tool 消息，所以工具卡片不能丢。
+ * 把一段接口消息整理成「接口一定能收」的形状。
+ *
+ * 工具调用与工具结果必须成对：每个 assistant.tool_calls 都要有一条对应的
+ * tool 消息，反过来每条 tool 消息都要有发起它的 assistant。少一条接口就 400。
+ * 这一轮被中途打断时最容易出现落单的情况（assistant 记下了调用，结果还没回灌），
+ * 所以每次把上下文交出去之前都要过一遍这里。
+ *
+ * 纯函数，Node 能直接单测。
  */
-export function toApiMessages(messages: ChatMessage[], fallbackInput?: string): ApiMessage[] {
-  const result: ApiMessage[] = [];
-
+export function sanitizeApiMessages(messages: ApiMessage[]): ApiMessage[] {
+  const answered = new Set<string>();
   for (const message of messages) {
-    if (message.role === 'system' || message.error) continue;
-
-    if (message.role === 'tool') {
-      if (!message.toolCallId) continue;
-      result.push({
-        role: 'tool',
-        tool_call_id: message.toolCallId,
-        content: message.content,
-      });
-      continue;
-    }
-
-    if (message.role === 'user') {
-      if (message.content.trim()) result.push({ role: 'user', content: message.content });
-      continue;
-    }
-
-    const toolCalls = message.toolCalls ?? [];
-    if (!message.content.trim() && toolCalls.length === 0) continue;
-    result.push({
-      role: 'assistant',
-      content: message.content.trim() ? message.content : null,
-      ...(toolCalls.length > 0 ? { tool_calls: toolCalls } : {}),
-    });
+    if (message.role === 'tool' && message.tool_call_id) answered.add(message.tool_call_id);
   }
 
-  if (fallbackInput?.trim()) result.push({ role: 'user', content: fallbackInput });
-  return result;
+  // 第一步：assistant 里没有结果的那些 tool_calls 摘掉（整条摘光就退化成普通回复）
+  const kept: ApiMessage[] = [];
+  for (const message of messages) {
+    const calls = message.tool_calls ?? [];
+    if (message.role === 'assistant' && calls.length > 0) {
+      const answeredCalls = calls.filter((call) => answered.has(call.id));
+      kept.push(
+        answeredCalls.length === calls.length
+          ? message
+          : { ...message, tool_calls: answeredCalls.length > 0 ? answeredCalls : undefined },
+      );
+      continue;
+    }
+    kept.push(message);
+  }
+
+  // 第二步：tool 消息的发起者被摘掉了，这条 tool 也就成了孤儿，一起丢
+  const called = new Set<string>();
+  for (const message of kept) {
+    for (const call of message.tool_calls ?? []) called.add(call.id);
+  }
+  return kept.filter((message) => {
+    if (message.role !== 'tool') return true;
+    const id = message.tool_call_id ?? '';
+    return id !== '' && called.has(id);
+  });
+}
+
+/**
+ * 把后台这一轮的对话整理成「面板能存、下一轮能原样再发」的样子。
+ *
+ * · 去掉系统消息：下一轮由后台重新拼在最前面（还要带上当轮的斜杠指令说明），
+ *   面板存一份系统消息进去，下一轮就会多出一条不在最前面的 system，接口会拒
+ * · 去掉图片内容块的消息：图片只在这一轮里发给模型看，下一轮再发一遍只是白费 token
+ * · 工具调用与工具结果必须成对（sanitizeApiMessages）
+ * · 既没有正文也没有工具调用的 assistant 是空壳，接口可能不收
+ *
+ * 纯函数，Node 能直接单测。
+ */
+export function toApiContext(messages: ApiMessage[]): ApiMessage[] {
+  const body = messages.filter((message) => {
+    if (message.role === 'system') return false;
+    // 图片消息的 content 运行时是内容块数组，ApiMessage 这里只声明了字符串
+    const content: unknown = message.content;
+    return typeof content === 'string' || content === null;
+  });
+  const paired = sanitizeApiMessages(body);
+  return paired.filter((message) => {
+    if (message.role !== 'assistant') return true;
+    const hasContent = typeof message.content === 'string' && message.content !== '';
+    return hasContent || (message.tool_calls?.length ?? 0) > 0;
+  });
 }

@@ -125,6 +125,38 @@ const chatBReloaded = await loadChat('tab=b-reload');
 check('刷新后 B 的草稿还是自己的', panelBReloaded.getDraft() === 'B 的草稿：另一份', panelBReloaded.getDraft());
 check('刷新后 B 的对话还是自己的', texts(await chatBReloaded.loadMessages()) === 'B 的提问');
 
+/* ---------- API 上下文：跟显示用的气泡分开存，也按标签页隔离 ---------- */
+
+const apiContext = [
+  { role: 'user', content: 'A 的提问' },
+  { role: 'assistant', content: '想了一下', reasoning_content: '思维链' },
+];
+await chatA.saveApiContext(apiContext);
+
+check('A 标签页的上下文写进去了', (await chatA.loadApiContext()).length === 2);
+check(
+  '上下文里的思维链原样存着',
+  (await chatA.loadApiContext())[1].reasoning_content === '思维链',
+  await chatA.loadApiContext(),
+);
+check('B 标签页看不到 A 的上下文', (await chatB.loadApiContext()).length === 0);
+
+// 存的时候要保证工具调用与工具结果成对，不然下一次请求会被接口拒掉
+await chatB.saveApiContext([
+  { role: 'user', content: 'B 的提问' },
+  { role: 'assistant', content: '在', tool_calls: [{ id: 'c1', type: 'function', function: { name: 'ask', arguments: '{}' } }] },
+]);
+check(
+  '落单的工具调用在存的时候被摘掉',
+  (await chatB.loadApiContext())[1].tool_calls === undefined,
+  await chatB.loadApiContext(),
+);
+
+// 「新会话」要把上下文一起清掉，否则下一轮还会把旧对话发出去
+await chatB.clearApiContext();
+check('清空后上下文是空的', (await chatB.loadApiContext()).length === 0);
+check('清空上下文不影响显示用的对话', texts(await chatB.loadMessages()) === 'B 的提问');
+
 /* ---------- 清空草稿 / 清空对话 ---------- */
 
 panelAReloaded.setDraft('');

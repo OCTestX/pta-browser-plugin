@@ -416,6 +416,45 @@ check(
   state.tabEvents.some((e) => e.type === 'chat/tool-end' && e.result.includes('先不提交')),
 );
 
+/* ---------- 思考模式：思维链要原样回传（丢了接口会 400） ---------- */
+
+// 开了思考的模型（DeepSeek / MiniMax）要求：下一轮请求里必须把上一轮
+// assistant 消息的 reasoning_content 原样带回去，否则直接 400
+state.writeResult = '写入成功';
+state.injectArgs.length = 0;
+state.tabEvents.length = 0;
+state.modelCalls.length = 0;
+state.sse = [
+  `data: {"choices":[{"delta":{"reasoning_content":"先想想怎么写"}}]}\n\ndata: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"c_think","function":{"name":"write_editor_code","arguments":"{\\"code\\":\\"int main(){}\\"}"}}]}}]}\n\ndata: [DONE]\n\n`,
+  `data: {"choices":[{"delta":{"reasoning_content":"写好了"}}]}\n\ndata: {"choices":[{"delta":{"content":"写好了。"}}]}\n\ndata: [DONE]\n\n`,
+];
+await respond2({ type: 'chat/start', requestId: 'r-think', messages: [{ role: 'user', content: '帮我改一下代码' }] }, { tab: { id: 7 } });
+await tick(120);
+const secondRequest = state.modelCalls[1]?.messages ?? [];
+const toolAssistant = secondRequest.find((message) => message.role === 'assistant');
+check('下一轮请求里带上了上一轮的思维链', toolAssistant?.reasoning_content === '先想想怎么写', toolAssistant);
+check(
+  '工具调用与工具结果仍然成对',
+  secondRequest.some((message) => message.role === 'tool' && message.tool_call_id === 'c_think'),
+  secondRequest.map((message) => message.role),
+);
+const apiContext = state.tabEvents.find((event) => event.type === 'chat/api-context');
+check(
+  '交给面板的上下文带着思维链',
+  apiContext?.messages?.some((message) => message.reasoning_content === '先想想怎么写'),
+  apiContext?.messages,
+);
+check(
+  '上下文里也有模型最后那句回答',
+  apiContext?.messages?.some((message) => message.role === 'assistant' && message.content === '写好了。'),
+  apiContext?.messages,
+);
+check(
+  '上下文里没有系统提示（下一轮由后台重新拼在最前面）',
+  apiContext?.messages?.every((message) => message.role !== 'system'),
+  apiContext?.messages,
+);
+
 /* ---------- 停止能打断正在等待的工具 ---------- */
 
 // 模型调 read_judge_result，页面那边永远不返回（真 PTA 上就是「一直在轮询等结论」）
@@ -460,8 +499,9 @@ check('新对话请求本身没有被拒绝', newChat.ok === true);
 /* ---------- ask：等用户点选；diff：把左右两栏交给面板 ---------- */
 
 // 模型先问一句「要不要改」，这一轮会一直挂在等用户点选上
+// （开了思考的模型会在这轮吐思维链：用户作答后的那次请求必须原样带回去）
 state.sse = [
-  `data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"c3","function":{"name":"ask","arguments":"{\\"question\\":\\"要不要我直接改作答区？\\",\\"options\\":[\\"改\\",\\"先别改，只讲思路\\"]}"}}]}}]}\n\ndata: [DONE]\n\n`,
+  `data: {"choices":[{"delta":{"reasoning_content":"先问清楚要不要改"}}]}\n\ndata: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"c3","function":{"name":"ask","arguments":"{\\"question\\":\\"要不要我直接改作答区？\\",\\"options\\":[\\"改\\",\\"先别改，只讲思路\\"]}"}}]}}]}\n\ndata: [DONE]\n\n`,
   `data: {"choices":[{"delta":{"content":"好的，先不动你的代码。"}}]}\n\ndata: [DONE]\n\n`,
 ];
 state.tabEvents.length = 0;
@@ -480,6 +520,15 @@ check(
   state.tabEvents.some((e) => e.type === 'chat/tool-end' && e.callId === asked.callId && e.result.includes('先别改，只讲思路')),
 );
 check('拿到回答后这一轮继续跑完', state.tabEvents.some((e) => e.type === 'chat/done'));
+// 用户作答之后模型要接着回答，那次请求里必须带着上一轮的思维链
+const afterAsk = state.modelCalls[1]?.messages ?? [];
+const askAssistant = afterAsk.find((message) => message.role === 'assistant');
+check('用户作答后的请求带上了思维链', askAssistant?.reasoning_content === '先问清楚要不要改', askAssistant);
+check(
+  '工具调用与用户的回答仍然成对',
+  afterAsk.some((message) => message.role === 'tool' && message.tool_call_id === 'c3'),
+  afterAsk.map((message) => message.role),
+);
 
 // 用户点了「停止」，还没答的 ask 不能把后台挂死
 state.sse = [
